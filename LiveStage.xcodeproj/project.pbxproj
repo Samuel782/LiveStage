@@ -6,6 +6,14 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		C2C3F42B2DB4EAC5000F8AC1 /* TimecodeKit in Frameworks */ = {isa = PBXBuildFile; productRef = C2C3F42A2DB4EAC5000F8AC1 /* TimecodeKit */; };
+		C2C3F42D2DB4EAC5000F8AC1 /* TimecodeKitAV in Frameworks */ = {isa = PBXBuildFile; productRef = C2C3F42C2DB4EAC5000F8AC1 /* TimecodeKitAV */; };
+		C2C3F42F2DB4EAC5000F8AC1 /* TimecodeKitCore in Frameworks */ = {isa = PBXBuildFile; productRef = C2C3F42E2DB4EAC5000F8AC1 /* TimecodeKitCore */; };
+		C2C3F4312DB4EAC5000F8AC1 /* TimecodeKitUI in Frameworks */ = {isa = PBXBuildFile; productRef = C2C3F4302DB4EAC5000F8AC1 /* TimecodeKitUI */; };
+		C2C3F4392DB4F63C000F8AC1 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = C2C3F4382DB4F63C000F8AC1 /* README.md */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		C2C3F3D22DB3C28D000F8AC1 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -27,6 +35,7 @@
 		C2C3F3C32DB3C28B000F8AC1 /* LiveStage.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LiveStage.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2C3F3D12DB3C28D000F8AC1 /* LiveStageTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LiveStageTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2C3F3DB2DB3C28D000F8AC1 /* LiveStageUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LiveStageUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C2C3F4382DB4F63C000F8AC1 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -52,6 +61,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C2C3F42D2DB4EAC5000F8AC1 /* TimecodeKitAV in Frameworks */,
+				C2C3F4312DB4EAC5000F8AC1 /* TimecodeKitUI in Frameworks */,
+				C2C3F42B2DB4EAC5000F8AC1 /* TimecodeKit in Frameworks */,
+				C2C3F42F2DB4EAC5000F8AC1 /* TimecodeKitCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -75,6 +88,7 @@
 		C2C3F3BA2DB3C28B000F8AC1 = {
 			isa = PBXGroup;
 			children = (
+				C2C3F4382DB4F63C000F8AC1 /* README.md */,
 				C2C3F3C52DB3C28B000F8AC1 /* LiveStage */,
 				C2C3F3D42DB3C28D000F8AC1 /* LiveStageTests */,
 				C2C3F3DE2DB3C28D000F8AC1 /* LiveStageUITests */,
@@ -112,6 +126,10 @@
 			);
 			name = LiveStage;
 			packageProductDependencies = (
+				C2C3F42A2DB4EAC5000F8AC1 /* TimecodeKit */,
+				C2C3F42C2DB4EAC5000F8AC1 /* TimecodeKitAV */,
+				C2C3F42E2DB4EAC5000F8AC1 /* TimecodeKitCore */,
+				C2C3F4302DB4EAC5000F8AC1 /* TimecodeKitUI */,
 			);
 			productName = LiveStage;
 			productReference = C2C3F3C32DB3C28B000F8AC1 /* LiveStage.app */;
@@ -195,6 +213,9 @@
 			);
 			mainGroup = C2C3F3BA2DB3C28B000F8AC1;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				C2C3F4292DB4EAC5000F8AC1 /* XCRemoteSwiftPackageReference "TimecodeKit" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = C2C3F3C42DB3C28B000F8AC1 /* Products */;
 			projectDirPath = "";
@@ -212,6 +233,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C2C3F4392DB4F63C000F8AC1 /* README.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -541,6 +563,40 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		C2C3F4292DB4EAC5000F8AC1 /* XCRemoteSwiftPackageReference "TimecodeKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/orchetect/TimecodeKit";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.3.3;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C2C3F42A2DB4EAC5000F8AC1 /* TimecodeKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C2C3F4292DB4EAC5000F8AC1 /* XCRemoteSwiftPackageReference "TimecodeKit" */;
+			productName = TimecodeKit;
+		};
+		C2C3F42C2DB4EAC5000F8AC1 /* TimecodeKitAV */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C2C3F4292DB4EAC5000F8AC1 /* XCRemoteSwiftPackageReference "TimecodeKit" */;
+			productName = TimecodeKitAV;
+		};
+		C2C3F42E2DB4EAC5000F8AC1 /* TimecodeKitCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C2C3F4292DB4EAC5000F8AC1 /* XCRemoteSwiftPackageReference "TimecodeKit" */;
+			productName = TimecodeKitCore;
+		};
+		C2C3F4302DB4EAC5000F8AC1 /* TimecodeKitUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C2C3F4292DB4EAC5000F8AC1 /* XCRemoteSwiftPackageReference "TimecodeKit" */;
+			productName = TimecodeKitUI;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = C2C3F3BB2DB3C28B000F8AC1 /* Project object */;
 }

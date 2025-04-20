@@ -1,10 +1,3 @@
-//
-//  LiveStageApp.swift
-//  LiveStage
-//
-//  Created by Samuel Luggeri on 19/04/25.
-//
-
 import SwiftUI
 
 @main

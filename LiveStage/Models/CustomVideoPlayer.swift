@@ -4,8 +4,6 @@
 //
 //  Created by Samuel Luggeri on 20/04/25.
 //
-
-
 import SwiftUI
 import AVKit
 
@@ -16,7 +14,8 @@ struct CustomVideoPlayer: NSViewRepresentable {
     func makeNSView(context: Context) -> AVPlayerView {
         let playerView = AVPlayerView()
         playerView.player = player
-        // Disabilita i controlli impostando lo stile a .none
+
+        // Disabilita i controlli
         playerView.controlsStyle = .none
         return playerView
     }
