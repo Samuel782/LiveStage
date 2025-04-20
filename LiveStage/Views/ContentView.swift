@@ -47,7 +47,7 @@ struct ContentView: View {
             
             // CueList
             List(cueList){
-                Text($0.title)
+                CueListRow(cue: $0)
             }
             
             // Pulsante per aprire la Clean View

@@ -14,7 +14,5 @@ struct CleanView: View {
     var body: some View {
         CustomVideoPlayer(player: playerModel.player)
             .edgesIgnoringSafeArea(.all)
-        
-    
     }
 }

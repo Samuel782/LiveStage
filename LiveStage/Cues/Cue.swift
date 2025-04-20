@@ -6,20 +6,28 @@
 //
 
 import Foundation
+import SwiftUI
 
-class Cue: Identifiable {
-    
+class Cue: Identifiable, ObservableObject {
     var id = UUID()
-    var title: String
-    var notes: String?
+    @Published var title: String
+    @Published var notes: String?
     // var startTimecode: Timecode
-    
+
     init(title: String, notes: String? = nil) {
         self.title = title
         self.notes = notes
     }
 
-    func setTitle(title: String){
+    func setTitle(title: String) {
         self.title = title
     }
+
+    func cueView() -> some View {
+        VStack {
+        }
+        .padding()
+        .background(RoundedRectangle(cornerRadius: 10).strokeBorder())
+    }
+
 }
