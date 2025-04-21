@@ -8,26 +8,10 @@
 import Foundation
 import SwiftUI
 
-class Cue: Identifiable, ObservableObject {
-    var id = UUID()
-    @Published var title: String
-    @Published var notes: String?
-    // var startTimecode: Timecode
+protocol Cue: Identifiable, ObservableObject {
+    var id: UUID { get }
+    var title: String { get set }
+    var notes: String? { get set }
 
-    init(title: String, notes: String? = nil) {
-        self.title = title
-        self.notes = notes
-    }
-
-    func setTitle(title: String) {
-        self.title = title
-    }
-
-    func cueView() -> some View {
-        VStack {
-        }
-        .padding()
-        .background(RoundedRectangle(cornerRadius: 10).strokeBorder())
-    }
-
+    @ViewBuilder func cueView() -> any View
 }

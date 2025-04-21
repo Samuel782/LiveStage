@@ -60,7 +60,9 @@ struct ContentView: View {
 
     }
     
-
+    
+    
+    // use NSScreen for clean View
     func createCleanWindow(with playerModel: PlayerModel) {
         // Configura la Clean View e inseriscila in un NSHostingController
         let cleanView = CleanView().environmentObject(playerModel)

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C282D1C72DB6341400CF4FCB /* Notes.md in Resources */ = {isa = PBXBuildFile; fileRef = C282D1C62DB6341400CF4FCB /* Notes.md */; };
 		C2C3F42B2DB4EAC5000F8AC1 /* TimecodeKit in Frameworks */ = {isa = PBXBuildFile; productRef = C2C3F42A2DB4EAC5000F8AC1 /* TimecodeKit */; };
 		C2C3F42D2DB4EAC5000F8AC1 /* TimecodeKitAV in Frameworks */ = {isa = PBXBuildFile; productRef = C2C3F42C2DB4EAC5000F8AC1 /* TimecodeKitAV */; };
 		C2C3F42F2DB4EAC5000F8AC1 /* TimecodeKitCore in Frameworks */ = {isa = PBXBuildFile; productRef = C2C3F42E2DB4EAC5000F8AC1 /* TimecodeKitCore */; };
@@ -32,6 +33,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		C282D1C62DB6341400CF4FCB /* Notes.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = Notes.md; sourceTree = "<group>"; };
 		C2C3F3C32DB3C28B000F8AC1 /* LiveStage.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LiveStage.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2C3F3D12DB3C28D000F8AC1 /* LiveStageTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LiveStageTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2C3F3DB2DB3C28D000F8AC1 /* LiveStageUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LiveStageUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -88,6 +90,7 @@
 		C2C3F3BA2DB3C28B000F8AC1 = {
 			isa = PBXGroup;
 			children = (
+				C282D1C62DB6341400CF4FCB /* Notes.md */,
 				C2C3F4382DB4F63C000F8AC1 /* README.md */,
 				C2C3F3C52DB3C28B000F8AC1 /* LiveStage */,
 				C2C3F3D42DB3C28D000F8AC1 /* LiveStageTests */,
@@ -234,6 +237,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				C2C3F4392DB4F63C000F8AC1 /* README.md in Resources */,
+				C282D1C72DB6341400CF4FCB /* Notes.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

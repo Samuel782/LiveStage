@@ -1,4 +1,12 @@
-# LiveStage – Roadmap
+# LiveStage 
+
+![Banner](Banner.png)
+
+## 📝 Daily Updates
+
+### 21-04-2025
+    - Refactored Cue parent class into a protocol.
+    - Added [Notes](Notes.md)
 
 ## Core Functionality (TO DO)
 - **Cue System**
