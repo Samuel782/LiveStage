@@ -8,8 +8,8 @@
   - Refactored Cue parent class into a protocol.
 ### 24-04-2025
   - Added AnyCue: a type-erased class that wraps any instance conforming to the Cue protocol.
-
-
+	-	Added cueDuration to the Cue protocol
+	  -	In VideoCue, it is calculated based on the video file length
 
 ## Core Functionality (TO DO)
 - **Cue System**
@@ -78,6 +78,10 @@
   - Built-in audio mixer with **VST plugin support** [❌]
     - [DaisySP](https://github.com/electro-smith/DaisySP)
     - [VST3 SDK](https://www.steinberg.net/developers/)
+
+## Requirements 
+    - OS: MacOS 13+
+
 
 ## END USER LICENSE AGREEMENT (EULA)
 

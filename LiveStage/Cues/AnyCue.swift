@@ -15,6 +15,8 @@ class AnyCue: ObservableObject, Cue {
     private let _notes: () -> String?
     private let _setNotes: (String?) -> Void
     private let _cueView: () -> AnyView
+    private let _cueDuration: () -> Double
+    private let _setCueDuration: (Double) -> Void
 
     var id: UUID { _id() }
     var title: String {
@@ -25,6 +27,10 @@ class AnyCue: ObservableObject, Cue {
         get { _notes() }
         set { _setNotes(newValue) }
     }
+    var cueDuration: Double{
+        get { _cueDuration() }
+        set { _setCueDuration(newValue)}
+    }
 
     init<T: Cue>(_ base: T) {
         _id = { base.id }
@@ -33,6 +39,8 @@ class AnyCue: ObservableObject, Cue {
         _notes = { base.notes }
         _setNotes = { base.notes = $0 }
         _cueView = { base.cueView() }
+        _cueDuration = { base.cueDuration }
+        _setCueDuration = { base.cueDuration = $0}
     }
 
     func cueView() -> AnyView {
