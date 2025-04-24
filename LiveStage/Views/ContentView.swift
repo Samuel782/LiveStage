@@ -15,7 +15,7 @@ struct ContentView: View {
     @StateObject var playerModel = PlayerModel()
     @StateObject var timecode = TimecodeModel()
 
-    @State var cueList: [Cue] = []
+    @State var cueList: [AnyCue] = []
     
     var body: some View {
         VStack {
@@ -99,7 +99,7 @@ struct ContentView: View {
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
             //LoadFile
-            cueList.append(VideoCue(player: AVPlayer(url: url), title: url.absoluteString))
+            cueList.append(AnyCue(VideoCue(id: UUID(), title: url.absoluteString, player: AVPlayer(url: url))))
         
             playerModel.playVideo(url: url)
         }

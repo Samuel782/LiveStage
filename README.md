@@ -1,11 +1,14 @@
 # LiveStage 
 
-![Banner](Banner.png)
+![Banner](Media/Banner.png)
 
 ## 📝 Daily Updates
 
 ### 21-04-2025
   - Refactored Cue parent class into a protocol.
+### 24-04-2025
+  - Added AnyCue: a type-erased class that wraps any instance conforming to the Cue protocol.
+
 
 
 ## Core Functionality (TO DO)

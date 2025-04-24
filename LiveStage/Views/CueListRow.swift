@@ -5,9 +5,8 @@
 //  Created by Samuel Luggeri on 20/04/25.
 //
 import SwiftUI
-
 struct CueListRow: View {
-    @ObservedObject var cue: Cue
+    @ObservedObject var cue: AnyCue
 
     var body: some View {
         HStack {
@@ -21,11 +20,11 @@ struct CueListRow: View {
 
         }
         .onTapGesture {
-            openCuewWindow(cue: cue)
+            openCueWindow(cue: cue)
         }
     }
 
-    func openCuewWindow(cue: Cue) {
+    func openCueWindow(cue: AnyCue) {
         let newWindow = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 500),
             styleMask: [.titled, .closable, .resizable],
@@ -35,7 +34,7 @@ struct CueListRow: View {
         newWindow.center()
         newWindow.setFrameAutosaveName("Edit Cue")
         newWindow.isReleasedWhenClosed = false
-        newWindow.contentView = NSHostingView(rootView: EditCueView(cue: cue))
+        newWindow.contentView = NSHostingView(rootView: EditCueView(cue: .constant(cue)))
         newWindow.makeKeyAndOrderFront(nil)
     }
 

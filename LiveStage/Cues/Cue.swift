@@ -12,6 +12,6 @@ protocol Cue: Identifiable, ObservableObject {
     var id: UUID { get }
     var title: String { get set }
     var notes: String? { get set }
-
-    @ViewBuilder func cueView() -> any View
+    
+    @ViewBuilder func cueView() -> AnyView
 }
