@@ -78,3 +78,36 @@
   - Built-in audio mixer with **VST plugin support** [❌]
     - [DaisySP](https://github.com/electro-smith/DaisySP)
     - [VST3 SDK](https://www.steinberg.net/developers/)
+
+## END USER LICENSE AGREEMENT (EULA)
+
+*IMPORTANT* – READ CAREFULLY: This End-User License Agreement ("Agreement") is a legal agreement between you (either an individual or a single entity) and Samuel Luggeri, the author and owner of the software product "LiveStage" ("Software").
+
+By installing, copying, or otherwise using the Software, you agree to be bound by the terms of this Agreement.
+
+1. LICENSE GRANT
+You are granted a non-exclusive, non-transferable, revocable license to install and use one copy of the Software on a single device, solely for personal or professional use, according to the terms herein.
+
+2. RESTRICTIONS
+You may not:
+- Modify, adapt, translate, reverse engineer, decompile, or disassemble the Software.
+- Redistribute, resell, rent, lease, sublicense, or otherwise transfer the Software to any third party.
+- Share your license key or access credentials with others.
+- Use the Software in any manner that violates applicable law.
+
+3. COPYRIGHT
+The Software is protected by copyright laws and international treaties. All title, ownership, and intellectual property rights in and to the Software remain with the author, Samuel Luggeri.
+
+4. NO WARRANTY
+This Software is provided "AS IS", without warranty of any kind, express or implied. The author does not guarantee that the Software will meet your requirements or operate without interruption or errors.
+
+5. LIMITATION OF LIABILITY
+In no event shall the author be liable for any damages arising out of the use or inability to use the Software, even if advised of the possibility of such damages.
+
+6. TERMINATION
+This Agreement is effective until terminated. You may terminate it at any time by deleting the Software and all copies. This Agreement will terminate automatically if you fail to comply with any term or condition.
+
+7. GOVERNING LAW
+This Agreement shall be governed by the laws of Italy, without regard to conflict of laws principles.
+
+© 2025 Samuel Luggeri. All rights reserved.
