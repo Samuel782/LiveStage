@@ -1,6 +1,6 @@
+import AVFoundation
 import AVKit
 import SwiftUI
-import AVFoundation
 //
 //  VideoCue.swift
 //  LiveStage
@@ -8,13 +8,14 @@ import AVFoundation
 //  Created by Samuel Luggeri on 20/04/25.
 //
 
-
 class VideoCue: Cue {
+
     // Cue Protocol
     var id: UUID
     var title: String
     var notes: String?
     var cueDuration: Double
+    var isSelected: Bool
 
     public let player: AVPlayer
 
@@ -24,15 +25,15 @@ class VideoCue: Cue {
         self.notes = notes
         self.player = player
         self.cueDuration = 0.0
+        self.isSelected = false
 
         guard let asset = player.currentItem?.asset else {
             return
         }
-        
+
         loadDuration(from: asset)
-        
     }
-    
+
     private func loadDuration(from asset: AVAsset) {
         Task {
             do {
@@ -48,13 +49,12 @@ class VideoCue: Cue {
                     print("CMTime non valido.")
                 }
             } catch {
-                print("Errore nel caricamento della durata: \(error.localizedDescription)")
+                print(
+                    "Errore nel caricamento della durata: \(error.localizedDescription)"
+                )
             }
         }
     }
-
-
-    
 
     func cueView() -> AnyView {
         AnyView(

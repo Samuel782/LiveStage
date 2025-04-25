@@ -16,7 +16,7 @@ struct ContentView: View {
     @StateObject var timecode = TimecodeModel()
 
     @State var cueList: [AnyCue] = []
-    
+
     var body: some View {
         VStack {
             TimecodeText(timecode.currentTimecode)
@@ -30,7 +30,7 @@ struct ContentView: View {
             HStack {
                 Button("Play") {
                     playerModel.player.play()
-                    
+
                     timecode.play()
                 }
                 .padding()
@@ -44,12 +44,20 @@ struct ContentView: View {
                     openFile()
                 }.padding()
             }
-            
+
             // CueList
-            List(cueList){
+            List(cueList) {
                 CueListRow(cue: $0)
             }
-            
+
+            Button("Play Selected") {
+                if let selectedCue = cueList.first(where: { $0.isSelected }) {
+                    let videoCue = selectedCue.cast(VideoCue.self)
+                    playerModel.player = videoCue!.player
+                    playerModel.player.play()
+                }
+            }.padding()
+
             // Pulsante per aprire la Clean View
             Button("Mostra Clean View") {
                 createCleanWindow(with: playerModel)
@@ -59,9 +67,7 @@ struct ContentView: View {
         .environmentObject(playerModel)
 
     }
-    
-    
-    
+
     // use NSScreen for clean View
     func createCleanWindow(with playerModel: PlayerModel) {
         // Configura la Clean View e inseriscila in un NSHostingController
@@ -99,8 +105,16 @@ struct ContentView: View {
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
             //LoadFile
-            cueList.append(AnyCue(VideoCue(id: UUID(), title: url.absoluteString, player: AVPlayer(url: url))))
-        
+            cueList.append(
+                AnyCue(
+                    VideoCue(
+                        id: UUID(),
+                        title: url.absoluteString,
+                        player: AVPlayer(url: url)
+                    )
+                )
+            )
+
             playerModel.playVideo(url: url)
         }
     }

@@ -10,6 +10,10 @@
   - Added AnyCue: a type-erased class that wraps any instance conforming to the Cue protocol.
 	-	Added cueDuration to the Cue protocol
 	  -	In VideoCue, it is calculated based on the video file length
+### 25-04-2025
+  - Added isSelected to the Cue protocol to represent whether the cue is selected in the view.
+ 	-	Added an icon to CueListRow (to be refined)
+	-	Improved cue duration display (now formatted as M:SS)
 
 ## Core Functionality (TO DO)
 - **Cue System**
@@ -45,12 +49,12 @@
       - [AVAudioPlayer](https://developer.apple.com/documentation/avfaudio/avaudioplayer)
     - Websites [❌]
         - With controls for highliting, zooming in realtime from control window
-        -  [WKWebView Tips](https://nshipster.com/wkwebview/)
-        -  Realtime Highlighting → via DOM Injection (JavaScript bridge)
+        - [WKWebView Tips](https://nshipster.com/wkwebview/)
+        - Realtime Highlighting → via DOM Injection (JavaScript bridge)
     - PDF documents  [❌]
         - With controls for highliting, zooming in realtime from control window 
     - LRC files (synchronized lyrics)  [❌]
-      -[LRC-Parser example](https://github.com/anhthii/lrc-parser)
+      - [LRC-Parser example](https://github.com/anhthii/lrc-parser)
     - Webcam / external video inputs [❌]
       - [AVCaptureSession](https://developer.apple.com/documentation/avfoundation/avcapturesession)
 
@@ -69,7 +73,7 @@
     - [DistroAV (NDI sender exmple)](https://github.com/DistroAV/DistroAV)
   - Remote control via iPad, iPhone, or other Macs [❌]
     - [Bonjour / MultipeerConnectivity](https://developer.apple.com/documentation/multipeerconnectivity)
-    - 
+
 
 - **Advanced Audio Features**  
   - Multi-output audio routing  [❌]

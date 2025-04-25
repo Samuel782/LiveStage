@@ -1,3 +1,4 @@
+import AVFoundation
 //
 //  CueListRow.swift
 //  LiveStage
@@ -5,33 +6,33 @@
 //  Created by Samuel Luggeri on 20/04/25.
 //
 import SwiftUI
-import AVFoundation
 
 struct CueListRow: View {
     @ObservedObject var cue: AnyCue
 
-    @State private var isSelected: Bool = false
-
     var body: some View {
         HStack {
-            Text(cue.title)
-
-            Text("[" + (cue.notes ?? " ") + "]")
-            Spacer()
-            
-            
-            
-            Text("" + String(cue.cueDuration))
-
-        }.padding()
-            .background(isSelected ? Color.accentColor : .clear)
-            .cornerRadius(5)
-            .onTapGesture {
-                if isSelected == true {
-                    openCueWindow(cue: cue)
-                }
-                isSelected = true
+            if cue.cast(VideoCue.self) != nil{
+                Image(systemName: "film")
             }
+            
+            Text(cue.title)
+            Spacer()
+
+            let totalSeconds = Int(cue.cueDuration)
+            let minutes = totalSeconds / 60
+            let seconds = totalSeconds % 60
+            Text(String(format: "%d:%02d", minutes, seconds))
+        }
+        .padding()
+        .background(cue.isSelected ? Color.accentColor : .clear)
+        .cornerRadius(5)
+        .onTapGesture {
+            if cue.isSelected {
+                openCueWindow(cue: cue)
+            }
+            cue.isSelected.toggle()
+        }
     }
 
     func openCueWindow(cue: AnyCue) {
