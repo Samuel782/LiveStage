@@ -14,6 +14,14 @@
   - Added isSelected to the Cue protocol to represent whether the cue is selected in the view.
  	-	Added an icon to CueListRow (to be refined)
 	-	Improved cue duration display (now formatted as M:SS)
+### 27-04-2025
+  - (FIX) Fixed double tap to open the cue edit window.
+  - (ADD) Added support for importing multiple files at once.
+  - (ADD) Moved CueList to a dedicated file.
+  - (ADD) Cues in the list are now movable.
+  - (FIX) Cues in the list can now be selected one at a time only.
+  - (FIX) Only one editCue window can be open at a time.
+  - (FIX) Videos now pause when a new video is played.
 
 ## Core Functionality (TO DO)
 - **Cue System**

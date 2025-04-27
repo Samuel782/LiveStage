@@ -1,21 +1,23 @@
 import AVFoundation
+import SwiftUI
+
 //
 //  CueListRow.swift
 //  LiveStage
 //
 //  Created by Samuel Luggeri on 20/04/25.
 //
-import SwiftUI
 
 struct CueListRow: View {
     @ObservedObject var cue: AnyCue
+    @State private var openWindow: NSWindow? = nil
 
     var body: some View {
         HStack {
-            if cue.cast(VideoCue.self) != nil{
+            if cue.cast(VideoCue.self) != nil {
                 Image(systemName: "film")
             }
-            
+
             Text(cue.title)
             Spacer()
 
@@ -27,28 +29,31 @@ struct CueListRow: View {
         .padding()
         .background(cue.isSelected ? Color.accentColor : .clear)
         .cornerRadius(5)
-        .onTapGesture {
-            if cue.isSelected {
-                openCueWindow(cue: cue)
-            }
-            cue.isSelected.toggle()
+        .onTapGesture(count: 2) {  //Double click to open window
+            openCueWindow(cue: cue)
         }
+
     }
 
     func openCueWindow(cue: AnyCue) {
-        let newWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 500),
-            styleMask: [.titled, .closable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        newWindow.center()
-        newWindow.setFrameAutosaveName("Edit Cue")
-        newWindow.isReleasedWhenClosed = false
-        newWindow.contentView = NSHostingView(
-            rootView: EditCueView(cue: .constant(cue))
-        )
-        newWindow.makeKeyAndOrderFront(nil)
+        if let existingWindow = openWindow {
+            existingWindow.makeKeyAndOrderFront(nil)
+        } else {
+            let newWindow = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 500, height: 500),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            newWindow.center()
+            newWindow.setFrameAutosaveName("Edit Cue")
+            newWindow.isReleasedWhenClosed = false
+            newWindow.contentView = NSHostingView(
+                rootView: EditCueView(cue: .constant(cue))
+            )
+            newWindow.makeKeyAndOrderFront(nil)
+            self.openWindow = newWindow
+        }
     }
 
 }

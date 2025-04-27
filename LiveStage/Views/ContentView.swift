@@ -28,12 +28,14 @@ struct ContentView: View {
 
             // Controlli di riproduzione
             HStack {
-                Button("Play") {
-                    playerModel.player.play()
-
-                    timecode.play()
-                }
-                .padding()
+                Button("Play Selected") {
+                    if let selectedCue = cueList.first(where: { $0.isSelected }) {
+                        playerModel.player.pause()
+                        let videoCue = selectedCue.cast(VideoCue.self)
+                        playerModel.player = videoCue!.player
+                        playerModel.player.play()
+                    }
+                }.padding()
 
                 Button("Pause") {
                     playerModel.player.pause()
@@ -46,18 +48,8 @@ struct ContentView: View {
             }
 
             // CueList
-            List(cueList) {
-                CueListRow(cue: $0)
-            }
-
-            Button("Play Selected") {
-                if let selectedCue = cueList.first(where: { $0.isSelected }) {
-                    let videoCue = selectedCue.cast(VideoCue.self)
-                    playerModel.player = videoCue!.player
-                    playerModel.player.play()
-                }
-            }.padding()
-
+            CueListView(cueList: $cueList)
+            
             // Pulsante per aprire la Clean View
             Button("Mostra Clean View") {
                 createCleanWindow(with: playerModel)
@@ -85,7 +77,6 @@ struct ContentView: View {
             backing: .buffered,
             defer: false
         )
-
         // Imposta una dimensione minima per la finestra
         window.minSize = NSSize(width: 800, height: 600)
 
@@ -102,20 +93,20 @@ struct ContentView: View {
     func openFile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.movie]
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url {
-            //LoadFile
-            cueList.append(
-                AnyCue(
-                    VideoCue(
-                        id: UUID(),
-                        title: url.absoluteString,
-                        player: AVPlayer(url: url)
+        panel.allowsMultipleSelection = true
+        if panel.runModal() == .OK {
+            for url in panel.urls {
+                cueList.append(
+                    AnyCue(
+                        VideoCue(
+                            id: UUID(),
+                            title: url.absoluteString,
+                            player: AVPlayer(url: url)
+                        )
                     )
                 )
-            )
-
-            playerModel.playVideo(url: url)
+            }
+            //playerModel.playVideo(url: url)
         }
     }
 
