@@ -42,6 +42,7 @@
     - [LTC Timecode Wiki](https://en.wikipedia.org/wiki/Linear_timecode)
     - [MTC Timecode Wiki](https://en.wikipedia.org/wiki/MIDI_timecode)
       - [implementation](https://github.com/Figure53/TimecodeDisplay/tree/master)
+  *Update 27/04/25: Clarification* — Timecode input acts as a trigger for cues. _See Cue Trigger chapter for more details._
 
 - **Media Support Enhancements**  
   - Add support for additional media types:  
@@ -74,6 +75,26 @@
   - Remote control via iPad, iPhone, or other Macs [❌]
     - [Bonjour / MultipeerConnectivity](https://developer.apple.com/documentation/multipeerconnectivity)
 
+- **Cue Trigger**  
+  Cues can be triggered in various ways:
+  
+  - 🎛️ **Manually**  
+    Triggered by the user via the software interface.
+
+  - 🎹 **MIDI**  
+    Triggered by receiving specific MIDI messages such as Note On, Control Change, or Program Change.
+
+  - 🌐 **OSC**  
+    Triggered by Open Sound Control (OSC) messages sent from compatible devices or software.
+
+  - ⏱️ **Timecode**  
+    Triggered automatically based on incoming timecode (LTC/MTC/Internal) signals.
+
+  - 🎧 **Audio Trigger**  
+    Triggered by detecting audio events or thresholds from an input signal.
+
+  - 🍏 **Remote Control**  
+    Triggered using connected remote devices like iPad, iPhone, or other Macs.
 
 - **Advanced Audio Features**  
   - Multi-output audio routing  [❌]
