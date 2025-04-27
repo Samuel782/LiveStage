@@ -100,7 +100,7 @@ struct ContentView: View {
                     AnyCue(
                         VideoCue(
                             id: UUID(),
-                            title: url.absoluteString,
+                            title: url.lastPathComponent,
                             player: AVPlayer(url: url)
                         )
                     )

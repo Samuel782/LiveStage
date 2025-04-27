@@ -6,5 +6,12 @@ struct LiveStageApp: App {
         WindowGroup {
             ContentView()
         }
+        #if os(macOS)
+            Settings {
+                SettingView()
+            }
+            .windowResizability(.contentSize)
+            .windowStyle(.hiddenTitleBar)
+        #endif
     }
 }
