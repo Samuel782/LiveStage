@@ -23,7 +23,7 @@
   - (FIX) Only one editCue window can be open at a time.
   - (FIX) Videos now pause when a new video is played.
   - (ADD) Settings window added.
-	-	(FIX) automatic cue name now only includes the file name, not the entire path.
+  - (FIX) automatic cue name now only includes the file name, not the entire path.
 
 ## Core Functionality (TO DO)
 - **Cue System**
