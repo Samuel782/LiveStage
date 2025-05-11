@@ -29,6 +29,7 @@
   - (FIX) Corrected video output settings ( currently non-functional )
   - (ADD) Cues are now movable; added an index and an icon on the left to indicate move functionality.
   - (ADD) Cue edit is now displayed in a card instead of a window.
+  - Known issues: VideoCue duration not working
 
 
 ## Core Functionality (TO DO)
