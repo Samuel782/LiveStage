@@ -17,8 +17,9 @@ class AnyCue: ObservableObject, Identifiable {
     // Published properties for dynamic changes
     @Published var title: String
     @Published var isSelected: Bool
+    @Published var cueDuration: Double
+    
     var notes: String?
-    var cueDuration: Double
     var id: UUID { base.id }
     
     init<T: Cue>(_ base: T) {
@@ -27,6 +28,7 @@ class AnyCue: ObservableObject, Identifiable {
         self.isSelected = base.isSelected
         self.notes = base.notes
         self.cueDuration = base.cueDuration
+        
     }
 
     // Function to get the view associated with this cue

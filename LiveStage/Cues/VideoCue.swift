@@ -1,20 +1,14 @@
 import AVFoundation
 import AVKit
 import SwiftUI
-//
-//  VideoCue.swift
-//  LiveStage
-//
-//  Created by Samuel Luggeri on 20/04/25.
-//
 
-class VideoCue: Cue {
+class VideoCue: Cue, ObservableObject {
 
-    // Cue Protocol
     var id: UUID
     var title: String
     var notes: String?
-    var cueDuration: Double
+
+    @Published var cueDuration: Double
     var isSelected: Bool
 
     public let player: AVPlayer
@@ -24,13 +18,12 @@ class VideoCue: Cue {
         self.title = title
         self.notes = notes
         self.player = player
-        self.cueDuration = 0.0
         self.isSelected = false
+        self.cueDuration = 0.0
 
         guard let asset = player.currentItem?.asset else {
             return
         }
-
         loadDuration(from: asset)
     }
 
@@ -41,26 +34,40 @@ class VideoCue: Cue {
                 if duration.isValid {
                     let durationInSeconds = CMTimeGetSeconds(duration)
                     if durationInSeconds.isFinite {
-                        self.cueDuration = durationInSeconds
+                        DispatchQueue.main.async {
+                            self.cueDuration = durationInSeconds
+                            print("durata valida \(self.cueDuration)")
+                        }
                     } else {
                         print("Durata non valida.")
+                        DispatchQueue.main.async {
+                            self.cueDuration = 0.0
+                        }
                     }
                 } else {
                     print("CMTime non valido.")
+                    DispatchQueue.main.async {
+                        self.cueDuration = 0.0
+                    }
                 }
             } catch {
-                print(
-                    "Errore nel caricamento della durata: \(error.localizedDescription)"
-                )
+                print("Errore nel caricamento della durata: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    self.cueDuration = 0.0
+                }
             }
         }
     }
 
     func cueView() -> AnyView {
         AnyView(
-            Text("Preview del cue: \(title)")
-                .padding()
+            VStack {
+                Text("Preview del cue: \(title)")
+                    .padding()
+
+                Text("Durata: \(String(format: "%.2f", cueDuration)) s")
+                    .padding()
+            }
         )
     }
-
 }

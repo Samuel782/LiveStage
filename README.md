@@ -24,10 +24,11 @@
   - (FIX) Videos now pause when a new video is played.
   - (ADD) Settings window added.
   - (FIX) automatic cue name now only includes the file name, not the entire path.
-
 ### 11-05-2025
-- (FIX) Improved reactivity in CueListView for better performance and UI updates
-- (FIX) Corrected video output settings ( currently non-functional )
+  - (FIX) Improved reactivity in CueListView for better performance and UI updates
+  - (FIX) Corrected video output settings ( currently non-functional )
+  - (ADD) Cues are now movable; added an index and an icon on the left to indicate move functionality.
+  - (ADD) Cue edit is now displayed in a card instead of a window.
 
 
 ## Core Functionality (TO DO)

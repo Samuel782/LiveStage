@@ -34,7 +34,7 @@ struct ContentView: View {
 
                     // Controlli di riproduzione
                     HStack {
-                        /*
+                        
                         Button("Play Selected") {
                             if let selectedCue = cueList.first(where: {
                                 $0.isSelected
@@ -45,7 +45,7 @@ struct ContentView: View {
                                 playerModel.player.play()
                             }
                         }.padding()
-                         */
+                        
                         Button("Pause") {
                             playerModel.player.pause()
                             timecode.pause()
@@ -117,6 +117,7 @@ struct ContentView: View {
             }
             //playerModel.playVideo(url: url)
         }
+        
     }
 
 }
