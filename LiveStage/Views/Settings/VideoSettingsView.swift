@@ -6,18 +6,49 @@
 //
 import SwiftUI
 
-struct VideoSettingsView: View {
-
-    var body: some View {
-        Text("--- Video Setting ---")
-        List(NSScreen.screens, id: \.self) { screen in
-            VStack(alignment: .leading) {
-                Text("Screen: \(screen.localizedName)")
-                Text("Frame: \(screen.frame)")
-                    .font(.footnote)
-                    .foregroundColor(.gray)
-            }
-        }
+extension NSScreen {
+    var screenID: NSNumber? {
+        deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
     }
+}
+
+struct VideoSettingsView: View {
+    
+     @State private var screens: [NSScreen] = NSScreen.screens
+     @State private var monitors: [FullScreenWindow] = []
+
+     var body: some View {
+         VStack(alignment: .leading) {
+             Text("Setup outputs")
+                 .font(.headline)
+
+             Button(action: newMonitor) {
+                 Label("New Output", systemImage: "display.2")
+             }
+             .padding(.vertical)
+
+             List($monitors) { $monitor in
+                 HStack {
+                     Text(monitor.name)
+                     Spacer()
+                     Picker("", selection: $monitor.screen) {
+                         // Show monitor only if isn't in use
+                         ForEach(screens.filter { screen in
+                             !monitors.contains(where: { $0.id != monitor.id && $0.screen == screen }) || monitor.screen == screen
+                         }, id: \.screenID) { screen in
+                             Text(screen.localizedName)
+                                 .tag(screen as NSScreen?)
+                         }
+                     }
+                     .pickerStyle(.menu)
+                 }
+             }
+         }
+         .padding()
+     }
+
+     func newMonitor() {
+         monitors.append(FullScreenWindow(id: UUID(), name: "Output \(monitors.count + 1)", screen: nil))
+     }
 
 }

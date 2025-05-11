@@ -6,29 +6,35 @@
 //
 
 import SwiftUI
-
 struct CueListView: View {
     @Binding var cueList: [AnyCue]
+    @State private var openedCue: AnyCue?
 
     var body: some View {
         List {
-            ForEach(cueList.indices, id: \.self) { index in
-                CueListRow(cue: cueList[index])
+            ForEach(cueList) { cue in
+                CueListRow(
+                    cue: cue,
+                    onDoubleTap: {
+                        openedCue = cue
+                    }
+                )
+                .contentShape(Rectangle())
                 .onTapGesture {
-                    cueList.indices.forEach { cueList[$0].isSelected = false }
-                    cueList[index].isSelected.toggle()
+                    select(cue: cue)
                 }
             }
-            .onMove { source, destination in
-                moveItem(from: source, to: destination)
-            }
         }
-        .padding()
-        .frame(maxWidth: .infinity)
-        .cornerRadius(10)
-
+        .sheet(item: $openedCue) { cue in
+            EditCueView(cue: .constant(cue))
+                .frame(width: 500, height: 500)
+        }
     }
-    func moveItem(from source: IndexSet, to destination: Int) {
-        cueList.move(fromOffsets: source, toOffset: destination)
+
+    private func select(cue: AnyCue) {
+        for otherCue in cueList {
+            otherCue.isSelected = (otherCue.id == cue.id)
+            otherCue.updateBaseValues()
+        }
     }
 }

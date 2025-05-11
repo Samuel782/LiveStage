@@ -19,42 +19,51 @@ struct ContentView: View {
 
     var body: some View {
         VStack {
-            TimecodeText(timecode.currentTimecode)
 
-            // Visualizzazione del video con controlli visibili
-            VideoPlayer(player: playerModel.player)
-                .frame(height: 300)
-                .padding()
-
-            // Controlli di riproduzione
             HStack {
-                Button("Play Selected") {
-                    if let selectedCue = cueList.first(where: { $0.isSelected }) {
-                        playerModel.player.pause()
-                        let videoCue = selectedCue.cast(VideoCue.self)
-                        playerModel.player = videoCue!.player
-                        playerModel.player.play()
+                // CueList
+                CueListView(cueList: $cueList)
+
+                VStack {
+                    // Visualizzazione del video con controlli visibili
+                    VideoPlayer(player: playerModel.player)
+                        .frame(height: 300)
+                        .padding()
+
+                    TimecodeText(timecode.currentTimecode)
+
+                    // Controlli di riproduzione
+                    HStack {
+                        /*
+                        Button("Play Selected") {
+                            if let selectedCue = cueList.first(where: {
+                                $0.isSelected
+                            }) {
+                                playerModel.player.pause()
+                                let videoCue = selectedCue.cast(VideoCue.self)
+                                playerModel.player = videoCue!.player
+                                playerModel.player.play()
+                            }
+                        }.padding()
+                         */
+                        Button("Pause") {
+                            playerModel.player.pause()
+                            timecode.pause()
+                        }
+                        .padding()
+                        Button("OpenFile") {
+                            openFile()
+                        }.padding()
+
+                        // Pulsante per aprire una finestra Clean View -  Temporaneo
+                        Button("Mostra Clean View") {
+                            createCleanWindow(with: playerModel)
+                        }
+                        .padding()
                     }
-                }.padding()
-
-                Button("Pause") {
-                    playerModel.player.pause()
-                    timecode.pause()
                 }
-                .padding()
-                Button("OpenFile") {
-                    openFile()
-                }.padding()
             }
 
-            // CueList
-            CueListView(cueList: $cueList)
-            
-            // Pulsante per aprire la Clean View
-            Button("Mostra Clean View") {
-                createCleanWindow(with: playerModel)
-            }
-            .padding()
         }
         .environmentObject(playerModel)
 

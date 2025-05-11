@@ -23,7 +23,12 @@
   - (FIX) Only one editCue window can be open at a time.
   - (FIX) Videos now pause when a new video is played.
   - (ADD) Settings window added.
-	-	(FIX) automatic cue name now only includes the file name, not the entire path.
+  - (FIX) automatic cue name now only includes the file name, not the entire path.
+
+### 11-05-2025
+- (FIX) Improved reactivity in CueListView for better performance and UI updates
+- (FIX) Corrected video output settings ( currently non-functional )
+
 
 ## Core Functionality (TO DO)
 - **Cue System**

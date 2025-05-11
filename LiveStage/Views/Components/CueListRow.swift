@@ -1,4 +1,3 @@
-import AVFoundation
 import SwiftUI
 
 //
@@ -7,59 +6,30 @@ import SwiftUI
 //
 //  Created by Samuel Luggeri on 20/04/25.
 //
-
 struct CueListRow: View {
     @ObservedObject var cue: AnyCue
-    @State private var openWindow: NSWindow? = nil
+    var onDoubleTap: () -> Void
 
     var body: some View {
         HStack {
             if cue.cast(VideoCue.self) != nil {
                 Image(systemName: "film")
+                    .allowsHitTesting(false)
             }
 
             Text(cue.title)
+                .allowsHitTesting(false)
             Spacer()
 
             let totalSeconds = Int(cue.cueDuration)
             let minutes = totalSeconds / 60
             let seconds = totalSeconds % 60
             Text(String(format: "%d:%02d", minutes, seconds))
+                .allowsHitTesting(false)
         }
         .padding()
-        .background(cue.isSelected ? Color.accentColor : .clear)
+        .background(cue.isSelected ? Color.accentColor.opacity(0.5) : .clear)
         .cornerRadius(5)
-        .onTapGesture(count: 2) {  //Double click to open window
-            openCueWindow(cue: cue)
-        }
-
+        .onTapGesture(count: 2, perform: onDoubleTap)
     }
-
-    func openCueWindow(cue: AnyCue) {
-        if let existingWindow = openWindow {
-            existingWindow.makeKeyAndOrderFront(nil)
-        } else {
-            let newWindow = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 500, height: 500),
-                styleMask: [.titled, .closable, .resizable],
-                backing: .buffered,
-                defer: false
-            )
-            newWindow.center()
-            newWindow.setFrameAutosaveName("Edit Cue")
-            newWindow.isReleasedWhenClosed = false
-            newWindow.contentView = NSHostingView(
-                rootView: EditCueView(cue: .constant(cue))
-            )
-            newWindow.makeKeyAndOrderFront(nil)
-            self.openWindow = newWindow
-        }
-    }
-
 }
-
-/*
-#Preview {
-    CueListRow(cue: AnyCue(VideoCue(id: UUID(), title: "String", player: AVPlayer())))
-}
-*/
