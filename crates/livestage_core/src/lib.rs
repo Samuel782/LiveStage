@@ -25,6 +25,7 @@ pub mod cuelist;
 pub mod dmx_config;
 pub mod error;
 pub mod id;
+pub mod multiview;
 pub mod project;
 pub mod projection;
 pub mod routing;

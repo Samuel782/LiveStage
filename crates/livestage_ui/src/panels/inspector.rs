@@ -1,8 +1,8 @@
 //! Cue inspector: edits the selected cue (including timeline children).
 
-use super::widgets::{color_edit, opt_time_edit, time_edit};
+use super::widgets::{color_edit, opt_time_edit, scrub_bar, time_edit};
 use super::UiState;
-use crate::runtime::ShowRuntime;
+use crate::runtime::{ShowRuntime, SlideNav};
 use crate::theme;
 use egui::{ComboBox, DragValue, RichText, TextEdit, Ui};
 use livestage_core::action::*;
@@ -20,6 +20,10 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
     let stems: Vec<(StemId, String)> = rt.bundle.project.audio.stems.iter().map(|s| (s.id, s.name.clone())).collect();
     let assets: Vec<AssetRef> = rt.bundle.project.assets.iter().map(|a| a.path.clone()).collect();
     let next_child = rt.next_cue_number();
+    let playhead = rt.elapsed_of(id);
+    let root = rt.bundle.root().to_path_buf();
+    let mut seek_to: Option<ShowTime> = None;
+    let mut slide_nav: Option<SlideNav> = None;
     // Only timelines need project data while the cue is mutably borrowed.
     let is_timeline = rt.bundle.project.active_list().and_then(|l| l.find(id)).is_some_and(|c| matches!(c, AnyCue::Timeline(_)));
     let project_snapshot = is_timeline.then(|| rt.bundle.project.clone());
@@ -33,6 +37,25 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
         let state = cue.state();
         if state.is_active() {
             ui.colored_label(theme::standby(), "Running — edits apply on next GO");
+        }
+        // Live playhead: drag or click to scrub while the cue plays.
+        if let Some(elapsed) = playhead {
+            match cue.duration().filter(|d| !d.is_zero()) {
+                Some(d) => {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(elapsed.to_clock_string()).font(theme::clock_font(16.0)).color(theme::active()));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(RichText::new(format!("-{}", (d - elapsed).to_clock_string())).font(theme::clock_font(16.0)).color(theme::TEXT_DIM));
+                        });
+                    });
+                    seek_to = scrub_bar(ui, ("insp-scrub", id), elapsed, d, 22.0, theme::active());
+                    ui.label(RichText::new("Drag the playhead to seek, even while playing.").size(12.0).color(theme::TEXT_DIM));
+                }
+                None => {
+                    ui.label(RichText::new(format!("Running {}", elapsed.to_clock_string())).font(theme::clock_font(16.0)).color(theme::active()));
+                }
+            }
+            ui.add_space(4.0);
         }
         egui::Grid::new("hdr").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
             let h = cue.header_mut();
@@ -69,6 +92,7 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
             AnyCue::Timer(t) => timer(ui, t, &outputs),
             AnyCue::Dmx(d) => dmx(ui, d),
             AnyCue::Control(c) => control(ui, c),
+            AnyCue::Slides(sl) => slides(ui, sl, &outputs, &root, st, &mut slide_nav),
             AnyCue::Timeline(t) => match &project_snapshot {
                 Some(p) => timeline(ui, t, p, &next_child, st),
                 None => false,
@@ -82,6 +106,124 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
     if changed {
         rt.mark_changed();
     }
+    if let Some(t) = seek_to {
+        rt.seek_cue(id, t);
+    }
+    if let Some(nav) = slide_nav {
+        rt.slide_nav(Some(id), nav);
+    }
+}
+
+fn slides(
+    ui: &mut Ui,
+    s: &mut SlideCue,
+    outputs: &[(OutputId, String)],
+    root: &std::path::Path,
+    st: &mut UiState,
+    nav: &mut Option<SlideNav>,
+) -> bool {
+    let mut c = false;
+    let n = s.slide_count();
+    let running = s.header.runtime.state.is_active();
+    egui::Grid::new("slides").num_columns(2).show(ui, |ui| {
+        ui.label("Output");
+        c |= output_combo(ui, "sout", &mut s.output, outputs);
+        ui.end_row();
+        ui.label("Layer");
+        c |= ui.add(DragValue::new(&mut s.layer)).changed();
+        ui.end_row();
+        ui.label("Opacity");
+        c |= ui.add(egui::Slider::new(&mut s.opacity, 0.0..=1.0)).changed();
+        ui.end_row();
+        ui.label("Fade in / out");
+        ui.horizontal(|ui| {
+            c |= time_edit(ui, &mut s.fade_in);
+            c |= time_edit(ui, &mut s.fade_out);
+        });
+        ui.end_row();
+        ui.label("Slide transition");
+        c |= time_edit(ui, &mut s.transition);
+        ui.end_row();
+        ui.label("Start at slide");
+        let mut first = s.start_slide + 1;
+        if ui.add(DragValue::new(&mut first).range(1..=n.max(1))).changed() {
+            s.start_slide = first - 1;
+            c = true;
+        }
+        ui.end_row();
+    });
+    let source = s.deck.source.as_ref().map_or("—".to_string(), |a| a.file_name().to_string());
+    ui.label(RichText::new(format!("{n} slides · {}×{} · {source}", s.deck.size[0], s.deck.size[1])).color(theme::TEXT_DIM));
+    if n == 0 {
+        ui.label(RichText::new("Import a PDF or PowerPoint file (File ▸ Import, or drop it on the window).").color(theme::TEXT_DIM));
+        return c;
+    }
+    ui.separator();
+    if running {
+        ui.horizontal(|ui| {
+            if ui.add_enabled(s.current > 0, egui::Button::new(RichText::new("◀  Previous").size(15.0)).min_size(egui::vec2(120.0, 34.0))).clicked() {
+                *nav = Some(SlideNav::Previous);
+            }
+            ui.label(RichText::new(format!("{} / {n}", s.current + 1)).font(theme::clock_font(22.0)).color(theme::active()));
+            if ui.add_enabled(s.current + 1 < n, egui::Button::new(RichText::new("Next  ▶").size(15.0)).min_size(egui::vec2(120.0, 34.0))).clicked() {
+                *nav = Some(SlideNav::Next);
+            }
+        });
+        ui.label(RichText::new("Right / Left arrow keys (or a clicker's PgDn / PgUp) step the running presentation.").size(12.0).color(theme::TEXT_DIM));
+    }
+    // Thumbnail strip: click to jump (running) or to choose the first slide.
+    let marked = if running { s.current } else { s.start_slide };
+    let thumb = egui::vec2(150.0, 84.0);
+    egui::ScrollArea::vertical().id_salt("slide-strip").max_height(330.0).show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+            for (i, slide) in s.deck.slides.iter().enumerate() {
+                let (rect, resp) = ui.allocate_exact_size(thumb + egui::vec2(0.0, 18.0), egui::Sense::click());
+                let pic = egui::Rect::from_min_size(rect.min, thumb);
+                let p = ui.painter_at(rect);
+                p.rect_filled(pic, 3.0, egui::Color32::BLACK);
+                if let Ok(path) = livestage_core::bundle::resolve_asset(root, &slide.image) {
+                    if let Some(tex) = st.thumbs.get(&path, ShowTime::ZERO) {
+                        let sz = tex.size_vec2();
+                        let scale = (pic.width() / sz.x).min(pic.height() / sz.y);
+                        let r = egui::Rect::from_center_size(pic.center(), sz * scale);
+                        p.image(tex.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                    }
+                }
+                let border = if i == marked { theme::active() } else if resp.hovered() { theme::TEXT_DIM } else { theme::BORDER };
+                p.rect_stroke(pic, 3.0, egui::Stroke::new(if i == marked { 2.0_f32 } else { 1.0 }, border), egui::StrokeKind::Inside);
+                p.text(egui::pos2(pic.left(), pic.bottom() + 2.0), egui::Align2::LEFT_TOP, format!("{}", i + 1), egui::FontId::proportional(12.0), theme::TEXT_DIM);
+                let first_line = slide.text.lines().next().unwrap_or_default();
+                p.text(
+                    egui::pos2(pic.left() + 22.0, pic.bottom() + 2.0),
+                    egui::Align2::LEFT_TOP,
+                    first_line.chars().take(22).collect::<String>(),
+                    egui::FontId::proportional(12.0),
+                    theme::TEXT_DIM,
+                );
+                let resp = if slide.text.is_empty() && slide.notes.is_empty() {
+                    resp
+                } else {
+                    resp.on_hover_text(if slide.notes.is_empty() { slide.text.clone() } else { format!("{}\n\nNotes: {}", slide.text, slide.notes) })
+                };
+                if resp.clicked() {
+                    if running {
+                        *nav = Some(SlideNav::Goto(i));
+                    } else {
+                        s.start_slide = i;
+                        c = true;
+                    }
+                }
+            }
+        });
+    });
+    if let Some(slide) = s.deck.slides.get(marked) {
+        if !slide.notes.is_empty() {
+            ui.label(RichText::new("Speaker notes").strong());
+            ui.label(&slide.notes);
+        }
+    }
+    c
 }
 
 fn output_combo(ui: &mut Ui, id: &str, value: &mut OutputId, outputs: &[(OutputId, String)]) -> bool {
@@ -215,6 +357,7 @@ fn video(ui: &mut Ui, v: &mut VideoCue, outputs: &[(OutputId, String)], assets: 
         VisualContent::Ndi { .. } => "NDI",
         VisualContent::Color { .. } => "Colour",
         VisualContent::TestPattern => "Test pattern",
+        VisualContent::Slides { .. } => "Slides",
     };
     ComboBox::from_id_salt("content").selected_text(kind).show_ui(ui, |ui| {
         let first = assets.first().cloned().unwrap_or_else(|| AssetRef::new("assets/video/missing.mov"));
@@ -242,6 +385,9 @@ fn video(ui: &mut Ui, v: &mut VideoCue, outputs: &[(OutputId, String)], assets: 
             c |= ui.checkbox(looped, "Loop").changed();
         }
         VisualContent::Image { asset } => c |= asset_combo(ui, "iasset", asset, assets),
+        VisualContent::Slides { slides, .. } => {
+            ui.label(RichText::new(format!("{} slides — use a Slides cue to navigate them.", slides.len())).color(theme::TEXT_DIM));
+        }
         VisualContent::Text(t) => {
             c |= ui.add(TextEdit::multiline(&mut t.text).desired_rows(4).desired_width(f32::INFINITY)).changed();
             ui.horizontal(|ui| {

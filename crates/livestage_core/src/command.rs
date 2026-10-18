@@ -16,6 +16,14 @@ pub enum ShowCommand {
     StandbyNext,
     StandbyPrevious,
     SetStandby { number: String },
+    /// Scrub a cue (by number, in the active list) to `position`, even while
+    /// it is playing.
+    SeekCue { number: String, position: ShowTime },
+    /// Advance the most recently started running slide cue.
+    NextSlide,
+    PrevSlide,
+    /// Jump the most recently started running slide cue to slide `slide` (1-based).
+    GotoSlide { slide: usize },
     /// Pause / resume everything that is running.
     PauseAll,
     ResumeAll,

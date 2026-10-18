@@ -126,6 +126,40 @@ impl Cue for TimelineCue {
         self.fire_due(ctx, offset, !offset.is_zero());
     }
 
+    fn on_seek(&mut self, ctx: &mut dyn CueContext, offset: ShowTime) -> bool {
+        let paused = self.header.runtime.state == crate::state::CueState::Paused;
+        if let Some(m) = self.master.as_deref_mut() {
+            m.seek(ctx, offset);
+        }
+        for i in &mut self.items {
+            let covers = i.offset <= offset && i.end().is_none_or(|end| offset < end);
+            if i.cue.state().is_active() {
+                if covers {
+                    // Already playing and still under the playhead: move it in place.
+                    i.cue.seek(ctx, offset - i.offset);
+                    i.fired = true;
+                    continue;
+                }
+                // DMX looks track; everything else outside the playhead stops.
+                if i.cue.kind() != CueKind::Dmx {
+                    i.cue.stop(ctx, Some(ShowTime::ZERO));
+                }
+            }
+            i.fired = false;
+            if !i.cue.state().is_active() {
+                i.cue.reset();
+            }
+        }
+        // Chase whatever the new playhead covers.
+        self.fire_due(ctx, offset, true);
+        if paused {
+            for i in self.items.iter_mut().filter(|i| i.cue.state() == crate::state::CueState::Running) {
+                i.cue.pause(ctx);
+            }
+        }
+        true
+    }
+
     fn on_tick(&mut self, ctx: &mut dyn CueContext, elapsed: ShowTime) {
         if let Some(m) = self.master.as_deref_mut() {
             m.tick(ctx);
@@ -254,5 +288,28 @@ mod tests {
         tl.go_from(&mut ctx, ShowTime::from_secs(10));
         // Both past looks are applied so the rig matches the playhead.
         assert_eq!(dmx_scene_count(&ctx), 2);
+    }
+
+    #[test]
+    fn seeking_a_running_timeline_rechases_children() {
+        let mut ctx = MockCtx::default();
+        let master = audio_master();
+        let master_id = master.header().id;
+        let mut tl = TimelineCue::new(CueHeader::new("10", "Song + looks"), Some(master));
+        tl.add(ShowTime::from_secs(10), dmx_cue("10.1", 0));
+        tl.add(ShowTime::from_secs(30), dmx_cue("10.2", 0));
+        let mut tl = AnyCue::Timeline(tl);
+        tl.go(&mut ctx);
+        ctx.positions.insert(master_id, ShowTime::from_secs(1));
+        tl.tick(&mut ctx);
+        ctx.actions.clear();
+
+        tl.seek(&mut ctx, ShowTime::from_secs(40));
+        // The master is moved in place (no stop / play), both past looks are chased.
+        assert!(ctx.actions.iter().any(|a| matches!(a, EngineAction::Audio(crate::action::AudioAction::Seek { cue, position })
+            if *cue == master_id && *position == ShowTime::from_secs(40))));
+        assert!(!ctx.actions.iter().any(|a| matches!(a, EngineAction::Audio(crate::action::AudioAction::Stop { .. }))));
+        assert_eq!(dmx_scene_count(&ctx), 2);
+        assert_eq!(tl.state(), crate::state::CueState::Running);
     }
 }

@@ -227,6 +227,29 @@ impl CueList {
         }
     }
 
+    /// Scrubs a cue (top level or timeline child) to `position`.
+    pub fn seek_cue(&mut self, ctx: &mut dyn CueContext, id: CueId, position: ShowTime) -> bool {
+        fn find(c: &mut AnyCue, id: CueId) -> Option<&mut AnyCue> {
+            if c.header().id == id {
+                return Some(c);
+            }
+            if let AnyCue::Timeline(t) = c {
+                if let Some(m) = t.master.as_deref_mut().and_then(|m| find(m, id)) {
+                    return Some(m);
+                }
+                return t.items.iter_mut().find_map(|i| find(&mut i.cue, id));
+            }
+            None
+        }
+        match self.cues.iter_mut().find_map(|c| find(c, id)) {
+            Some(c) => {
+                c.seek(ctx, position);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn stop_all(&mut self, ctx: &mut dyn CueContext, fade: Option<ShowTime>) {
         self.runtime.pending.clear();
         for c in &mut self.cues {
@@ -294,6 +317,10 @@ fn adopt_cue(new: &mut AnyCue, old_list: &CueList) {
     let id = new.header().id;
     let Some(old) = old_list.find(id) else { return };
     new.header_mut().runtime = old.header().runtime.clone();
+    if let (AnyCue::Slides(s), AnyCue::Slides(os)) = (&mut *new, old) {
+        // Keep the slide on screen when an edit swaps the project.
+        s.current = os.current.min(s.slide_count().saturating_sub(1));
+    }
     if let (AnyCue::Timeline(t), AnyCue::Timeline(ot)) = (new, old) {
         if let Some(m) = t.master.as_deref_mut() {
             adopt_cue(m, old_list);

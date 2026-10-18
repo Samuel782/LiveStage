@@ -56,6 +56,7 @@ pub enum CueKind {
     Dmx,
     Control,
     Timeline,
+    Slides,
 }
 
 impl CueKind {
@@ -67,6 +68,7 @@ impl CueKind {
             CueKind::Dmx => "DMX",
             CueKind::Control => "Control",
             CueKind::Timeline => "Timeline",
+            CueKind::Slides => "Slides",
         }
     }
 }
@@ -163,6 +165,12 @@ pub trait Cue: Send + fmt::Debug {
 
     fn on_pause(&mut self, _ctx: &mut dyn CueContext) {}
     fn on_resume(&mut self, _ctx: &mut dyn CueContext) {}
+
+    /// Jump a running or paused cue to `offset` without restarting it
+    /// (live scrubbing). Return `false` to fall back to stop + restart.
+    fn on_seek(&mut self, _ctx: &mut dyn CueContext, _offset: ShowTime) -> bool {
+        false
+    }
 
     /// Per-frame update while running.
     fn on_tick(&mut self, _ctx: &mut dyn CueContext, _elapsed: ShowTime) {}
@@ -305,9 +313,31 @@ pub trait CueExt: Cue {
         }
     }
 
-    /// Jump to `position` and keep running.
+    /// Jump to `position` and keep running (or stay paused).
+    ///
+    /// A running cue is moved in place: engines jump their playheads (audio
+    /// with a de-click dip, video by re-timing the layer) and nothing is
+    /// stopped or reloaded. Cues that cannot seek in place are restarted at
+    /// `position`. A cue that is not running is started at `position`.
     fn seek(&mut self, ctx: &mut dyn CueContext, position: ShowTime) {
-        let was_paused = self.state() == CueState::Paused;
+        let position = match self.duration() {
+            // Stay just inside the cue so seeking to the end does not complete it.
+            Some(d) if !d.is_zero() => position.min(d - ShowTime::from_millis(1)),
+            _ => position,
+        }
+        .max(ShowTime::ZERO);
+        let state = self.state();
+        let was_paused = state == CueState::Paused;
+        if matches!(state, CueState::Running | CueState::Paused) && self.on_seek(ctx, position) {
+            let now = ctx.now();
+            let rt = &mut self.header_mut().runtime;
+            rt.started_at = now;
+            rt.start_offset = position;
+            rt.paused_total = ShowTime::ZERO;
+            rt.paused_at = was_paused.then_some(now);
+            rt.last_elapsed = position;
+            return;
+        }
         self.go_from(ctx, position);
         if was_paused {
             self.pause(ctx);
@@ -433,6 +463,10 @@ impl Cue for AudioCue {
     fn on_pause(&mut self, ctx: &mut dyn CueContext) {
         ctx.dispatch(EngineAction::Audio(AudioAction::Pause { cue: self.header.id }));
     }
+    fn on_seek(&mut self, ctx: &mut dyn CueContext, offset: ShowTime) -> bool {
+        ctx.dispatch(EngineAction::Audio(AudioAction::Seek { cue: self.header.id, position: offset }));
+        true
+    }
     fn on_resume(&mut self, ctx: &mut dyn CueContext) {
         ctx.dispatch(EngineAction::Audio(AudioAction::Resume { cue: self.header.id }));
     }
@@ -539,6 +573,11 @@ impl Cue for VideoCue {
     fn on_pause(&mut self, ctx: &mut dyn CueContext) {
         ctx.dispatch(EngineAction::Video(VideoAction::Pause { cue: self.header.id }));
     }
+    fn on_seek(&mut self, ctx: &mut dyn CueContext, offset: ShowTime) -> bool {
+        // Re-times the layer: the decoder seeks, teleprompters jump their scroll.
+        ctx.dispatch(EngineAction::Video(VideoAction::Seek { cue: self.header.id, position: offset }));
+        true
+    }
     fn on_resume(&mut self, ctx: &mut dyn CueContext) {
         ctx.dispatch(EngineAction::Video(VideoAction::Resume { cue: self.header.id }));
     }
@@ -579,7 +618,8 @@ impl Cue for TimerCue {
     }
     fn on_go(&mut self, ctx: &mut dyn CueContext, offset: ShowTime) {
         let mut timer = self.timer.clone();
-        timer.started_at = ctx.now() - offset;
+        timer.started_at = ctx.now();
+        timer.elapsed_offset = offset;
         ctx.dispatch(EngineAction::Video(VideoAction::Show {
             cue: self.header.id,
             output: self.output,
@@ -592,6 +632,11 @@ impl Cue for TimerCue {
     }
     fn on_stop(&mut self, ctx: &mut dyn CueContext, fade: Option<ShowTime>) {
         ctx.dispatch(EngineAction::Video(VideoAction::Hide { cue: self.header.id, fade: fade.unwrap_or_default() }));
+    }
+    fn on_seek(&mut self, ctx: &mut dyn CueContext, offset: ShowTime) -> bool {
+        // The compositor re-bases the timer's start so the display jumps too.
+        ctx.dispatch(EngineAction::Video(VideoAction::Seek { cue: self.header.id, position: offset }));
+        true
     }
     fn on_complete(&mut self, ctx: &mut dyn CueContext) {
         if !self.hold_at_zero {
@@ -682,6 +727,139 @@ impl Cue for ControlCue {
     }
 }
 
+/// One page of a rendered presentation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Slide {
+    /// Rendered picture (PNG inside the bundle).
+    pub image: crate::project::AssetRef,
+    /// Text found on the slide (previews, search, confidence monitors).
+    #[serde(default)]
+    pub text: String,
+    /// Speaker notes (PowerPoint).
+    #[serde(default)]
+    pub notes: String,
+}
+
+/// A PDF / PowerPoint document rendered to one image per slide at import.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SlideDeck {
+    /// The imported original document.
+    pub source: Option<crate::project::AssetRef>,
+    /// Pixel size the slides were rendered at.
+    pub size: [u32; 2],
+    pub slides: Vec<Slide>,
+}
+
+/// A presentation routed to an output, navigated slide by slide
+/// (Next / Previous / Go to) while it is running.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SlideCue {
+    #[serde(flatten)]
+    pub header: CueHeader,
+    pub output: OutputId,
+    pub deck: SlideDeck,
+    /// Slide shown at GO (0-based).
+    #[serde(default)]
+    pub start_slide: usize,
+    #[serde(default)]
+    pub layer: i32,
+    #[serde(default = "full")]
+    pub opacity: f32,
+    #[serde(default)]
+    pub fade_in: ShowTime,
+    #[serde(default)]
+    pub fade_out: ShowTime,
+    /// Cross-fade between slides.
+    #[serde(default)]
+    pub transition: ShowTime,
+    /// Slide currently on screen (runtime).
+    #[serde(skip)]
+    pub current: usize,
+}
+
+impl SlideCue {
+    pub fn slide_count(&self) -> usize {
+        self.deck.slides.len()
+    }
+
+    /// Moves to slide `index` (clamped). Returns false if nothing changed.
+    pub fn goto(&mut self, ctx: &mut dyn CueContext, index: usize) -> bool {
+        let Some(last) = self.slide_count().checked_sub(1) else { return false };
+        let index = index.min(last);
+        if index == self.current {
+            return false;
+        }
+        self.current = index;
+        if self.header.runtime.state.is_active() {
+            ctx.dispatch(EngineAction::Video(VideoAction::GotoSlide { cue: self.header.id, index, fade: self.transition }));
+        }
+        true
+    }
+
+    pub fn next(&mut self, ctx: &mut dyn CueContext) -> bool {
+        self.goto(ctx, self.current + 1)
+    }
+
+    pub fn previous(&mut self, ctx: &mut dyn CueContext) -> bool {
+        match self.current.checked_sub(1) {
+            Some(i) => self.goto(ctx, i),
+            None => false,
+        }
+    }
+
+    /// The slide after the current one, if any.
+    pub fn upcoming(&self) -> Option<&Slide> {
+        self.deck.slides.get(self.current + 1)
+    }
+}
+
+impl Cue for SlideCue {
+    fn header(&self) -> &CueHeader {
+        &self.header
+    }
+    fn header_mut(&mut self) -> &mut CueHeader {
+        &mut self.header
+    }
+    fn kind(&self) -> CueKind {
+        CueKind::Slides
+    }
+    fn duration(&self) -> Option<ShowTime> {
+        // A presentation runs until stopped.
+        None
+    }
+    fn prepare(&mut self, ctx: &mut dyn CueContext) {
+        self.current = self.start_slide.min(self.slide_count().saturating_sub(1));
+        let first = self.deck.slides.iter().skip(self.current).take(2).map(|s| s.image.clone()).collect();
+        ctx.dispatch(EngineAction::Video(VideoAction::Preload { assets: first }));
+    }
+    fn on_go(&mut self, ctx: &mut dyn CueContext, _offset: ShowTime) {
+        self.current = self.start_slide.min(self.slide_count().saturating_sub(1));
+        ctx.dispatch(EngineAction::Video(VideoAction::Show {
+            cue: self.header.id,
+            output: self.output,
+            content: VisualContent::Slides { slides: self.deck.slides.iter().map(|s| s.image.clone()).collect(), index: self.current },
+            layer: self.layer,
+            opacity: self.opacity,
+            fade_in: self.fade_in,
+            start_at: ShowTime::ZERO,
+        }));
+    }
+    fn on_stop(&mut self, ctx: &mut dyn CueContext, fade: Option<ShowTime>) {
+        let fade = fade.unwrap_or(self.fade_out);
+        ctx.dispatch(EngineAction::Video(VideoAction::Hide { cue: self.header.id, fade }));
+    }
+    fn chase_on_catch_up(&self) -> bool {
+        true
+    }
+    fn validate(&self) -> Vec<String> {
+        if self.deck.slides.is_empty() {
+            vec!["presentation has no slides".into()]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
 // ================================================================== AnyCue ==
 
 /// Serialisable polymorphic cue.
@@ -694,6 +872,7 @@ pub enum AnyCue {
     Dmx(DmxCue),
     Control(ControlCue),
     Timeline(crate::timeline::TimelineCue),
+    Slides(SlideCue),
 }
 
 macro_rules! delegate {
@@ -705,6 +884,7 @@ macro_rules! delegate {
             AnyCue::Dmx($c) => $e,
             AnyCue::Control($c) => $e,
             AnyCue::Timeline($c) => $e,
+            AnyCue::Slides($c) => $e,
         }
     };
 }
@@ -737,6 +917,9 @@ impl Cue for AnyCue {
     fn on_resume(&mut self, ctx: &mut dyn CueContext) {
         delegate!(self, c => c.on_resume(ctx))
     }
+    fn on_seek(&mut self, ctx: &mut dyn CueContext, offset: ShowTime) -> bool {
+        delegate!(self, c => c.on_seek(ctx, offset))
+    }
     fn on_tick(&mut self, ctx: &mut dyn CueContext, elapsed: ShowTime) {
         delegate!(self, c => c.on_tick(ctx, elapsed))
     }
@@ -766,6 +949,7 @@ impl AnyCue {
                 VisualContent::Video { asset, .. } | VisualContent::Image { asset } => vec![asset],
                 _ => vec![],
             },
+            AnyCue::Slides(s) => s.deck.source.iter().chain(s.deck.slides.iter().map(|x| &x.image)).collect(),
             AnyCue::Timeline(t) => {
                 let mut out: Vec<_> = t.master.iter().flat_map(|m| m.assets()).collect();
                 out.extend(t.items.iter().flat_map(|i| i.cue.assets()));
@@ -879,5 +1063,96 @@ mod tests {
         assert!(json.contains("\"type\":\"dmx\""));
         let back: AnyCue = serde_json::from_str(&json).unwrap();
         assert_eq!(back, cue);
+    }
+
+    fn video_cue() -> AnyCue {
+        AnyCue::Video(VideoCue {
+            header: CueHeader::new("2", "Clip"),
+            output: OutputId::new(),
+            content: VisualContent::Video { asset: crate::project::AssetRef::new("assets/video/a.mov"), looped: false },
+            layer: 0,
+            opacity: 1.0,
+            fade_in: ShowTime::ZERO,
+            fade_out: ShowTime::ZERO,
+            hold: None,
+            media_length: Some(ShowTime::from_secs(60)),
+            end_behavior: EndBehavior::Hide,
+        })
+    }
+
+    #[test]
+    fn seek_while_playing_moves_in_place() {
+        let mut ctx = MockCtx::default();
+        let mut cue = video_cue();
+        let id = cue.header().id;
+        cue.go(&mut ctx);
+        ctx.advance(ShowTime::from_secs(5));
+        ctx.actions.clear();
+        cue.seek(&mut ctx, ShowTime::from_secs(42));
+        // No stop / restart: just one seek for the engine.
+        assert_eq!(ctx.actions, vec![EngineAction::Video(VideoAction::Seek { cue: id, position: ShowTime::from_secs(42) })]);
+        assert_eq!(cue.state(), CueState::Running);
+        ctx.advance(ShowTime::from_secs(1));
+        assert_eq!(cue.elapsed(&ctx), ShowTime::from_secs(43));
+        // Seeking past the end stays inside the cue instead of completing it.
+        cue.seek(&mut ctx, ShowTime::from_secs(500));
+        assert!(cue.elapsed(&ctx) < ShowTime::from_secs(60));
+        assert_eq!(cue.tick(&mut ctx), None);
+    }
+
+    #[test]
+    fn seek_while_paused_stays_paused() {
+        let mut ctx = MockCtx::default();
+        let mut cue = video_cue();
+        cue.go(&mut ctx);
+        ctx.advance(ShowTime::from_secs(2));
+        cue.pause(&mut ctx);
+        cue.seek(&mut ctx, ShowTime::from_secs(10));
+        assert_eq!(cue.state(), CueState::Paused);
+        ctx.advance(ShowTime::from_secs(3));
+        assert_eq!(cue.elapsed(&ctx), ShowTime::from_secs(10));
+        cue.resume(&mut ctx);
+        ctx.advance(ShowTime::from_secs(1));
+        assert_eq!(cue.elapsed(&ctx), ShowTime::from_secs(11));
+    }
+
+    fn deck(n: usize) -> SlideCue {
+        SlideCue {
+            header: CueHeader::new("5", "Keynote"),
+            output: OutputId::new(),
+            deck: SlideDeck {
+                source: None,
+                size: [1920, 1080],
+                slides: (0..n)
+                    .map(|i| Slide { image: crate::project::AssetRef::new(format!("assets/slides/k/{i:03}.png")), text: format!("Slide {i}"), notes: String::new() })
+                    .collect(),
+            },
+            start_slide: 1,
+            layer: 0,
+            opacity: 1.0,
+            fade_in: ShowTime::ZERO,
+            fade_out: ShowTime::ZERO,
+            transition: ShowTime::from_millis(300),
+            current: 0,
+        }
+    }
+
+    #[test]
+    fn slides_navigate_and_clamp() {
+        let mut ctx = MockCtx::default();
+        let mut cue = deck(3);
+        let id = cue.header.id;
+        cue.go(&mut ctx);
+        assert!(matches!(&ctx.actions[0], EngineAction::Video(VideoAction::Show { content: VisualContent::Slides { index: 1, slides }, .. }) if slides.len() == 3));
+        assert_eq!(cue.upcoming().map(|s| s.text.as_str()), Some("Slide 2"));
+        ctx.actions.clear();
+        assert!(cue.next(&mut ctx));
+        assert!(!cue.next(&mut ctx), "already on the last slide");
+        assert_eq!(ctx.actions, vec![EngineAction::Video(VideoAction::GotoSlide { cue: id, index: 2, fade: ShowTime::from_millis(300) })]);
+        assert!(cue.previous(&mut ctx) && cue.previous(&mut ctx));
+        assert!(!cue.previous(&mut ctx));
+        assert_eq!(cue.current, 0);
+        let json = serde_json::to_string(&AnyCue::Slides(cue.clone())).unwrap();
+        assert!(json.contains("\"type\":\"slides\""));
     }
 }

@@ -84,6 +84,9 @@ pub enum VisualContent {
     Color { rgba: [f32; 4] },
     /// Calibration grid for projection alignment.
     TestPattern,
+    /// A rendered presentation (PDF / PowerPoint): one image per slide,
+    /// showing slide `index` (0-based).
+    Slides { slides: Vec<AssetRef>, index: usize },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -118,6 +121,9 @@ pub struct TimerContent {
     /// Wall-clock show time at which the timer started (filled at GO).
     #[serde(skip)]
     pub started_at: ShowTime,
+    /// Time already elapsed at `started_at` (start mid-way, seek).
+    #[serde(skip)]
+    pub elapsed_offset: ShowTime,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -136,6 +142,8 @@ pub enum VideoAction {
     Resume { cue: CueId },
     Seek { cue: CueId, position: ShowTime },
     SetOpacity { cue: CueId, opacity: f32, fade: ShowTime },
+    /// Change the slide of a [`VisualContent::Slides`] layer, cross-fading over `fade`.
+    GotoSlide { cue: CueId, index: usize, fade: ShowTime },
     Preload { assets: Vec<AssetRef> },
     /// Fade every output to black.
     BlackoutAll { fade: ShowTime },

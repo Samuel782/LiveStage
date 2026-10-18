@@ -53,6 +53,41 @@ impl GpuContext {
 
     /// Configures a surface for low-latency presentation.
     pub fn configure_surface(&self, surface: &wgpu::Surface<'_>, format: wgpu::TextureFormat, size: [u32; 2], vsync: bool) {
+        self.configure_surface_latency(surface, format, size, vsync, 1);
+    }
+
+    /// Builds a surface configuration (queries the surface's capabilities:
+    /// on macOS do this on the main thread).
+    pub fn surface_config(&self, surface: &wgpu::Surface<'_>, format: wgpu::TextureFormat, size: [u32; 2], vsync: bool, frames_in_flight: u32) -> wgpu::SurfaceConfiguration {
+        let caps = surface.get_capabilities(&self.adapter);
+        let present_mode = if vsync {
+            wgpu::PresentMode::AutoVsync
+        } else if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            wgpu::PresentMode::Mailbox
+        } else {
+            wgpu::PresentMode::AutoNoVsync
+        };
+        wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: size[0].max(1),
+            height: size[1].max(1),
+            present_mode,
+            desired_maximum_frame_latency: frames_in_flight.max(1),
+            alpha_mode: caps.alpha_modes[0],
+            view_formats: vec![],
+        }
+    }
+
+    /// Like [`Self::configure_surface`] with an explicit number of frames in flight.
+    pub fn configure_surface_latency(
+        &self,
+        surface: &wgpu::Surface<'_>,
+        format: wgpu::TextureFormat,
+        size: [u32; 2],
+        vsync: bool,
+        frames_in_flight: u32,
+    ) {
         let caps = surface.get_capabilities(&self.adapter);
         let present_mode = if vsync {
             wgpu::PresentMode::AutoVsync
@@ -69,7 +104,7 @@ impl GpuContext {
                 width: size[0].max(1),
                 height: size[1].max(1),
                 present_mode,
-                desired_maximum_frame_latency: 1,
+                desired_maximum_frame_latency: frames_in_flight.max(1),
                 alpha_mode: caps.alpha_modes[0],
                 view_formats: vec![],
             },

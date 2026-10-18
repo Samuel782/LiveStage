@@ -10,22 +10,25 @@ mod demo;
 mod display;
 mod gfx;
 mod panels;
+mod prefs;
 mod priority;
 mod runtime;
 mod show_thread;
 mod snapshot;
 mod undo;
 mod theme;
+mod thumbs;
 
 use anyhow::Context as _;
-use display::DisplayManager;
+use display::{CanvasPreview, Monitors, OutputCmd, OutputThread, ProgramWindow};
 use gfx::ControlWindow;
 use livestage_control::{ControlSource, ShowCommand};
 use livestage_core::ProjectBundle;
-use livestage_video::{GpuContext, Pipelines};
+use livestage_core::OutputId;
+use livestage_video::GpuContext;
 use panels::{Previews, UiState};
-use livestage_video::Compositor;
-use runtime::{LogLevel, ShowRuntime, VideoFinished, VideoMsg};
+use runtime::{LogLevel, ShowRuntime};
+use std::collections::HashMap;
 use show_thread::{SharedRuntime, ShowThread};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -51,10 +54,14 @@ fn parse_args() -> Launch {
     }
 }
 
-fn load_bundle(launch: &Launch) -> anyhow::Result<ProjectBundle> {
+fn load_bundle(launch: &Launch, startup_show: Option<&std::path::Path>) -> anyhow::Result<ProjectBundle> {
     Ok(match launch {
         Launch::Open(p) => ProjectBundle::open(p).with_context(|| format!("opening {}", p.display()))?,
         Launch::New { dir, name } => ProjectBundle::create(dir, name)?,
+        Launch::Default if startup_show.is_some_and(|p| p.join(livestage_core::bundle::MANIFEST_FILE).is_file()) => {
+            let p = startup_show.expect("checked");
+            ProjectBundle::open(p).with_context(|| format!("opening {}", p.display()))?
+        }
         Launch::Default => {
             let shows = std::env::current_dir()?.join("shows");
             let demo = shows.join("Demo Show.livestage");
@@ -69,11 +76,9 @@ fn load_bundle(launch: &Launch) -> anyhow::Result<ProjectBundle> {
     })
 }
 
-const AUTOSAVE_EVERY: Duration = Duration::from_secs(30);
 
 struct Gfx {
     gpu: Arc<GpuContext>,
-    pipes: Pipelines,
     control: ControlWindow,
 }
 
@@ -83,15 +88,16 @@ struct App {
     /// Shared with the show thread; the UI locks it only while laying out panels.
     rt: Option<SharedRuntime>,
     show_thread: Option<ShowThread>,
-    /// Render-thread state: the compositor and its inputs from the show thread.
-    compositor: Compositor,
-    video_rx: Option<crossbeam_channel::Receiver<VideoMsg>>,
-    video_finished: VideoFinished,
+    /// Renders and presents every program output (see [`display`]).
+    output_thread: Option<OutputThread>,
     bundle_root: PathBuf,
-    epoch: Instant,
-    displays: DisplayManager,
+    monitors: Monitors,
+    /// Program windows currently open (main-thread handles; surfaces live on the output thread).
+    program_windows: HashMap<OutputId, ProgramWindow>,
     ui: UiState,
     previews: Previews,
+    /// Canvas generation each preview texture was registered for.
+    registered: HashMap<OutputId, u64>,
     last_scan: Instant,
     last_autosave: Instant,
     autosaved_generation: u64,
@@ -107,114 +113,176 @@ impl App {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let surface = instance.create_surface(window.clone())?;
         let gpu = pollster::block_on(GpuContext::new(instance, Some(&surface)))?;
-        let pipes = Pipelines::new(&gpu.device);
         let control = ControlWindow::new(&gpu, window, surface);
-        self.displays.refresh_monitors(el);
-        let bundle = load_bundle(&self.launch)?;
+        panels::settings::apply_prefs(&control.ctx, &self.ui.prefs);
+        self.monitors.refresh(el);
+        let bundle = load_bundle(&self.launch, self.ui.prefs.startup_show.as_deref())?;
         control.window.set_title(&format!("LiveStage — {}", bundle.project.name));
         if let Some(when) = bundle.recovery_available() {
             let when: chrono::DateTime<chrono::Local> = when.into();
             self.ui.recovery = Some(when.format("%H:%M:%S on %d %b %Y").to_string());
         }
-        let rt = ShowRuntime::new(bundle);
+        let mut rt = ShowRuntime::new(bundle);
+        rt.office_path = self.ui.prefs.office_path.clone();
+        if self.ui.prefs.outputs_on_launch {
+            rt.outputs_live_request = Some(true);
+        }
         self.bundle_root = rt.bundle.root().to_path_buf();
-        self.epoch = rt.epoch();
-        self.video_rx = Some(rt.video_receiver());
-        self.video_finished = rt.video_finished.clone();
+        let (epoch, video_rx, video_finished) = (rt.epoch(), rt.video_receiver(), rt.video_finished.clone());
         let shared: SharedRuntime = Arc::new(parking_lot::Mutex::new(rt));
         self.show_thread = Some(ShowThread::spawn(shared.clone(), show_thread::SHOW_RATE_HZ)?);
+        self.output_thread = Some(OutputThread::spawn(
+            gpu.clone(),
+            shared.clone(),
+            video_rx,
+            video_finished,
+            epoch,
+            self.bundle_root.clone(),
+            control.format,
+        )?);
         self.rt = Some(shared);
-        self.gfx = Some(Gfx { gpu, pipes, control });
+        self.gfx = Some(Gfx { gpu, control });
         Ok(())
     }
 
-    fn now(&self) -> livestage_core::ShowTime {
-        self.epoch.elapsed().into()
+    /// Opens or closes program windows. When `live`, mapped displays go kiosk
+    /// fullscreen; unmapped ones open as floating preview windows.
+    fn set_live(&mut self, el: &ActiveEventLoop, displays: &[livestage_core::routing::LogicalDisplay], live: bool) {
+        let (Some(gfx), Some(out)) = (self.gfx.as_ref(), self.output_thread.as_ref()) else { return };
+        if !live {
+            for id in self.program_windows.keys() {
+                out.send(OutputCmd::Close(*id));
+            }
+            // Main-thread handles go now; the output thread returns its clones
+            // once the surfaces are dropped.
+            self.program_windows.clear();
+            return;
+        }
+        for d in displays.iter().filter(|d| d.enabled) {
+            if self.program_windows.contains_key(&d.id) {
+                continue;
+            }
+            let monitor = d.physical.as_ref().and_then(|k| self.monitors.monitor_for(k)).cloned();
+            let opts = display::WindowOpts {
+                always_on_top: self.ui.prefs.outputs_always_on_top,
+                hide_cursor: self.ui.prefs.hide_cursor_on_outputs,
+            };
+            match display::open_program_window(el, &gfx.gpu, d, monitor.as_ref(), opts) {
+                Ok((pw, surface, config)) => {
+                    out.send(OutputCmd::Open { output: d.id, window: pw.window.clone(), surface, config });
+                    self.program_windows.insert(d.id, pw);
+                }
+                Err(e) => tracing::error!(output = %d.name, "cannot open program window: {e}"),
+            }
+        }
     }
 
     fn frame(&mut self, el: &ActiveEventLoop) {
-        let now = self.now();
         if let Some(shared) = self.rt.clone() {
             self.autosave(&shared);
         }
-        let (Some(gfx), Some(shared)) = (self.gfx.as_mut(), self.rt.clone()) else { return };
+        let Some(shared) = self.rt.clone() else { return };
 
-        // 1. Apply video actions from the show thread, at the time they were dispatched.
-        if let Some(rx) = &self.video_rx {
-            let root = &self.bundle_root;
-            let resolve = |a: &livestage_core::project::AssetRef| livestage_core::bundle::resolve_asset(root, a).ok();
-            for (at, action) in rx.try_iter() {
-                self.compositor.handle(at, &action, &resolve);
-            }
-        }
-        self.compositor.update(now);
-        {
-            let mut finished = self.video_finished.lock();
-            finished.clone_from(self.compositor.finished_cues());
-        }
-
-        // 2. Short critical section: read what the render pass needs.
-        let (displays, pixel_sources, live_request) = {
+        // 1. Program windows requested by commands (UI, OSC, MIDI, cues).
+        let (live_request, displays) = {
             let mut rt = shared.lock();
-            let live = rt.outputs_live_request.take();
-            let pixel: Vec<_> = rt.bundle.project.dmx.pixel_maps.iter().filter(|m| m.enabled).map(|m| m.source).collect();
-            (rt.bundle.project.displays.clone(), pixel, live)
+            (rt.outputs_live_request.take(), rt.bundle.project.displays.clone())
         };
-        self.displays.sync_slots(&gfx.gpu, &gfx.pipes, &displays, gfx.control.format);
         if let Some(live) = live_request {
-            self.displays.set_live(el, &gfx.gpu, &displays, live);
+            self.set_live(el, &displays, live);
             let mut rt = shared.lock();
             rt.outputs_live = live;
             rt.log(LogLevel::Info, if live { "program outputs LIVE" } else { "program outputs closed" });
         }
-
-        // 3. GPU work and presentation happen without holding the runtime lock.
-        let readbacks = self.displays.render(&gfx.gpu, &gfx.pipes, &mut self.compositor, now, &displays, &pixel_sources);
-        if !readbacks.is_empty() {
-            let mut rt = shared.lock();
-            for (id, w, h, px) in readbacks {
-                rt.dmx.feed_canvas(id, w, h, &px);
+        if let Some(out) = &self.output_thread {
+            // Windows released by the output thread are dropped here, on the main thread.
+            for w in out.returned.try_iter() {
+                drop(w);
             }
         }
+        let Some(gfx) = self.gfx.as_mut() else { return };
 
-        // Keep live canvas previews registered with the control renderer.
+        // 2. Keep live canvas previews registered with the control renderer.
+        let (canvases, ndi): (HashMap<OutputId, CanvasPreview>, panels::NdiStatus) = match &self.output_thread {
+            Some(out) => {
+                use std::sync::atomic::Ordering;
+                self.ui.output_fps = out.shared.fps_milli.load(Ordering::Relaxed) as f32 / 1000.0;
+                (out.shared.previews.lock().clone(), out.shared.ndi.lock().clone())
+            }
+            None => Default::default(),
+        };
         let renderer = &mut gfx.control.renderer;
+        let registered = &mut self.registered;
         self.previews.retain(|id, (tex, _)| {
-            let keep = self.displays.slots.contains_key(id);
+            let keep = canvases.contains_key(id);
             if !keep {
                 renderer.free_texture(tex);
+                registered.remove(id);
             }
             keep
         });
-        for slot in self.displays.slots.values_mut() {
-            let generation = slot.renderer.canvas_generation();
-            let tex = match slot.preview {
-                Some((tex, g)) if g == generation => tex,
-                Some((tex, _)) => {
-                    renderer.update_egui_texture_from_wgpu_texture(&gfx.gpu.device, slot.renderer.canvas_view(), wgpu::FilterMode::Linear, tex);
-                    tex
+        for (id, c) in &canvases {
+            match self.previews.get_mut(id) {
+                Some((tex, size)) => {
+                    if registered.get(id) != Some(&c.generation) {
+                        renderer.update_egui_texture_from_wgpu_texture(&gfx.gpu.device, &c.view, wgpu::FilterMode::Linear, *tex);
+                        registered.insert(*id, c.generation);
+                    }
+                    *size = c.size;
                 }
-                None => renderer.register_native_texture(&gfx.gpu.device, slot.renderer.canvas_view(), wgpu::FilterMode::Linear),
-            };
-            slot.preview = Some((tex, generation));
-            self.previews.insert(slot.id, (tex, slot.renderer.canvas_size()));
+                None => {
+                    let tex = renderer.register_native_texture(&gfx.gpu.device, &c.view, wgpu::FilterMode::Linear);
+                    registered.insert(*id, c.generation);
+                    self.previews.insert(*id, (tex, c.size));
+                }
+            }
         }
 
-        // 4. Panels: the lock is held only for egui layout; tessellation and
+        // 3. Panels: the lock is held only for egui layout; tessellation and
         //    presentation run after it is released.
-        let ndi: panels::NdiStatus =
-            self.displays.slots.values().filter_map(|s| s.ndi.as_ref().map(|n| (s.id, n.connections()))).collect();
-        let (ui, physical, previews) = (&mut self.ui, &self.displays.physical, &self.previews);
+        let (ui, physical, previews) = (&mut self.ui, &self.monitors.physical, &self.previews);
         gfx.control.frame(&gfx.gpu, |ctx| {
             let mut rt = shared.lock();
             panels::draw(ctx, &mut rt, ui, physical, previews, &ndi);
         });
+
+        // 4. Deferred work that must not run under the runtime lock.
+        let restart = {
+            let mut rt = shared.lock();
+            std::mem::take(&mut rt.restart_control_requested).then(|| rt.take_control_servers())
+        };
+        if let Some(old) = restart {
+            drop(old); // joins the old server threads and frees their ports
+            shared.lock().start_control_services();
+        }
+        if std::mem::take(&mut self.ui.quit_requested) {
+            self.quit(el);
+        }
+    }
+
+    /// Saves, panics everything and shuts the threads down in order.
+    fn quit(&mut self, el: &ActiveEventLoop) {
+        if let Some(shared) = self.rt.clone() {
+            let mut rt = shared.lock();
+            if rt.dirty {
+                rt.save();
+            }
+            rt.command(ControlSource::Ui, ShowCommand::Panic { hard: true });
+            rt.tick();
+        }
+        // Joins the output thread (it hands its windows back), then the
+        // show thread (engines stop when the runtime drops).
+        self.output_thread = None;
+        self.program_windows.clear();
+        self.show_thread = None;
+        el.exit();
     }
 
     /// Every 30 s, snapshots a dirty project and writes the recovery copy on a
     /// background thread (disk I/O never runs on the show or UI thread).
     fn autosave(&mut self, shared: &SharedRuntime) {
-        if self.last_autosave.elapsed() < AUTOSAVE_EVERY {
+        let every = self.ui.prefs.autosave_secs;
+        if every == 0 || self.last_autosave.elapsed() < Duration::from_secs(every) {
             return;
         }
         self.last_autosave = Instant::now();
@@ -233,15 +301,23 @@ impl App {
     }
 
     fn output_window_event(&mut self, id: WindowId, event: WindowEvent) {
-        let (Some(gfx), Some(shared)) = (self.gfx.as_ref(), self.rt.clone()) else { return };
-        let Some(slot) = self.displays.slot_for_window(id) else { return };
-        let Some(w) = slot.window.as_mut() else { return };
+        let Some(shared) = self.rt.clone() else { return };
+        let Some((&output, w)) = self.program_windows.iter().find(|(_, w)| w.window.id() == id) else { return };
         match event {
-            WindowEvent::Resized(s) => w.resize(&gfx.gpu, s.width, s.height),
+            WindowEvent::Resized(s) => {
+                if let Some(out) = &self.output_thread {
+                    out.send(OutputCmd::Resized { window: id, size: [s.width, s.height] });
+                }
+            }
             WindowEvent::CursorEntered { .. } | WindowEvent::Focused(true) | WindowEvent::Occluded(false) => w.reassert(),
             // Kiosk outputs cannot be closed by the OS (Cmd+W / Alt+F4); use "Outputs off".
             WindowEvent::CloseRequested if w.kiosk => shared.lock().log(LogLevel::Warn, "close request on a kiosk output ignored"),
-            WindowEvent::CloseRequested => slot.window = None,
+            WindowEvent::CloseRequested => {
+                if let Some(out) = &self.output_thread {
+                    out.send(OutputCmd::Close(output));
+                }
+                self.program_windows.remove(&output);
+            }
             // An output that grabbed focus must still obey the show keys.
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && !event.repeat => {
                 let rt = shared.lock();
@@ -282,17 +358,12 @@ impl ApplicationHandler for App {
         }
         match event {
             WindowEvent::CloseRequested => {
-                if let Some(shared) = self.rt.clone() {
-                    let mut rt = shared.lock();
-                    if rt.dirty {
-                        rt.save();
-                    }
-                    rt.command(ControlSource::Ui, ShowCommand::Panic { hard: true });
-                    rt.tick();
+                let live = self.rt.as_ref().is_some_and(|r| r.lock().outputs_live);
+                if live && self.ui.prefs.confirm_quit_when_live {
+                    self.ui.confirm_quit = true;
+                } else {
+                    self.quit(el);
                 }
-                // Joins the show thread (engines stop when the runtime drops).
-                self.show_thread = None;
-                el.exit();
             }
             WindowEvent::Resized(s) => {
                 if let Some(g) = self.gfx.as_mut() {
@@ -306,7 +377,7 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         if self.last_scan.elapsed() > Duration::from_secs(2) {
-            self.displays.refresh_monitors(el);
+            self.monitors.refresh(el);
             self.last_scan = Instant::now();
         }
         if let Some(g) = &self.gfx {
@@ -326,20 +397,21 @@ fn main() -> anyhow::Result<()> {
     if let Some(snap) = snapshot::SnapshotArgs::parse(&args) {
         return snapshot::run(snap);
     }
+    let prefs = prefs::Preferences::load();
+    prefs.export_env();
     let event_loop = EventLoop::new()?;
     let mut app = App {
         launch: parse_args(),
         gfx: None,
         rt: None,
         show_thread: None,
-        compositor: Compositor::default(),
-        video_rx: None,
-        video_finished: VideoFinished::default(),
+        output_thread: None,
         bundle_root: PathBuf::new(),
-        epoch: Instant::now(),
-        displays: DisplayManager::default(),
-        ui: UiState::default(),
+        monitors: Monitors::default(),
+        program_windows: HashMap::new(),
+        ui: UiState { prefs, ..UiState::default() },
         previews: Previews::default(),
+        registered: HashMap::new(),
         last_scan: Instant::now(),
         last_autosave: Instant::now(),
         autosaved_generation: 0,

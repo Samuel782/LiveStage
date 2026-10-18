@@ -7,6 +7,7 @@ mod displays;
 mod dmx;
 mod inspector;
 mod multiview;
+pub mod settings;
 mod timeline;
 mod transport;
 pub mod widgets;
@@ -83,6 +84,17 @@ pub struct UiState {
     pub tl_drag: Option<(livestage_core::id::CueId, f32)>,
     pub renaming_list: Option<(livestage_core::id::CueListId, String)>,
     pub import_open: bool,
+    /// Decoded thumbnails (slides, stills, movie poster frames).
+    pub thumbs: crate::thumbs::Thumbs,
+    pub settings_open: bool,
+    pub settings_section: settings::Section,
+    pub prefs: crate::prefs::Preferences,
+    /// Quit was requested while outputs are live: ask first.
+    pub confirm_quit: bool,
+    /// The operator confirmed quitting (handled by the app).
+    pub quit_requested: bool,
+    /// Output render thread frame rate.
+    pub output_fps: f32,
 }
 
 impl Default for UiState {
@@ -105,6 +117,13 @@ impl Default for UiState {
             tl_drag: None,
             renaming_list: None,
             import_open: false,
+            thumbs: Default::default(),
+            settings_open: false,
+            settings_section: Default::default(),
+            prefs: Default::default(),
+            confirm_quit: false,
+            quit_requested: false,
+            output_fps: 0.0,
         }
     }
 }
@@ -148,7 +167,7 @@ impl TabViewer for Viewer<'_> {
             Tab::CueList => cue_grid::show(ui, self.rt, self.st),
             Tab::Inspector => inspector::show(ui, self.rt, self.st),
             Tab::Timeline => timeline::show(ui, self.rt, self.st),
-            Tab::Multiview => multiview::show(ui, self.rt, self.previews, self.ndi),
+            Tab::Multiview => multiview::show(ui, self.rt, self.st, self.previews, self.ndi),
             Tab::Displays => displays::show(ui, self.rt, self.st, self.physical, self.previews, self.ndi),
             Tab::AudioPatch => audio::show(ui, self.rt, self.st),
             Tab::Dmx => dmx::show(ui, self.rt, self.st),
@@ -160,13 +179,37 @@ impl TabViewer for Viewer<'_> {
     }
 }
 
-fn shortcuts(ctx: &egui::Context, rt: &mut ShowRuntime) {
+fn shortcuts(ctx: &egui::Context, rt: &mut ShowRuntime, st: &mut UiState) {
+    // Settings opens even while a text field has focus (as on macOS).
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
+        st.settings_open = !st.settings_open;
+    }
     if ctx.wants_keyboard_input() {
         return;
     }
     let src = || ControlSource::Keyboard;
+    let selected_top = st.selected.filter(|id| rt.bundle.project.active_list().and_then(|l| l.index_of(*id)).is_some());
     ctx.input_mut(|i| {
         use egui::{Key, Modifiers};
+        // Presentations: arrows / clicker keys step the running slide cue.
+        if i.consume_key(Modifiers::NONE, Key::ArrowRight) || i.consume_key(Modifiers::NONE, Key::PageDown) {
+            rt.command(src(), ShowCommand::NextSlide);
+        }
+        if i.consume_key(Modifiers::NONE, Key::ArrowLeft) || i.consume_key(Modifiers::NONE, Key::PageUp) {
+            rt.command(src(), ShowCommand::PrevSlide);
+        }
+        if let Some(id) = selected_top {
+            if i.consume_key(Modifiers::COMMAND, Key::D) {
+                st.selected = rt.duplicate_cue(id).or(st.selected);
+            }
+            if i.consume_key(Modifiers::COMMAND, Key::Backspace) || i.consume_key(Modifiers::COMMAND, Key::Delete) {
+                if let Some(l) = rt.bundle.project.active_list_mut() {
+                    l.cues.retain(|c| livestage_core::cue::Cue::header(c).id != id);
+                }
+                st.selected = None;
+                rt.after_structure_edit();
+            }
+        }
         if i.consume_key(Modifiers::NONE, Key::Space) {
             rt.command(src(), ShowCommand::Go { list: None });
         }
@@ -185,6 +228,9 @@ fn shortcuts(ctx: &egui::Context, rt: &mut ShowRuntime) {
         if i.consume_key(Modifiers::NONE, Key::R) {
             rt.command(src(), ShowCommand::ResumeAll);
         }
+        if i.consume_key(Modifiers::COMMAND, Key::I) {
+            st.import_open = true;
+        }
         if i.consume_key(Modifiers::COMMAND, Key::S) {
             rt.save();
         }
@@ -194,6 +240,27 @@ fn shortcuts(ctx: &egui::Context, rt: &mut ShowRuntime) {
         if i.consume_key(Modifiers::COMMAND, Key::Z) {
             rt.undo();
         }
+    });
+}
+
+fn quit_modal(ctx: &egui::Context, st: &mut UiState) {
+    if !st.confirm_quit {
+        return;
+    }
+    egui::Modal::new(egui::Id::new("confirm-quit")).show(ctx, |ui| {
+        ui.set_width(380.0);
+        ui.heading("Quit while outputs are live?");
+        ui.label("Program outputs are on air. Quitting closes them and stops every cue.");
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button(egui::RichText::new("Quit LiveStage").color(crate::theme::stop()).strong()).clicked() {
+                st.quit_requested = true;
+                st.confirm_quit = false;
+            }
+            if ui.button("Cancel").clicked() {
+                st.confirm_quit = false;
+            }
+        });
     });
 }
 
@@ -225,13 +292,16 @@ pub fn draw(
     previews: &Previews,
     ndi: &NdiStatus,
 ) {
-    shortcuts(ctx, rt);
+    st.thumbs.poll(ctx);
+    shortcuts(ctx, rt, st);
     let pointer_down = ctx.input(|i| i.pointer.any_down());
     {
         let current = &rt.bundle.project;
         rt.undo.maybe_commit(current, pointer_down);
     }
     recovery_modal(ctx, rt, st);
+    quit_modal(ctx, st);
+    settings::window(ctx, rt, st);
 
     // Files dropped on the window are imported into the bundle as cues.
     let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());

@@ -46,6 +46,8 @@ pub enum AssetKind {
     Audio,
     Video,
     Image,
+    /// Presentations (PDF, PowerPoint) — rendered to slides at import.
+    Document,
     Data,
 }
 
@@ -57,6 +59,7 @@ impl AssetKind {
             }
             "mp4" | "mov" | "m4v" | "mkv" | "webm" | "avi" | "mxf" | "hap" => AssetKind::Video,
             "png" | "jpg" | "jpeg" | "bmp" | "gif" | "tif" | "tiff" | "webp" | "exr" | "tga" => AssetKind::Image,
+            "pdf" | "pptx" | "ppsx" | "potx" | "ppt" | "odp" | "key" => AssetKind::Document,
             _ => AssetKind::Data,
         }
     }
@@ -65,6 +68,7 @@ impl AssetKind {
             AssetKind::Audio => "audio",
             AssetKind::Video => "video",
             AssetKind::Image => "images",
+            AssetKind::Document => "documents",
             AssetKind::Data => "data",
         }
     }
@@ -122,6 +126,9 @@ pub struct Project {
     pub dmx: DmxConfig,
     pub control: ControlConfig,
     pub assets: Vec<AssetRecord>,
+    /// Operator multiview layout (None = automatic).
+    #[serde(default)]
+    pub multiview: Option<crate::multiview::MultiviewLayout>,
 }
 
 pub(crate) fn unix_now() -> u64 {
@@ -148,6 +155,7 @@ impl Project {
             dmx: DmxConfig::default(),
             control: ControlConfig::default(),
             assets: Vec::new(),
+            multiview: None,
         }
     }
 

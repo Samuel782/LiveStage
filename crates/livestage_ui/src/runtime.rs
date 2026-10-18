@@ -28,6 +28,56 @@ pub type VideoMsg = (ShowTime, VideoAction);
 /// Cues whose video media has ended, published by the render thread.
 pub type VideoFinished = Arc<Mutex<HashSet<CueId>>>;
 
+/// Slide navigation requested by the operator or a control surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlideNav {
+    Next,
+    Previous,
+    /// 0-based.
+    Goto(usize),
+}
+
+/// Operator action on a single cue (context menus).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CueOp {
+    Pause,
+    Resume,
+    /// Stop with the cue's own fade-out.
+    Stop,
+}
+
+/// A presentation being rendered to slides on a background thread.
+pub struct DocImport {
+    pub name: String,
+    /// (slides done, total) — total is 0 until the document is opened.
+    pub progress: Arc<(std::sync::atomic::AtomicUsize, std::sync::atomic::AtomicUsize)>,
+    result: crossbeam_channel::Receiver<Result<livestage_core::cue::SlideDeck, String>>,
+    dir: std::path::PathBuf,
+}
+
+/// Depth-first search for a cue in every list (timeline children included).
+fn find_cue_in(lists: &mut [CueList], id: CueId) -> Option<&mut AnyCue> {
+    fn find(c: &mut AnyCue, id: CueId) -> Option<&mut AnyCue> {
+        if c.header().id == id {
+            return Some(c);
+        }
+        if let AnyCue::Timeline(t) = c {
+            if let Some(m) = t.master.as_deref_mut() {
+                if let Some(f) = find(m, id) {
+                    return Some(f);
+                }
+            }
+            for i in &mut t.items {
+                if let Some(f) = find(&mut i.cue, id) {
+                    return Some(f);
+                }
+            }
+        }
+        None
+    }
+    lists.iter_mut().flat_map(|l| l.cues.iter_mut()).find_map(|c| find(c, id))
+}
+
 /// Health counters for the show thread.
 #[derive(Debug, Default)]
 pub struct ShowStats {
@@ -107,6 +157,8 @@ pub struct CueRow {
     pub armed: bool,
     pub offset: Option<ShowTime>,
     pub is_standby: bool,
+    /// Extra status shown in the action column (e.g. "Slide 3 / 12").
+    pub detail: Option<String>,
 }
 
 pub struct ShowRuntime {
@@ -136,6 +188,12 @@ pub struct ShowRuntime {
     pub outputs_live_request: Option<bool>,
     pub outputs_live: bool,
     last_status: Instant,
+    /// Presentations being rendered in the background.
+    pub imports: Vec<DocImport>,
+    /// LibreOffice binary for PowerPoint fidelity (from Settings; auto-detected if None).
+    pub office_path: Option<std::path::PathBuf>,
+    /// Set by Settings: the app restarts OSC / WebSocket / MIDI outside the lock.
+    pub restart_control_requested: bool,
 }
 
 impl ShowRuntime {
@@ -167,6 +225,9 @@ impl ShowRuntime {
             outputs_live_request: None,
             outputs_live: false,
             last_status: Instant::now(),
+            imports: Vec::new(),
+            office_path: None,
+            restart_control_requested: false,
             bundle,
         };
         for e in rt.dmx.patch_errors.clone() {
@@ -248,6 +309,30 @@ impl ShowRuntime {
         if let Some(a) = &mut self.audio {
             a.set_routing(&self.bundle.project.audio);
         }
+    }
+
+    /// Detaches the running control servers so the caller can drop them
+    /// (which joins their threads) without holding the runtime lock.
+    pub fn take_control_servers(&mut self) -> Vec<Box<dyn std::any::Any + Send>> {
+        let mut old: Vec<Box<dyn std::any::Any + Send>> = Vec::new();
+        if let Some(s) = self.osc.take() {
+            old.push(Box::new(s));
+        }
+        if let Some(s) = self.remote.take() {
+            old.push(Box::new(s));
+        }
+        if let Some(m) = self.midi_in.take() {
+            old.push(Box::new(m));
+        }
+        old
+    }
+
+    /// Starts OSC / WebSocket / MIDI from the show's control settings.
+    pub fn start_control_services(&mut self) {
+        self.start_control();
+        let osc = self.osc_port().map_or("off".into(), |p| p.to_string());
+        let ws = self.ws_port().map_or("off".into(), |p| p.to_string());
+        self.log(LogLevel::Info, format!("control services restarted (OSC {osc}, WebSocket {ws})"));
     }
 
     fn start_control(&mut self) {
@@ -364,6 +449,24 @@ impl ShowRuntime {
                     }
                 });
             }
+            ShowCommand::SeekCue { number, position } => {
+                let id = self.bundle.project.active_list().and_then(|l| l.index_of_number(&number)).and_then(|i| {
+                    self.bundle.project.active_list().map(|l| l.cues[i].header().id)
+                });
+                match id {
+                    Some(id) => self.seek_cue(id, position),
+                    None => self.log(LogLevel::Warn, format!("seek: no cue {number}")),
+                }
+            }
+            ShowCommand::NextSlide => {
+                self.slide_nav(None, SlideNav::Next);
+            }
+            ShowCommand::PrevSlide => {
+                self.slide_nav(None, SlideNav::Previous);
+            }
+            ShowCommand::GotoSlide { slide } => {
+                self.slide_nav(None, SlideNav::Goto(slide.saturating_sub(1)));
+            }
             ShowCommand::PauseAll => self.with_all_lists(|l, c| l.pause_all(c)),
             ShowCommand::ResumeAll => self.with_all_lists(|l, c| l.resume_all(c)),
             ShowCommand::StopAll { fade } => self.with_all_lists(|l, c| l.stop_all(c, fade)),
@@ -429,8 +532,186 @@ impl ShowRuntime {
         }
     }
 
+    /// Scrubs any cue (any list, timeline children included) to `position`,
+    /// in place if it is playing.
+    pub fn seek_cue(&mut self, id: CueId, position: ShowTime) {
+        let mut done = false;
+        self.with_all_lists(|l, c| {
+            if !done {
+                done = l.seek_cue(c, id, position);
+            }
+        });
+    }
+
+    /// Pauses / resumes / stops one cue (timeline children included).
+    pub fn cue_op(&mut self, id: CueId, op: CueOp) {
+        let now = self.now();
+        let mut actions = std::mem::take(&mut self.actions);
+        {
+            let finished = self.video_finished.lock();
+            let mut ctx = Ctx { now, actions: &mut actions, audio: self.audio.as_ref(), video_finished: &finished };
+            if let Some(c) = find_cue_in(&mut self.bundle.project.cue_lists, id) {
+                match op {
+                    CueOp::Pause => c.pause(&mut ctx),
+                    CueOp::Resume => c.resume(&mut ctx),
+                    CueOp::Stop => c.stop(&mut ctx, None),
+                }
+            }
+        }
+        self.actions = actions;
+    }
+
+    /// Inserts a copy of a top-level cue right after it (fresh ids, next free number).
+    pub fn duplicate_cue(&mut self, id: CueId) -> Option<CueId> {
+        fn renew(c: &mut AnyCue) {
+            let h = c.header_mut();
+            h.id = CueId::new();
+            h.runtime = Default::default();
+            if let AnyCue::Timeline(t) = c {
+                if let Some(m) = t.master.as_deref_mut() {
+                    renew(m);
+                }
+                for i in &mut t.items {
+                    i.fired = false;
+                    renew(&mut i.cue);
+                }
+            }
+        }
+        let number = self.next_cue_number();
+        let list = self.bundle.project.active_list_mut()?;
+        let i = list.index_of(id)?;
+        let mut copy = list.cues[i].clone();
+        renew(&mut copy);
+        copy.header_mut().number = number;
+        copy.header_mut().name = format!("{} (copy)", copy.header().name);
+        let new_id = copy.header().id;
+        list.cues.insert(i + 1, copy);
+        self.after_structure_edit();
+        Some(new_id)
+    }
+
+    /// The most recently started running presentation, in any list.
+    pub fn current_slides(&self) -> Option<CueId> {
+        fn walk<'a>(c: &'a AnyCue, out: &mut Vec<&'a livestage_core::cue::SlideCue>) {
+            match c {
+                AnyCue::Slides(s) if s.state().is_active() => out.push(s),
+                AnyCue::Timeline(t) => t.items.iter().for_each(|i| walk(&i.cue, out)),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        for c in self.bundle.project.cue_lists.iter().flat_map(|l| &l.cues) {
+            walk(c, &mut found);
+        }
+        found.into_iter().max_by_key(|s| s.header.runtime.started_at).map(|s| s.header.id)
+    }
+
+    /// Next / previous / go-to on a presentation (`None` = the current one).
+    pub fn slide_nav(&mut self, target: Option<CueId>, nav: SlideNav) -> bool {
+        let Some(id) = target.or_else(|| self.current_slides()) else {
+            self.log(LogLevel::Warn, "slides: no presentation is running");
+            return false;
+        };
+        let now = self.now();
+        let mut actions = std::mem::take(&mut self.actions);
+        let changed = {
+            let finished = self.video_finished.lock();
+            let mut ctx = Ctx { now, actions: &mut actions, audio: self.audio.as_ref(), video_finished: &finished };
+            match find_cue_in(&mut self.bundle.project.cue_lists, id) {
+                Some(AnyCue::Slides(s)) => match nav {
+                    SlideNav::Next => s.next(&mut ctx),
+                    SlideNav::Previous => s.previous(&mut ctx),
+                    SlideNav::Goto(i) => s.goto(&mut ctx, i),
+                },
+                _ => false,
+            }
+        };
+        self.actions = actions;
+        changed
+    }
+
+    /// Imports a PDF / PowerPoint: the original is copied into the bundle,
+    /// then rendered to slides on a background thread (never under the
+    /// runtime lock). The slide cue is added when rendering finishes.
+    fn start_document_import(&mut self, rec: &livestage_core::project::AssetRecord, name: String) {
+        let src = match self.bundle.resolve(&rec.path) {
+            Ok(p) => p,
+            Err(e) => return self.log(LogLevel::Error, format!("import: {e}")),
+        };
+        let (dir, prefix) = match self.bundle.new_slides_dir(&name) {
+            Ok(d) => d,
+            Err(e) => return self.log(LogLevel::Error, format!("import: {e}")),
+        };
+        // Render at the resolution of the largest output (4K at most).
+        let target = self
+            .bundle
+            .project
+            .displays
+            .iter()
+            .filter(|d| d.enabled)
+            .filter_map(|d| d.canvas_size)
+            .max_by_key(|[w, h]| w * h)
+            .map_or((1920, 1080), |[w, h]| (w.min(3840), h.min(2160)));
+        let office = self.office_path.clone().filter(|p| p.is_file()).or_else(livestage_video::slides::find_office);
+        let opts = livestage_video::slides::ImportOptions { target, office };
+        let progress = Arc::new((std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0)));
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let (p, source, out) = (progress.clone(), rec.path.clone(), dir.clone());
+        let spawned = std::thread::Builder::new().name("livestage-import".into()).spawn(move || {
+            let result = livestage_video::slides::import_document(&src, Some(source), &out, &prefix, &opts, &mut |done, total| {
+                p.0.store(done, Ordering::Relaxed);
+                p.1.store(total, Ordering::Relaxed);
+            });
+            let _ = tx.send(result.map_err(|e| e.to_string()));
+        });
+        match spawned {
+            Ok(_) => {
+                self.log(LogLevel::Info, format!("rendering {} to slides...", rec.path));
+                self.imports.push(DocImport { name, progress, result: rx, dir });
+            }
+            Err(e) => self.log(LogLevel::Error, format!("import thread: {e}")),
+        }
+    }
+
+    /// Adds slide cues for finished document imports.
+    fn poll_imports(&mut self) {
+        let mut finished = Vec::new();
+        self.imports.retain(|job| match job.result.try_recv() {
+            Ok(r) => {
+                finished.push((job.name.clone(), job.dir.clone(), r));
+                false
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => true,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                finished.push((job.name.clone(), job.dir.clone(), Err("import thread stopped".into())));
+                false
+            }
+        });
+        for (name, dir, result) in finished {
+            match result {
+                Ok(deck) => {
+                    let number = self.next_cue_number();
+                    let n = deck.slides.len();
+                    let cue = crate::demo::slide_cue(&self.bundle.project, &number, &name, deck);
+                    if let Some(l) = self.bundle.project.active_list_mut() {
+                        l.cues.push(cue);
+                    }
+                    self.after_structure_edit();
+                    self.log(LogLevel::Info, format!("imported \"{name}\" as cue {number} ({n} slides)"));
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    self.log(LogLevel::Error, format!("import of \"{name}\" failed: {e}"));
+                }
+            }
+        }
+    }
+
     /// One show-control frame. Call at display rate or faster.
     pub fn tick(&mut self) {
+        if !self.imports.is_empty() {
+            self.poll_imports();
+        }
         let events: Vec<ControlEvent> = self.hub.drain().collect();
         for ev in events {
             self.execute(ev);
@@ -495,6 +776,13 @@ impl ShowRuntime {
                 armed: h.armed,
                 offset,
                 is_standby: standby == Some(h.id),
+                detail: match c {
+                    AnyCue::Slides(s) if s.slide_count() > 0 => {
+                        let at = if s.state().is_active() { s.current } else { s.start_slide };
+                        Some(format!("Slide {} / {}", at + 1, s.slide_count()))
+                    }
+                    _ => None,
+                },
             });
             if let AnyCue::Timeline(t) = c {
                 if let Some(m) = &t.master {
@@ -553,6 +841,27 @@ impl ShowRuntime {
         Some((h.number.clone(), h.name.clone(), cue.elapsed(&ctx), cue.remaining(&ctx)))
     }
 
+    /// The program cue (most recently started running cue of the active list)
+    /// and its elapsed time — what the multiview's PROGRAM cell shows.
+    pub fn program_cue(&self) -> Option<(&AnyCue, ShowTime)> {
+        let list = self.bundle.project.active_list()?;
+        let cue = list.cues.iter().filter(|c| c.state().is_active()).max_by_key(|c| c.header().runtime.started_at)?;
+        let mut scratch = Vec::new();
+        let finished = self.video_finished.lock();
+        let ctx = Ctx { now: self.now(), actions: &mut scratch, audio: self.audio.as_ref(), video_finished: &finished };
+        Some((cue, cue.elapsed(&ctx)))
+    }
+
+    /// The cue the next GO fires.
+    pub fn standby_cue(&self) -> Option<&AnyCue> {
+        self.bundle.project.active_list()?.standby_cue()
+    }
+
+    /// A cue by id in any list (timeline children included).
+    pub fn find_cue(&self, id: CueId) -> Option<&AnyCue> {
+        self.bundle.project.cue_lists.iter().find_map(|l| l.find(id))
+    }
+
     pub fn running_count(&self) -> usize {
         self.bundle.project.active_list().map_or(0, |l| l.cues.iter().filter(|c| c.state().is_active()).count())
     }
@@ -600,6 +909,10 @@ impl ShowRuntime {
             }
             AssetKind::Video | AssetKind::Image => {
                 crate::demo::visual_cue(&self.bundle.project, &number, &name, rec.path.clone(), rec.kind == AssetKind::Video)
+            }
+            AssetKind::Document => {
+                self.mark_changed();
+                return self.start_document_import(&rec, name);
             }
             AssetKind::Data => {
                 self.log(LogLevel::Info, format!("imported data file {}", rec.path));
@@ -692,24 +1005,6 @@ impl ShowRuntime {
     }
 
     pub fn find_cue_mut(&mut self, id: CueId) -> Option<&mut AnyCue> {
-        fn find(c: &mut AnyCue, id: CueId) -> Option<&mut AnyCue> {
-            if c.header().id == id {
-                return Some(c);
-            }
-            if let AnyCue::Timeline(t) = c {
-                if let Some(m) = t.master.as_deref_mut() {
-                    if let Some(f) = find(m, id) {
-                        return Some(f);
-                    }
-                }
-                for i in &mut t.items {
-                    if let Some(f) = find(&mut i.cue, id) {
-                        return Some(f);
-                    }
-                }
-            }
-            None
-        }
-        self.bundle.project.cue_lists.iter_mut().flat_map(|l| l.cues.iter_mut()).find_map(|c| find(c, id))
+        find_cue_in(&mut self.bundle.project.cue_lists, id)
     }
 }

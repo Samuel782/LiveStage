@@ -29,7 +29,9 @@ pub mod gpu;
 pub mod ndi;
 pub mod output;
 pub mod pipelines;
+pub mod slides;
 pub mod source;
+pub mod thumbnail;
 
 pub use compositor::{Compositor, Overlay, OverlayKind};
 pub use gpu::GpuContext;

@@ -2,21 +2,22 @@
 //!
 //! ```text
 //! livestage --ui-snapshot out.png [--show <bundle>] [--size 1600x1000] [--scale 2]
-//!           [--go <cue number>] [--select <cue number>] [--run-ms 1500]
+//!           [--go <cue number>]... [--next-slide <n>] [--select <cue number>] [--run-ms 1500]
+//!           [--tab <name>] [--import <file>]... [--settings <section>]
 //! ```
 //!
 //! Used for visual review of layout changes and in CI-style checks. It
 //! drives the same `panels::draw` as the app, with live canvases for the
 //! multiview / display previews.
 
-use crate::display::DisplayManager;
+use crate::display::OutputEngine;
 use crate::panels::{self, NdiStatus, Previews, UiState};
 use crate::runtime::ShowRuntime;
 use anyhow::Context as _;
 use livestage_control::{ControlSource, ShowCommand};
 use livestage_core::cue::Cue;
 use livestage_core::ProjectBundle;
-use livestage_video::{GpuContext, Pipelines, CANVAS_FORMAT};
+use livestage_video::{GpuContext, CANVAS_FORMAT};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -25,10 +26,17 @@ pub struct SnapshotArgs {
     pub show: Option<PathBuf>,
     pub size: [u32; 2],
     pub scale: f32,
-    pub go: Option<String>,
+    /// Cue numbers fired in order (`--go` may repeat).
+    pub go: Vec<String>,
+    /// Presses of Next Slide after the GOs.
+    pub next_slides: u32,
     pub select: Option<String>,
     pub run_ms: u64,
     pub tab: Option<String>,
+    /// Opens the Settings window on this section (general, audio, control, outputs, files).
+    pub settings: Option<String>,
+    /// Files imported (and, for presentations, rendered) before the snapshot.
+    pub import: Vec<PathBuf>,
 }
 
 impl SnapshotArgs {
@@ -39,10 +47,13 @@ impl SnapshotArgs {
             show: None,
             size: [1600, 1000],
             scale: 1.0,
-            go: None,
+            go: Vec::new(),
+            next_slides: 0,
             select: None,
             run_ms: 1500,
             tab: None,
+            import: Vec::new(),
+            settings: None,
         };
         let val = |flag: &str| args.iter().position(|a| a == flag).and_then(|j| args.get(j + 1)).cloned();
         s.show = val("--show").map(PathBuf::from);
@@ -50,9 +61,12 @@ impl SnapshotArgs {
             s.size = [w, h];
         }
         s.scale = val("--scale").and_then(|v| v.parse().ok()).unwrap_or(1.0);
-        s.go = val("--go");
+        s.go = args.windows(2).filter(|w| w[0] == "--go").map(|w| w[1].clone()).collect();
+        s.next_slides = val("--next-slide").and_then(|v| v.parse().ok()).unwrap_or(0);
         s.select = val("--select");
         s.tab = val("--tab");
+        s.settings = val("--settings");
+        s.import = args.windows(2).filter(|w| w[0] == "--import").map(|w| PathBuf::from(&w[1])).collect();
         s.run_ms = val("--run-ms").and_then(|v| v.parse().ok()).unwrap_or(1500);
         Some(s)
     }
@@ -61,14 +75,27 @@ impl SnapshotArgs {
 pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let gpu = pollster::block_on(GpuContext::new(instance, None))?;
-    let pipes = Pipelines::new(&gpu.device);
     let bundle = match &a.show {
         Some(p) => ProjectBundle::open(p)?,
         None => ProjectBundle::open(std::env::current_dir()?.join("shows/Demo Show.livestage")).context("demo show")?,
     };
     let mut rt = ShowRuntime::new(bundle);
-    if let Some(n) = &a.go {
+    for f in &a.import {
+        rt.import_and_create_cue(f);
+    }
+    // Wait for background presentation renders to land as cues.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !rt.imports.is_empty() && Instant::now() < deadline {
+        rt.tick();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    for n in &a.go {
         rt.command(ControlSource::Ui, ShowCommand::GoCue { number: n.clone() });
+        rt.tick();
+    }
+    for _ in 0..a.next_slides {
+        rt.command(ControlSource::Ui, ShowCommand::NextSlide);
+        rt.tick();
     }
     // Let the show run (cues, fades, timelines) as the show thread would.
     let until = Instant::now() + Duration::from_millis(a.run_ms);
@@ -83,31 +110,40 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
             ui.focus_tab(tab);
         }
     }
+    if let Some(sec) = &a.settings {
+        ui.settings_open = true;
+        ui.settings_section = crate::panels::settings::Section::from_name(sec);
+    }
     ui.selected = a
         .select
         .as_deref()
         .and_then(|n| rt.bundle.project.active_list().and_then(|l| l.cues.iter().find(|c| c.header().number == n)))
         .map(|c| c.header().id);
 
-    // Program canvases for previews / multiview.
-    let mut displays = DisplayManager::default();
-    let mut compositor = livestage_video::Compositor::default();
+    // Program canvases for previews / multiview, rendered by the same engine
+    // the output thread uses (driven synchronously here).
+    let mut engine = OutputEngine::new(gpu.clone(), CANVAS_FORMAT);
     let root = rt.bundle.root().to_path_buf();
     let resolve = |x: &livestage_core::project::AssetRef| livestage_core::bundle::resolve_asset(&root, x).ok();
-    for (at, action) in rt.video_receiver().try_iter() {
-        compositor.handle(at, &action, &resolve);
-    }
     let project_displays = rt.bundle.project.displays.clone();
-    displays.sync_slots(&gpu, &pipes, &project_displays, CANVAS_FORMAT);
-    displays.render(&gpu, &pipes, &mut compositor, rt.now(), &project_displays, &[]);
+    engine.sync_slots(&project_displays);
+    for (at, action) in rt.video_receiver().try_iter() {
+        engine.compositor.handle(at, &action, &resolve);
+    }
+    // A few frames so asynchronous sources (slides, video) deliver a picture.
+    for _ in 0..10 {
+        engine.compositor.update(rt.now());
+        engine.render(rt.now(), &project_displays, &[]);
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     let ctx = egui::Context::default();
     crate::theme::apply(&ctx);
     let mut renderer = egui_wgpu::Renderer::new(&gpu.device, CANVAS_FORMAT, None, 1, false);
     let mut previews = Previews::default();
-    for slot in displays.slots.values() {
-        let tex = renderer.register_native_texture(&gpu.device, slot.renderer.canvas_view(), wgpu::FilterMode::Linear);
-        previews.insert(slot.id, (tex, slot.renderer.canvas_size()));
+    for (id, c) in engine.previews() {
+        let tex = renderer.register_native_texture(&gpu.device, &c.view, wgpu::FilterMode::Linear);
+        previews.insert(id, (tex, c.size));
     }
     let ndi = NdiStatus::default();
 
@@ -125,13 +161,21 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
     // A few passes so egui settles sizes (first frames measure text, dock splits).
     // Texture uploads (font atlas) from earlier passes must be kept.
     let mut textures = egui::TexturesDelta::default();
-    let mut output = None;
-    for i in 0..4 {
-        let mut out = ctx.run(input(i as f64 * 0.016), |ctx| panels::draw(ctx, &mut rt, &mut ui, &displays.physical, &previews, &ndi));
+    // Extra passes while thumbnails decode on worker threads (bounded), then
+    // one more so freshly uploaded thumbnails are drawn.
+    let mut i = 0;
+    let mut output = loop {
+        let mut out = ctx.run(input(i as f64 * 0.016), |ctx| panels::draw(ctx, &mut rt, &mut ui, &[], &previews, &ndi));
         textures.append(std::mem::take(&mut out.textures_delta));
-        output = Some(out);
-    }
-    let mut output = output.expect("ran");
+        let settling = i < 4 || (ui.thumbs.pending() > 0 && i < 200);
+        if i >= 3 && ui.thumbs.pending() > 0 {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        i += 1;
+        if !settling && i > 4 {
+            break out;
+        }
+    };
     output.textures_delta = textures;
 
     let target = gpu.device.create_texture(&wgpu::TextureDescriptor {

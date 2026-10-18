@@ -19,6 +19,7 @@ fn kind_color(k: CueKind) -> Color32 {
         CueKind::Timer => theme::standby(),
         CueKind::Dmx => theme::active(),
         CueKind::Control => Color32::from_rgb(0x78, 0x78, 0x78),
+        CueKind::Slides => Color32::from_rgb(0xC0, 0x6A, 0x2B),
         CueKind::Timeline => Color32::from_rgb(0x2E, 0x9C, 0x9C),
     }
 }

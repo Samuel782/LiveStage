@@ -67,6 +67,8 @@ pub struct Layer {
     paused_at: Option<ShowTime>,
     paused_total: ShowTime,
     removing: bool,
+    /// A fading copy of the previous picture during a slide cross-fade.
+    ghost: bool,
     /// GPU resources, created lazily by the renderer.
     pub gpu: Option<GpuLayer>,
 }
@@ -156,6 +158,19 @@ impl Compositor {
             VisualContent::TestPattern => LayerContent::Source(Box::new(StillSource::new(VideoFrame::test_pattern(1920, 1080)))),
             VisualContent::Text(t) => LayerContent::Overlay(OverlayKind::Text(t.clone())),
             VisualContent::Timer(t) => LayerContent::Overlay(OverlayKind::Timer(t.clone())),
+            VisualContent::Slides { slides, index } => {
+                let paths: Vec<PathBuf> = slides.iter().filter_map(resolve).collect();
+                if paths.len() != slides.len() || paths.is_empty() {
+                    return notice("MISSING SLIDES\nre-import the presentation".into());
+                }
+                // Slides preloaded at standby are handed over already decoded.
+                let preloaded = paths
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, p)| self.stills.get(p).map(|f| (i, f.clone())))
+                    .collect();
+                LayerContent::Source(Box::new(crate::slides::SlideSource::new(paths, *index, preloaded)))
+            }
             VisualContent::Ndi { source_name } => match crate::ndi::NdiVideoSource::connect(source_name) {
                 Some(src) => LayerContent::Source(Box::new(src)),
                 None => notice(format!("NDI RUNTIME NOT INSTALLED\n{source_name}")),
@@ -165,7 +180,7 @@ impl Compositor {
 
     fn layer_mut(&mut self, cue: CueId) -> Option<&mut Layer> {
         let out = self.cue_output.get(&cue)?;
-        self.outputs.get_mut(out)?.iter_mut().find(|l| l.cue == cue)
+        self.outputs.get_mut(out)?.iter_mut().find(|l| l.cue == cue && !l.ghost)
     }
 
     pub fn handle(&mut self, now: ShowTime, action: &VideoAction, resolve: &dyn Fn(&AssetRef) -> Option<PathBuf>) {
@@ -189,6 +204,7 @@ impl Compositor {
                     paused_at: None,
                     paused_total: ShowTime::ZERO,
                     removing: false,
+                    ghost: false,
                     gpu: None,
                 });
                 // Stable sort keeps GO order within the same z.
@@ -214,10 +230,46 @@ impl Compositor {
                 }
             }
             VideoAction::Seek { cue, position } => {
+                self.finished.remove(cue);
                 if let Some(l) = self.layer_mut(*cue) {
-                    l.started_at = l.paused_at.unwrap_or(now);
+                    let at = l.paused_at.unwrap_or(now);
+                    l.started_at = at;
                     l.paused_total = ShowTime::ZERO;
                     l.start_offset = *position;
+                    // Timers display wall-clock time since their start: re-base it.
+                    if let LayerContent::Overlay(OverlayKind::Timer(t)) = &mut l.content {
+                        t.started_at = at;
+                        t.elapsed_offset = *position;
+                    }
+                }
+            }
+            VideoAction::GotoSlide { cue, index, fade } => {
+                let Some(out) = self.cue_output.get(cue).copied() else { return };
+                let Some(stack) = self.outputs.get_mut(&out) else { return };
+                let Some(pos) = stack.iter().position(|l| l.cue == *cue && !l.ghost) else { return };
+                let layer = &mut stack[pos];
+                let ghost_frame = if fade.is_zero() { None } else { layer.frame(now) };
+                if let LayerContent::Source(s) = &mut layer.content {
+                    s.set_slide(*index);
+                }
+                if let Some(frame) = ghost_frame {
+                    // Cross-fade: the old slide sits on top and fades out over the new one.
+                    let mut opacity = Fade::constant(layer.opacity.value(now));
+                    opacity.retarget(now, 0.0, *fade);
+                    let ghost = Layer {
+                        cue: *cue,
+                        z: layer.z,
+                        opacity,
+                        content: LayerContent::Source(Box::new(StillSource::new(frame))),
+                        started_at: now,
+                        start_offset: ShowTime::ZERO,
+                        paused_at: None,
+                        paused_total: ShowTime::ZERO,
+                        removing: true,
+                        ghost: true,
+                        gpu: None,
+                    };
+                    stack.insert(pos + 1, ghost);
                 }
             }
             VideoAction::SetOpacity { cue, opacity, fade } => {
@@ -334,7 +386,7 @@ impl Compositor {
 
     pub fn media_position(&self, cue: CueId, now: ShowTime) -> Option<ShowTime> {
         let out = self.cue_output.get(&cue)?;
-        let l = self.outputs.get(out)?.iter().find(|l| l.cue == cue)?;
+        let l = self.outputs.get(out)?.iter().find(|l| l.cue == cue && !l.ghost)?;
         l.is_texture().then(|| l.elapsed(now))
     }
 
@@ -350,7 +402,7 @@ impl Compositor {
 
 /// Formats a timer; returns `(text, in_warning_zone)`.
 pub fn timer_text(t: &TimerContent, now: ShowTime) -> (String, bool) {
-    let elapsed = now - t.started_at;
+    let elapsed = (now - t.started_at) + t.elapsed_offset;
     match t.mode {
         TimerMode::CountUp => (elapsed.to_timer_string(), false),
         TimerMode::CountDown { from } => {
@@ -376,6 +428,7 @@ mod tests {
             warn_color: [1.0, 0.0, 0.0, 1.0],
             warn_below: ShowTime::from_secs(30),
             started_at: ShowTime::from_secs(100),
+            elapsed_offset: ShowTime::ZERO,
         }
     }
 

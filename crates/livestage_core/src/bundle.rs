@@ -8,6 +8,8 @@
 //!     ├── audio/          imported media is *copied* here for portability
 //!     ├── video/
 //!     ├── images/
+//!     ├── documents/      imported PDF / PowerPoint originals
+//!     ├── slides/<deck>/  slides rendered from them (001.png, 002.png, ...)
 //!     └── data/
 //! ```
 //!
@@ -25,6 +27,8 @@ use std::path::{Path, PathBuf};
 pub const BUNDLE_EXTENSION: &str = "livestage";
 pub const MANIFEST_FILE: &str = "project.json";
 pub const ASSETS_DIR: &str = "assets";
+/// Rendered presentation slides, one folder per imported document.
+pub const SLIDES_DIR: &str = "slides";
 /// Periodic crash-recovery copy of the manifest; removed on every real save.
 pub const AUTOSAVE_FILE: &str = "project.autosave.json";
 
@@ -82,7 +86,7 @@ impl ProjectBundle {
     }
 
     fn ensure_layout(&self) -> CoreResult<()> {
-        for kind in [AssetKind::Audio, AssetKind::Video, AssetKind::Image, AssetKind::Data] {
+        for kind in [AssetKind::Audio, AssetKind::Video, AssetKind::Image, AssetKind::Document, AssetKind::Data] {
             let dir = self.assets_dir().join(kind.folder());
             fs::create_dir_all(&dir).map_err(|e| CoreError::io(&dir, e))?;
         }
@@ -172,6 +176,22 @@ impl ProjectBundle {
         };
         self.project.assets.push(record.clone());
         Ok(record)
+    }
+
+    /// A fresh directory under `assets/slides/` for a rendered deck named
+    /// after `stem`. Returns `(absolute dir, bundle-relative prefix)`.
+    pub fn new_slides_dir(&self, stem: &str) -> CoreResult<(PathBuf, String)> {
+        let base = self.assets_dir().join(SLIDES_DIR);
+        let safe = sanitize_file_name(stem);
+        let mut name = safe.clone();
+        let mut n = 1;
+        while base.join(&name).exists() {
+            n += 1;
+            name = format!("{safe} ({n})");
+        }
+        let dir = base.join(&name);
+        fs::create_dir_all(&dir).map_err(|e| CoreError::io(&dir, e))?;
+        Ok((dir, format!("{ASSETS_DIR}/{SLIDES_DIR}/{name}")))
     }
 
     /// Absolute path for an asset, refusing paths that escape the bundle.

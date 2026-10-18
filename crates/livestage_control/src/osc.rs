@@ -58,6 +58,14 @@ pub fn parse_message(msg: &OscMessage) -> Option<ShowCommand> {
         ["standby", number] | ["playhead", number] => ShowCommand::SetStandby { number: number.to_string() },
         ["master"] => ShowCommand::SetMasterGain { db: arg_f32(&msg.args, 0)? },
         ["status"] => ShowCommand::RequestStatus,
+        ["cue", number, "seek"] | ["seek", number] => ShowCommand::SeekCue {
+            number: number.to_string(),
+            position: ShowTime::from_secs_f64(arg_f32(&msg.args, 0)?.max(0.0) as f64),
+        },
+        ["outputs"] => ShowCommand::SetOutputsFullscreen { enabled: arg_f32(&msg.args, 0).is_none_or(|v| v >= 1.0) },
+        ["slide", "next"] => ShowCommand::NextSlide,
+        ["slide", "previous"] | ["slide", "prev"] => ShowCommand::PrevSlide,
+        ["slide"] => ShowCommand::GotoSlide { slide: arg_f32(&msg.args, 0)?.max(1.0) as usize },
         _ => return None,
     };
     Some(cmd)
@@ -160,6 +168,12 @@ mod tests {
             Some(ShowCommand::GoCue { number: "12.5".into() })
         );
         assert_eq!(parse_message(&msg("/livestage/panic", vec![OscType::Int(1)])), Some(ShowCommand::Panic { hard: true }));
+        assert_eq!(
+            parse_message(&msg("/livestage/cue/3/seek", vec![OscType::Float(12.5)])),
+            Some(ShowCommand::SeekCue { number: "3".into(), position: ShowTime::from_millis(12_500) })
+        );
+        assert_eq!(parse_message(&msg("/livestage/slide/next", vec![])), Some(ShowCommand::NextSlide));
+        assert_eq!(parse_message(&msg("/livestage/slide", vec![OscType::Int(4)])), Some(ShowCommand::GotoSlide { slide: 4 }));
         assert_eq!(
             parse_message(&msg("/livestage/stop", vec![OscType::Float(2.0)])),
             Some(ShowCommand::StopAll { fade: Some(ShowTime::from_secs(2)) })

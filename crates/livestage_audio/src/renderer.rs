@@ -19,6 +19,9 @@ pub const MAX_GROUPS: usize = 128;
 pub const MAX_CHANNELS: usize = 64;
 /// Fade used for "instant" stops / pauses to avoid clicks (~5 ms @ 48k).
 pub const DECLICK_FRAMES: u32 = 240;
+/// Dip used around a live seek (~2 ms @ 48k): short enough that scrubbing
+/// feels instant, long enough to avoid a click at the splice.
+pub const SEEK_DECLICK_FRAMES: u32 = 96;
 
 /// Per-cue status published by the audio thread.
 #[derive(Debug, Default)]
@@ -154,9 +157,22 @@ pub struct VoiceGroup {
     pub level: f32,
     pub state: GroupState,
     pub shared: Arc<VoiceShared>,
+    /// Seek target waiting for the de-click dip to reach silence.
+    pub pending_seek: Option<u64>,
 }
 
 impl VoiceGroup {
+    /// Moves the playhead to `position` frames into the cue's audio.
+    fn jump(&mut self, position: u64) {
+        self.frame = self.count_in + position;
+        // The click's beat grid is anchored to the file (and its count-in).
+        let beat_frame = self.start_frame + self.frame;
+        if let Some((m, _)) = self.click.as_mut() {
+            m.seek(beat_frame);
+        }
+        self.shared.position_frames.store(position, Ordering::Relaxed);
+    }
+
     fn source_len(&self) -> u64 {
         let longest = self.tracks.iter().map(|t| t.clip.frames()).max().unwrap_or(0);
         self.end_frame.map_or(longest, |e| e.min(longest))
@@ -275,10 +291,13 @@ impl Renderer {
                 }
                 RtCommand::Seek { cue, position } => {
                     for g in self.group_mut(cue) {
-                        g.frame = g.count_in + position;
-                        let beat_frame = g.frame;
-                        if let Some((m, _)) = g.click.as_mut() {
-                            m.seek(beat_frame);
+                        if g.state == GroupState::Playing && g.gain.value > 0.0 {
+                            // Dip to silence, splice, come back up (see mix_group).
+                            g.pending_seek = Some(position);
+                            g.gain.to(0.0, SEEK_DECLICK_FRAMES);
+                        } else {
+                            g.pending_seek = None;
+                            g.jump(position);
                         }
                     }
                 }
@@ -375,6 +394,16 @@ fn mix_group(g: &mut VoiceGroup, routing: &RoutingTable, out: &mut [f32], ch: us
     let mut outcome = MixOutcome::Continue;
 
     for f in 0..frames {
+        if let Some(position) = g.pending_seek {
+            if g.gain.is_settled() {
+                g.pending_seek = None;
+                g.jump(position);
+                if g.state == GroupState::Playing {
+                    let level = g.level;
+                    g.gain.to(level, SEEK_DECLICK_FRAMES);
+                }
+            }
+        }
         let gain = g.gain.advance();
         // Count-in + click.
         if let Some((m, stem_id)) = g.click.as_mut() {

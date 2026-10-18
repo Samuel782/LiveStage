@@ -39,6 +39,24 @@ pub fn visual_cue(p: &Project, number: &str, name: &str, asset: AssetRef, video:
     })
 }
 
+pub fn slide_cue(p: &Project, number: &str, name: &str, deck: SlideDeck) -> AnyCue {
+    // Presentations go to the confidence / second screen if there is one,
+    // else the first output.
+    let output = p.displays.first().map(|d| d.id).unwrap_or_default();
+    AnyCue::Slides(SlideCue {
+        header: CueHeader::new(number, name),
+        output,
+        deck,
+        start_slide: 0,
+        layer: 5,
+        opacity: 1.0,
+        fade_in: ShowTime::from_millis(300),
+        fade_out: ShowTime::from_millis(300),
+        transition: ShowTime::from_millis(250),
+        current: 0,
+    })
+}
+
 pub fn new_cue(p: &Project, kind: CueKind, number: &str) -> AnyCue {
     let output = p.displays.first().map(|d| d.id).unwrap_or_default();
     let h = CueHeader::new(number, format!("New {} cue", kind.label()));
@@ -86,6 +104,11 @@ pub fn new_cue(p: &Project, kind: CueKind, number: &str) -> AnyCue {
             action: ControlAction::SendOsc { host: "127.0.0.1".into(), port: 53000, address: "/go".into(), args: vec![] },
         }),
         CueKind::Timeline => AnyCue::Timeline(TimelineCue::new(h, None)),
+        CueKind::Slides => {
+            let mut c = slide_cue(p, number, "New presentation (import a PDF / PowerPoint)", SlideDeck::default());
+            c.header_mut().name = h.name;
+            c
+        }
     }
 }
 
@@ -101,6 +124,7 @@ pub fn timer_cue(output: livestage_core::OutputId, number: &str, label: &str, fr
             warn_color: [0.898, 0.224, 0.208, 1.0],
             warn_below: ShowTime::from_secs(30),
             started_at: ShowTime::ZERO,
+            elapsed_offset: ShowTime::ZERO,
         },
         layer: 10,
         hold_at_zero: true,

@@ -14,7 +14,7 @@ default-members = ["crates/livestage_ui"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-rust-version = "1.88"
+rust-version = "1.92"
 authors = ["LiveStage contributors"]
 
 [workspace.dependencies]
@@ -51,6 +51,13 @@ pollster = "0.4"
 libloading = "0.8"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Presentations: pure-Rust PDF rasteriser, PPTX (zip + XML), slide text
+hayro = "0.7.1"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+roxmltree = "0.21"
+kurbo = "0.13"
+ab_glyph = "0.2.32"
+epaint_default_fonts = "0.31.1"
 # Optional movie decoding (links the system FFmpeg 9.x libraries)
 ffmpeg-next = { version = "9.0", default-features = false, features = ["codec", "format", "software-scaling"] }
 

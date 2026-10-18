@@ -183,61 +183,94 @@ fn outputs_and_master(ui: &mut Ui, rt: &mut ShowRuntime, _st: &mut UiState) {
     }
 }
 
-/// File / Edit / View / Show menus.
+/// LiveStage / File / Edit / View / Show menus (macOS-style rows with shortcuts).
 pub fn menu_bar(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+    use super::widgets::{menu_item, menu_item_danger, menu_item_enabled, menu_separator, shortcut};
     egui::menu::bar(ui, |ui| {
-        ui.menu_button("File", |ui| {
-            if ui.add(Button::new("Save").shortcut_text("Cmd+S")).clicked() {
-                rt.save();
-                ui.close_menu();
+        ui.menu_button(RichText::new("LiveStage").strong(), |ui| {
+            ui.set_min_width(220.0);
+            if menu_item(ui, "Settings…", Some(&shortcut("Cmd+,"))).clicked() {
+                st.settings_open = true;
             }
-            if ui.button("Import media…").clicked() {
+        });
+        ui.menu_button("File", |ui| {
+            ui.set_min_width(240.0);
+            if menu_item(ui, "Save", Some(&shortcut("Cmd+S"))).clicked() {
+                rt.save();
+            }
+            menu_separator(ui);
+            if menu_item(ui, "Import media or presentation…", Some(&shortcut("Cmd+I"))).clicked() {
                 st.import_open = true;
-                ui.close_menu();
             }
         });
         ui.menu_button("Edit", |ui| {
-            if ui.add_enabled(rt.undo.can_undo(), Button::new("Undo").shortcut_text("Cmd+Z")).clicked() {
+            ui.set_min_width(240.0);
+            if menu_item_enabled(ui, rt.undo.can_undo(), "Undo", Some(&shortcut("Cmd+Z"))).clicked() {
                 rt.undo();
-                ui.close_menu();
             }
-            if ui.add_enabled(rt.undo.can_redo(), Button::new("Redo").shortcut_text("Shift+Cmd+Z")).clicked() {
+            if menu_item_enabled(ui, rt.undo.can_redo(), "Redo", Some(&shortcut("Cmd+Shift+Z"))).clicked() {
                 rt.redo();
-                ui.close_menu();
+            }
+            menu_separator(ui);
+            let sel = st.selected.filter(|id| rt.bundle.project.active_list().and_then(|l| l.index_of(*id)).is_some());
+            if menu_item_enabled(ui, sel.is_some(), "Duplicate cue", Some(&shortcut("Cmd+D"))).clicked() {
+                if let Some(id) = sel {
+                    st.selected = rt.duplicate_cue(id).or(st.selected);
+                }
             }
         });
         ui.menu_button("View", |ui| {
+            ui.set_min_width(220.0);
             for tab in super::Tab::ALL {
-                if ui.button(tab.title()).clicked() {
+                if menu_item(ui, tab.title(), None).clicked() {
                     st.focus_tab(tab);
-                    ui.close_menu();
                 }
             }
-            ui.separator();
-            if ui.button("Reset layout").clicked() {
+            menu_separator(ui);
+            if menu_item(ui, "Reset layout", None).clicked() {
                 st.reset_layout();
-                ui.close_menu();
             }
         });
         ui.menu_button("Show", |ui| {
+            ui.set_min_width(240.0);
             let live = rt.outputs_live;
-            if ui.button(if live { "Close program outputs" } else { "Open program outputs" }).clicked() {
+            if menu_item(ui, if live { "Close program outputs" } else { "Open program outputs" }, None).clicked() {
                 rt.command(ControlSource::Ui, ShowCommand::SetOutputsFullscreen { enabled: !live });
-                ui.close_menu();
             }
-            if ui.add(Button::new("Stop all").shortcut_text("")).clicked() {
+            menu_separator(ui);
+            if menu_item(ui, "Next slide", Some("→")).clicked() {
+                rt.command(ControlSource::Ui, ShowCommand::NextSlide);
+            }
+            if menu_item(ui, "Previous slide", Some("←")).clicked() {
+                rt.command(ControlSource::Ui, ShowCommand::PrevSlide);
+            }
+            menu_separator(ui);
+            if menu_item(ui, "Pause all", Some("P")).clicked() {
+                rt.command(ControlSource::Ui, ShowCommand::PauseAll);
+            }
+            if menu_item(ui, "Resume all", Some("R")).clicked() {
+                rt.command(ControlSource::Ui, ShowCommand::ResumeAll);
+            }
+            if menu_item(ui, "Stop all (1 s fade)", None).clicked() {
                 rt.command(ControlSource::Ui, ShowCommand::StopAll { fade: Some(ShowTime::from_secs(1)) });
-                ui.close_menu();
             }
-            if ui.add(Button::new("Panic").shortcut_text("Esc")).clicked() {
+            if menu_item_danger(ui, "Panic", Some("Esc")).clicked() {
                 rt.command(ControlSource::Ui, ShowCommand::Panic { hard: false });
-                ui.close_menu();
             }
         });
         ui.separator();
         let title = format!("{}{}", rt.bundle.project.name, if rt.dirty { "  •  unsaved" } else { "" });
         ui.label(RichText::new(title).color(if rt.dirty { theme::standby() } else { theme::TEXT_DIM }))
             .on_hover_text(rt.bundle.root().display().to_string());
+        // Presentations still rendering.
+        for job in &rt.imports {
+            use std::sync::atomic::Ordering;
+            let (done, total) = (job.progress.0.load(Ordering::Relaxed), job.progress.1.load(Ordering::Relaxed));
+            ui.separator();
+            ui.add(egui::Spinner::new().size(12.0));
+            let p = if total > 0 { format!(" {done}/{total}") } else { String::new() };
+            ui.label(RichText::new(format!("Rendering {}{p}", job.name)).color(theme::standby()));
+        }
     });
 }
 
@@ -247,8 +280,14 @@ pub fn import_window(ctx: &egui::Context, rt: &mut ShowRuntime, st: &mut UiState
         return;
     }
     let mut open = true;
+    if st.import_path.is_empty() {
+        if let Some(dir) = &st.prefs.media_folder {
+            st.import_path = format!("{}/", dir.display());
+        }
+    }
     egui::Window::new("Import media").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-        ui.label("Path of an audio, video or image file. It is copied into the show's assets/ folder and a cue is created.");
+        ui.label("Path of an audio, video, image, PDF or PowerPoint file. It is copied into the show's assets/ folder and a cue is created.");
+        ui.label(RichText::new("Presentations are rendered to slides in the background (one Slides cue per document).").color(theme::TEXT_DIM));
         ui.label(RichText::new("Tip: you can also drop files onto the LiveStage window.").color(theme::TEXT_DIM));
         ui.add(egui::TextEdit::singleline(&mut st.import_path).hint_text("/path/to/file.wav").desired_width(420.0));
         ui.horizontal(|ui| {
@@ -309,6 +348,9 @@ pub fn status_bar(ui: &mut Ui, rt: &ShowRuntime, st: &mut UiState) {
         ui.separator();
         let sched = rt.show_stats.scheduling.lock().clone();
         ui.label(RichText::new(&st.health.2).color(dim)).on_hover_text(format!("Scheduling: {sched}\nWorst values over the last second"));
+        ui.separator();
+        ui.label(RichText::new(format!("Outputs {:.0} fps", st.output_fps)).color(dim))
+            .on_hover_text("Output render thread (independent of this window): canvases, program windows, NDI");
         ui.separator();
         ui.label(RichText::new(format!("DMX {} pkts", rt.dmx.packets_sent())).color(dim));
         ui.separator();

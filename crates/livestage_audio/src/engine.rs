@@ -338,6 +338,7 @@ impl AudioEngine {
                     level,
                     state: GroupState::Playing,
                     shared,
+                    pending_seek: None,
                 });
                 // Keep the click phase-aligned with the song position when starting mid-way.
                 if let Some((m, _)) = group.click.as_mut() {
@@ -550,6 +551,47 @@ mod tests {
         let mut buf = vec![0.0f32; 1024 * 2];
         rt.render(&mut buf);
         assert!(engine.media_finished(cue));
+    }
+
+    #[test]
+    fn live_seek_jumps_without_a_click() {
+        let routing = AudioRouting::default();
+        let (mut engine, mut rt) = AudioEngine::offline(48_000, 2, &routing);
+        // Mono ramp: the sample value encodes the position, so a jump is a step.
+        let frames = 96_000;
+        let data = (0..frames).map(|f| 0.5 * f as f32 / frames as f32).collect();
+        engine.insert_clip("/ramp.wav", AudioClip { sample_rate: 48_000, channels: 1, data });
+        let stem = routing.stems[0].id;
+        let cue = CueId::new();
+        let resolve = |a: &AssetRef| Some(PathBuf::from("/").join(a.as_str()));
+        engine.handle(
+            &AudioAction::Play {
+                cue,
+                tracks: vec![AudioTrack { asset: AssetRef::new("ramp.wav"), stem, gain_db: 0.0, mute: false }],
+                click: None,
+                gain_db: 0.0,
+                fade_in: ShowTime::ZERO,
+                start_at: ShowTime::ZERO,
+                end_at: None,
+                looped: false,
+            },
+            &resolve,
+        );
+        let mut before = vec![0.0f32; 256 * 2];
+        rt.render(&mut before);
+        engine.handle(&AudioAction::Seek { cue, position: ShowTime::from_secs(1) }, &resolve);
+        // The clock follows the seek immediately, before the audio thread runs.
+        assert_eq!(engine.media_position(cue), Some(ShowTime::from_secs(1)));
+        let mut after = vec![0.0f32; 512 * 2];
+        rt.render(&mut after);
+        let left: Vec<f32> = before.iter().chain(after.iter()).step_by(2).copied().collect();
+        let worst = left.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
+        assert!(worst < 0.01, "audible step at the splice: {worst}");
+        // Playing from 1 s: the ramp is at ~0.25 once the dip is over.
+        let last = *left.last().unwrap();
+        assert!((last - 0.25).abs() < 0.01, "not playing from the new position: {last}");
+        let pos = engine.media_position(cue).unwrap();
+        assert!(pos > ShowTime::from_secs(1) && pos < ShowTime::from_millis(1_020), "{pos:?}");
     }
 }
 

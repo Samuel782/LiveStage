@@ -110,6 +110,8 @@ pub trait VideoSource: Send {
     fn frame_at(&mut self, t: ShowTime) -> Option<VideoFrame>;
     fn duration(&self) -> Option<ShowTime>;
     fn size(&self) -> (u32, u32);
+    /// Paged sources (presentations): show page `index`. Others ignore it.
+    fn set_slide(&mut self, _index: usize) {}
 }
 
 /// A decoder backend (FFmpeg, AVFoundation, GStreamer, HAP...).
