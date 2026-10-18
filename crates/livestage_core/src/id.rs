@@ -35,6 +35,8 @@ define_id!(/// Identifies a cue anywhere in the show tree.
     CueId);
 define_id!(/// Identifies a cue list.
     CueListId);
+define_id!(/// Identifies a cue cart (soundboard page).
+    CartId);
 define_id!(/// Identifies a logical (named) video output, e.g. "Main LED Wall".
     OutputId);
 define_id!(/// Identifies a logical audio stem (Vocals, Click, Backing...).

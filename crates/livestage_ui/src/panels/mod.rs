@@ -1,6 +1,7 @@
 //! Operator UI: transport bar + dockable panels.
 
 mod audio;
+pub mod cart;
 mod control;
 mod cue_grid;
 mod displays;
@@ -26,6 +27,7 @@ pub enum Tab {
     Inspector,
     Timeline,
     Multiview,
+    Carts,
     Displays,
     AudioPatch,
     Dmx,
@@ -33,8 +35,8 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 8] =
-        [Tab::CueList, Tab::Inspector, Tab::Timeline, Tab::Multiview, Tab::Displays, Tab::AudioPatch, Tab::Dmx, Tab::Control];
+    pub const ALL: [Tab; 9] =
+        [Tab::CueList, Tab::Inspector, Tab::Timeline, Tab::Multiview, Tab::Carts, Tab::Displays, Tab::AudioPatch, Tab::Dmx, Tab::Control];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -42,6 +44,7 @@ impl Tab {
             Tab::Inspector => "Inspector",
             Tab::Timeline => "Timeline",
             Tab::Multiview => "Multiview",
+            Tab::Carts => "Soundboard",
             Tab::Displays => "Display Routing",
             Tab::AudioPatch => "Audio Patch",
             Tab::Dmx => "DMX",
@@ -58,7 +61,7 @@ fn default_dock() -> DockState<Tab> {
     let [top, _bottom] = tree.split_below(
         NodeIndex::root(),
         0.64,
-        vec![Tab::Timeline, Tab::Multiview, Tab::Displays, Tab::AudioPatch, Tab::Dmx, Tab::Control],
+        vec![Tab::Timeline, Tab::Multiview, Tab::Carts, Tab::Displays, Tab::AudioPatch, Tab::Dmx, Tab::Control],
     );
     tree.split_right(top, 0.63, vec![Tab::Inspector]);
     dock
@@ -95,6 +98,13 @@ pub struct UiState {
     pub quit_requested: bool,
     /// Output render thread frame rate.
     pub output_fps: f32,
+    /// Soundboard: visible cart, edit mode, pad being edited, pad held by
+    /// the pointer, and pending key / MIDI learn.
+    pub cart_page: usize,
+    pub cart_edit: bool,
+    pub cart_slot: Option<usize>,
+    pub pad_pointer: Option<(usize, usize)>,
+    pub pad_learn: Option<cart::PadLearn>,
 }
 
 impl Default for UiState {
@@ -124,6 +134,11 @@ impl Default for UiState {
             confirm_quit: false,
             quit_requested: false,
             output_fps: 0.0,
+            cart_page: 0,
+            cart_edit: false,
+            cart_slot: None,
+            pad_pointer: None,
+            pad_learn: None,
         }
     }
 }
@@ -168,6 +183,7 @@ impl TabViewer for Viewer<'_> {
             Tab::Inspector => inspector::show(ui, self.rt, self.st),
             Tab::Timeline => timeline::show(ui, self.rt, self.st),
             Tab::Multiview => multiview::show(ui, self.rt, self.st, self.previews, self.ndi),
+            Tab::Carts => cart::show(ui, self.rt, self.st),
             Tab::Displays => displays::show(ui, self.rt, self.st, self.physical, self.previews, self.ndi),
             Tab::AudioPatch => audio::show(ui, self.rt, self.st),
             Tab::Dmx => dmx::show(ui, self.rt, self.st),
@@ -184,9 +200,11 @@ fn shortcuts(ctx: &egui::Context, rt: &mut ShowRuntime, st: &mut UiState) {
     if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
         st.settings_open = !st.settings_open;
     }
-    if ctx.wants_keyboard_input() {
+    if ctx.wants_keyboard_input() || st.pad_learn.is_some() {
         return;
     }
+    // Pad keys first, so a pad bound to a key never also triggers a shortcut.
+    cart::key_triggers(ctx, rt, st);
     let src = || ControlSource::Keyboard;
     let selected_top = st.selected.filter(|id| rt.bundle.project.active_list().and_then(|l| l.index_of(*id)).is_some());
     ctx.input_mut(|i| {
@@ -294,6 +312,13 @@ pub fn draw(
 ) {
     st.thumbs.poll(ctx);
     shortcuts(ctx, rt, st);
+    // A pad held with the mouse is released even if its panel was hidden meanwhile.
+    if let Some((cart, pad)) = st.pad_pointer {
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            rt.command(ControlSource::Ui, ShowCommand::CartPad { cart: cart + 1, pad: pad + 1, down: false });
+            st.pad_pointer = None;
+        }
+    }
     let pointer_down = ctx.input(|i| i.pointer.any_down());
     {
         let current = &rt.bundle.project;

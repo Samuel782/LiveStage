@@ -206,6 +206,9 @@ impl ProjectBundle {
         for list in &self.project.cue_lists {
             refs.extend(list.cues.iter().flat_map(AnyCue::assets).cloned());
         }
+        for cart in &self.project.carts {
+            refs.extend(cart.pads.iter().flatten().flat_map(|p| p.cue.assets()).cloned());
+        }
         refs.sort();
         refs.dedup();
         refs.into_iter().filter(|a| self.resolve(a).map(|p| !p.is_file()).unwrap_or(true)).collect()

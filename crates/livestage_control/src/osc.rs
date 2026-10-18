@@ -14,6 +14,8 @@
 //! | `/livestage/standby/{number}`    |                 | Set standby      |
 //! | `/livestage/master`              | `dB`            | Master gain      |
 //! | `/livestage/status`              |                 | Status request   |
+//! | `/livestage/cart/{c}/pad/{p}`    | `[1 / 0]`       | Press / release a cart pad |
+//! | `/livestage/cart/stop`           |                 | Stop all pads    |
 //! | `/livestage/timecode/start|stop` |                 | Internal TC transport |
 //! | `/livestage/timecode/locate`     | `"HH:MM:SS:FF"` | Internal TC locate |
 
@@ -68,6 +70,13 @@ pub fn parse_message(msg: &OscMessage) -> Option<ShowCommand> {
         ["slide", "next"] => ShowCommand::NextSlide,
         ["slide", "previous"] | ["slide", "prev"] => ShowCommand::PrevSlide,
         ["slide"] => ShowCommand::GotoSlide { slide: arg_f32(&msg.args, 0)?.max(1.0) as usize },
+        ["cart", "stop"] => ShowCommand::CartStopAll,
+        ["cart", cart, "pad", pad] => ShowCommand::CartPad {
+            cart: cart.parse().ok()?,
+            pad: pad.parse().ok()?,
+            // No argument = press; 0 releases (for hold pads).
+            down: arg_f32(&msg.args, 0).is_none_or(|v| v >= 0.5),
+        },
         ["timecode", "start"] => ShowCommand::TimecodeStart,
         ["timecode", "stop"] => ShowCommand::TimecodeStop,
         ["timecode", "locate"] => match msg.args.first()? {
@@ -192,6 +201,15 @@ mod tests {
             Some(ShowCommand::TimecodeLocate { timecode: "01:00:00:00".parse().unwrap() })
         );
         assert_eq!(parse_message(&msg("/livestage/timecode/locate", vec![OscType::String("nope".into())])), None);
+        assert_eq!(
+            parse_message(&msg("/livestage/cart/2/pad/16", vec![])),
+            Some(ShowCommand::CartPad { cart: 2, pad: 16, down: true })
+        );
+        assert_eq!(
+            parse_message(&msg("/livestage/cart/1/pad/3", vec![OscType::Int(0)])),
+            Some(ShowCommand::CartPad { cart: 1, pad: 3, down: false })
+        );
+        assert_eq!(parse_message(&msg("/livestage/cart/x/pad/3", vec![])), None);
         assert_eq!(parse_message(&msg("/nope", vec![])), None);
     }
 

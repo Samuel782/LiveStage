@@ -4,6 +4,7 @@
 //! livestage --ui-snapshot out.png [--show <bundle>] [--size 1600x1000] [--scale 2]
 //!           [--go <cue number>]... [--next-slide <n>] [--select <cue number>] [--run-ms 1500]
 //!           [--tab <name>] [--import <file>]... [--settings <section>]
+//!           [--pad <cart>/<pad>]... [--edit-pad <cart>/<pad>]
 //! ```
 //!
 //! Used for visual review of layout changes and in CI-style checks. It
@@ -37,6 +38,10 @@ pub struct SnapshotArgs {
     pub settings: Option<String>,
     /// Files imported (and, for presentations, rendered) before the snapshot.
     pub import: Vec<PathBuf>,
+    /// Cart pads pressed after the GOs (1-based `cart/pad`).
+    pub pads: Vec<(usize, usize)>,
+    /// Opens the Soundboard in edit mode on this pad.
+    pub edit_pad: Option<(usize, usize)>,
 }
 
 impl SnapshotArgs {
@@ -54,7 +59,10 @@ impl SnapshotArgs {
             tab: None,
             import: Vec::new(),
             settings: None,
+            pads: Vec::new(),
+            edit_pad: None,
         };
+        let cart_pad = |v: &str| v.split_once('/').and_then(|(c, p)| Some((c.parse().ok()?, p.parse().ok()?)));
         let val = |flag: &str| args.iter().position(|a| a == flag).and_then(|j| args.get(j + 1)).cloned();
         s.show = val("--show").map(PathBuf::from);
         if let Some((Some(w), Some(h))) = val("--size").and_then(|v| v.split_once('x').map(|(w, h)| (w.parse().ok(), h.parse().ok()))) {
@@ -66,6 +74,8 @@ impl SnapshotArgs {
         s.select = val("--select");
         s.tab = val("--tab");
         s.settings = val("--settings");
+        s.pads = args.windows(2).filter(|w| w[0] == "--pad").filter_map(|w| cart_pad(&w[1])).collect();
+        s.edit_pad = val("--edit-pad").and_then(|v| cart_pad(&v));
         s.import = args.windows(2).filter(|w| w[0] == "--import").map(|w| PathBuf::from(&w[1])).collect();
         s.run_ms = val("--run-ms").and_then(|v| v.parse().ok()).unwrap_or(1500);
         Some(s)
@@ -93,6 +103,10 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
         rt.command(ControlSource::Ui, ShowCommand::GoCue { number: n.clone() });
         rt.tick();
     }
+    for &(cart, pad) in &a.pads {
+        rt.command(ControlSource::Ui, ShowCommand::CartPad { cart, pad, down: true });
+        rt.tick();
+    }
     for _ in 0..a.next_slides {
         rt.command(ControlSource::Ui, ShowCommand::NextSlide);
         rt.tick();
@@ -110,6 +124,12 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
             ui.focus_tab(tab);
         }
     }
+    if let Some((cart, pad)) = a.edit_pad {
+        ui.focus_tab(panels::Tab::Carts);
+        ui.cart_page = cart.saturating_sub(1);
+        ui.cart_edit = true;
+        ui.cart_slot = Some(pad.saturating_sub(1));
+    }
     if let Some(sec) = &a.settings {
         ui.settings_open = true;
         ui.settings_section = crate::panels::settings::Section::from_name(sec);
@@ -119,6 +139,9 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
         .as_deref()
         .and_then(|n| rt.bundle.project.active_list().and_then(|l| l.cues.iter().find(|c| c.header().number == n)))
         .map(|c| c.header().id);
+    if let (None, Some((_, pad))) = (ui.selected, a.edit_pad) {
+        ui.selected = rt.bundle.project.carts.get(ui.cart_page).and_then(|k| k.pad(pad.saturating_sub(1))).map(|p| p.cue.header().id);
+    }
 
     // Program canvases for previews / multiview, rendered by the same engine
     // the output thread uses (driven synchronously here).

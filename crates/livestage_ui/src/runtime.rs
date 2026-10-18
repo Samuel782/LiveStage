@@ -9,6 +9,7 @@ use livestage_control::websocket::RemoteServer;
 use livestage_control::{ControlEvent, ControlHub, ControlSource, PanicController};
 use livestage_core::action::{AudioAction, ControlAction, EngineAction};
 use livestage_core::cue::{AnyCue, Cue, CueContext, CueExt};
+use livestage_core::cart::CueCart;
 use livestage_core::cuelist::{CueList, CueListStatus};
 use livestage_core::id::{CueId, CueListId};
 use livestage_core::project::{AssetKind, AssetRef};
@@ -58,7 +59,24 @@ pub struct DocImport {
 }
 
 /// Depth-first search for a cue in every list (timeline children included).
-fn find_cue_in(lists: &mut [CueList], id: CueId) -> Option<&mut AnyCue> {
+/// Gives a copied cue (and its timeline children) fresh ids and idle state.
+pub fn renew_ids(c: &mut AnyCue) {
+    let h = c.header_mut();
+    h.id = CueId::new();
+    h.runtime = Default::default();
+    if let AnyCue::Timeline(t) = c {
+        if let Some(m) = t.master.as_deref_mut() {
+            renew_ids(m);
+        }
+        for i in &mut t.items {
+            i.fired = false;
+            renew_ids(&mut i.cue);
+        }
+    }
+}
+
+/// Depth-first search in every list and cart (timeline children included).
+fn find_cue_in<'a>(lists: &'a mut [CueList], carts: &'a mut [CueCart], id: CueId) -> Option<&'a mut AnyCue> {
     fn find(c: &mut AnyCue, id: CueId) -> Option<&mut AnyCue> {
         if c.header().id == id {
             return Some(c);
@@ -77,7 +95,11 @@ fn find_cue_in(lists: &mut [CueList], id: CueId) -> Option<&mut AnyCue> {
         }
         None
     }
-    lists.iter_mut().flat_map(|l| l.cues.iter_mut()).find_map(|c| find(c, id))
+    lists
+        .iter_mut()
+        .flat_map(|l| l.cues.iter_mut())
+        .chain(carts.iter_mut().flat_map(|c| c.pads.iter_mut().flatten().map(|p| &mut p.cue)))
+        .find_map(|c| find(c, id))
 }
 
 /// Health counters for the show thread.
@@ -375,7 +397,7 @@ impl ShowRuntime {
     pub fn open_midi(&mut self, port: Option<&str>) {
         self.midi_in = None;
         let id = self.bundle.project.control.msc_device_id;
-        match MidiInputHandler::open(port, livestage_control::midi::default_bindings(), id, self.hub.sender()) {
+        match MidiInputHandler::open(port, self.midi_bindings(), id, self.hub.sender()) {
             Ok(h) => {
                 let msg = format!("MIDI input: {}", h.port_name);
                 self.midi_in = Some(h);
@@ -463,6 +485,22 @@ impl ShowRuntime {
         result
     }
 
+    fn with_carts(&mut self, mut f: impl FnMut(&mut CueCart, &mut dyn CueContext)) {
+        if self.bundle.project.carts.is_empty() {
+            return;
+        }
+        let now = self.now();
+        let mut actions = std::mem::take(&mut self.actions);
+        {
+            let finished = self.video_finished.lock();
+            let mut ctx = Ctx { now, actions: &mut actions, audio: self.audio.as_ref(), video_finished: &finished };
+            for k in &mut self.bundle.project.carts {
+                f(k, &mut ctx);
+            }
+        }
+        self.actions = actions;
+    }
+
     fn with_all_lists(&mut self, mut f: impl FnMut(&mut CueList, &mut dyn CueContext)) {
         let now = self.now();
         let mut actions = std::mem::take(&mut self.actions);
@@ -529,11 +567,43 @@ impl ShowRuntime {
             ShowCommand::GotoSlide { slide } => {
                 self.slide_nav(None, SlideNav::Goto(slide.saturating_sub(1)));
             }
-            ShowCommand::PauseAll => self.with_all_lists(|l, c| l.pause_all(c)),
-            ShowCommand::ResumeAll => self.with_all_lists(|l, c| l.resume_all(c)),
-            ShowCommand::StopAll { fade } => self.with_all_lists(|l, c| l.stop_all(c, fade)),
+            ShowCommand::PauseAll => {
+                self.with_all_lists(|l, c| l.pause_all(c));
+                self.with_carts(|k, c| k.pause_all(c));
+            }
+            ShowCommand::ResumeAll => {
+                self.with_all_lists(|l, c| l.resume_all(c));
+                self.with_carts(|k, c| k.resume_all(c));
+            }
+            ShowCommand::StopAll { fade } => {
+                self.with_all_lists(|l, c| l.stop_all(c, fade));
+                self.with_carts(|k, c| k.stop_all(c, fade));
+            }
+            ShowCommand::CartStopAll => self.with_carts(|k, c| k.stop_all(c, None)),
+            ShowCommand::CartPad { cart, pad, down } => {
+                let (ci, pi) = (cart.wrapping_sub(1), pad.wrapping_sub(1));
+                let exists = self.bundle.project.carts.get(ci).is_some_and(|k| k.pad(pi).is_some());
+                if !exists {
+                    if down {
+                        self.log(LogLevel::Warn, format!("cart {cart}: pad {pad} is empty"));
+                    }
+                } else {
+                    let mut i = 0;
+                    self.with_carts(|k, c| {
+                        if i == ci {
+                            if down {
+                                k.press(c, pi);
+                            } else {
+                                k.release(c, pi);
+                            }
+                        }
+                        i += 1;
+                    });
+                }
+            }
             ShowCommand::Panic { hard } => {
                 // Panic reaches every list, not just the active one.
+                self.with_carts(|k, c| k.stop_all(c, Some(ShowTime::ZERO)));
                 self.with_all_lists(|l, c| l.panic(c, hard));
                 self.log(LogLevel::Warn, if hard { "HARD PANIC" } else { "PANIC (fade)" });
             }
@@ -614,6 +684,13 @@ impl ShowRuntime {
                 done = l.seek_cue(c, id, position);
             }
         });
+        if !done {
+            self.with_carts(|k, c| {
+                if let Some(p) = k.pads.iter_mut().flatten().find(|p| p.cue.header().id == id) {
+                    p.cue.seek(c, position);
+                }
+            });
+        }
     }
 
     /// Pauses / resumes / stops one cue (timeline children included).
@@ -623,7 +700,7 @@ impl ShowRuntime {
         {
             let finished = self.video_finished.lock();
             let mut ctx = Ctx { now, actions: &mut actions, audio: self.audio.as_ref(), video_finished: &finished };
-            if let Some(c) = find_cue_in(&mut self.bundle.project.cue_lists, id) {
+            if let Some(c) = find_cue_in(&mut self.bundle.project.cue_lists, &mut self.bundle.project.carts, id) {
                 match op {
                     CueOp::Pause => c.pause(&mut ctx),
                     CueOp::Resume => c.resume(&mut ctx),
@@ -636,25 +713,11 @@ impl ShowRuntime {
 
     /// Inserts a copy of a top-level cue right after it (fresh ids, next free number).
     pub fn duplicate_cue(&mut self, id: CueId) -> Option<CueId> {
-        fn renew(c: &mut AnyCue) {
-            let h = c.header_mut();
-            h.id = CueId::new();
-            h.runtime = Default::default();
-            if let AnyCue::Timeline(t) = c {
-                if let Some(m) = t.master.as_deref_mut() {
-                    renew(m);
-                }
-                for i in &mut t.items {
-                    i.fired = false;
-                    renew(&mut i.cue);
-                }
-            }
-        }
         let number = self.next_cue_number();
         let list = self.bundle.project.active_list_mut()?;
         let i = list.index_of(id)?;
         let mut copy = list.cues[i].clone();
-        renew(&mut copy);
+        renew_ids(&mut copy);
         copy.header_mut().number = number;
         copy.header_mut().name = format!("{} (copy)", copy.header().name);
         let new_id = copy.header().id;
@@ -690,7 +753,7 @@ impl ShowRuntime {
         let changed = {
             let finished = self.video_finished.lock();
             let mut ctx = Ctx { now, actions: &mut actions, audio: self.audio.as_ref(), video_finished: &finished };
-            match find_cue_in(&mut self.bundle.project.cue_lists, id) {
+            match find_cue_in(&mut self.bundle.project.cue_lists, &mut self.bundle.project.carts, id) {
                 Some(AnyCue::Slides(s)) => match nav {
                     SlideNav::Next => s.next(&mut ctx),
                     SlideNav::Previous => s.previous(&mut ctx),
@@ -799,6 +862,7 @@ impl ShowRuntime {
         let tc = self.timecode.update(self.now(), audio_clock);
         self.with_all_lists(|l, c| l.follow_timecode(c, &tc));
         self.with_all_lists(|l, c| l.tick(c));
+        self.with_carts(|k, c| k.tick(c));
         self.flush_actions();
 
         let now = self.now();
@@ -898,7 +962,7 @@ impl ShowRuntime {
         let mut scratch = Vec::new();
         let finished = self.video_finished.lock();
         let ctx = Ctx { now: self.now(), actions: &mut scratch, audio: self.audio.as_ref(), video_finished: &finished };
-        let cue = self.bundle.project.cue_lists.iter().find_map(|l| l.find(id))?;
+        let cue = self.find_cue(id)?;
         cue.state().is_active().then(|| cue.elapsed(&ctx))
     }
 
@@ -952,7 +1016,8 @@ impl ShowRuntime {
 
     /// A cue by id in any list (timeline children included).
     pub fn find_cue(&self, id: CueId) -> Option<&AnyCue> {
-        self.bundle.project.cue_lists.iter().find_map(|l| l.find(id))
+        let p = &self.bundle.project;
+        p.cue_lists.iter().find_map(|l| l.find(id)).or_else(|| p.carts.iter().find_map(|k| k.find(id)))
     }
 
     pub fn running_count(&self) -> usize {
@@ -990,19 +1055,10 @@ impl ShowRuntime {
         let number = self.next_cue_number();
         let name = rec.original_name.rsplit_once('.').map_or(rec.original_name.clone(), |(n, _)| n.to_string());
         let cue = match rec.kind {
-            AssetKind::Audio => {
-                let media_length = self
-                    .bundle
-                    .resolve(&rec.path)
-                    .ok()
-                    .and_then(|p| livestage_audio::decode::probe(&p).ok())
-                    .and_then(|i| i.duration_secs())
-                    .map(ShowTime::from_secs_f64);
-                crate::demo::audio_cue(&self.bundle.project, &number, &name, rec.path.clone(), media_length)
-            }
-            AssetKind::Video | AssetKind::Image => {
-                crate::demo::visual_cue(&self.bundle.project, &number, &name, rec.path.clone(), rec.kind == AssetKind::Video)
-            }
+            AssetKind::Audio | AssetKind::Video | AssetKind::Image => match self.cue_for_asset(&rec, &number, &name) {
+                Some(c) => c,
+                None => return,
+            },
             AssetKind::Document => {
                 self.mark_changed();
                 return self.start_document_import(&rec, name);
@@ -1020,6 +1076,55 @@ impl ShowRuntime {
         self.log(LogLevel::Info, format!("imported {} as cue {number}", rec.path));
     }
 
+    /// A playable cue for an imported audio / video / image asset.
+    pub fn cue_for_asset(&self, rec: &livestage_core::project::AssetRecord, number: &str, name: &str) -> Option<AnyCue> {
+        match rec.kind {
+            AssetKind::Audio => {
+                let media_length = self
+                    .bundle
+                    .resolve(&rec.path)
+                    .ok()
+                    .and_then(|p| livestage_audio::decode::probe(&p).ok())
+                    .and_then(|i| i.duration_secs())
+                    .map(ShowTime::from_secs_f64);
+                Some(crate::demo::audio_cue(&self.bundle.project, number, name, rec.path.clone(), media_length))
+            }
+            AssetKind::Video | AssetKind::Image => {
+                Some(crate::demo::visual_cue(&self.bundle.project, number, name, rec.path.clone(), rec.kind == AssetKind::Video))
+            }
+            AssetKind::Document | AssetKind::Data => None,
+        }
+    }
+
+    // -------------------------------------------------------------- carts --
+
+    pub fn add_cart(&mut self, rows: u8, cols: u8) -> usize {
+        let n = self.bundle.project.carts.len() + 1;
+        self.bundle.project.carts.push(CueCart::new(format!("Cart {n}"), rows, cols));
+        self.mark_changed();
+        n - 1
+    }
+
+    /// Puts `cue` on a pad (keeping the pad's mode, colour and bindings if
+    /// it already had them). The cue gets fresh ids and a pad number.
+    pub fn set_pad_cue(&mut self, cart: usize, slot: usize, mut cue: AnyCue) -> Option<CueId> {
+        let k = self.bundle.project.carts.get_mut(cart)?;
+        let old = k.pads.get_mut(slot)?;
+        renew_ids(&mut cue);
+        cue.header_mut().number = format!("C{}.{}", cart + 1, slot + 1);
+        cue.header_mut().pre_wait = ShowTime::ZERO;
+        cue.header_mut().follow = livestage_core::cue::FollowMode::None;
+        cue.header_mut().timecode = None;
+        let id = cue.header().id;
+        match old {
+            Some(p) if !p.is_playing() => p.cue = cue,
+            Some(_) => return None, // never swap a playing pad's cue
+            None => *old = Some(livestage_core::cart::CartPad::new(cue)),
+        }
+        self.mark_changed();
+        Some(id)
+    }
+
     pub fn next_cue_number(&self) -> String {
         let max = self
             .bundle
@@ -1035,6 +1140,31 @@ impl ShowRuntime {
         self.dirty = true;
         self.undo.touch();
         self.edit_generation += 1;
+        self.refresh_midi_bindings();
+    }
+
+    /// Operator MIDI bindings: cart pads first (note-on presses, note-off
+    /// releases), then the default GO / STOP / PANIC notes.
+    pub fn midi_bindings(&self) -> Vec<livestage_control::midi::MidiBinding> {
+        use livestage_control::midi::{MidiBinding, MidiTrigger};
+        let mut b = Vec::new();
+        for (ci, cart) in self.bundle.project.carts.iter().enumerate() {
+            for (pi, pad) in cart.pads.iter().enumerate() {
+                let Some(n) = pad.as_ref().and_then(|p| p.midi) else { continue };
+                let cmd = |down| ShowCommand::CartPad { cart: ci + 1, pad: pi + 1, down };
+                b.push(MidiBinding { trigger: MidiTrigger::Note { channel: n.channel, note: n.note }, command: cmd(true) });
+                b.push(MidiBinding { trigger: MidiTrigger::NoteOff { channel: n.channel, note: n.note }, command: cmd(false) });
+            }
+        }
+        b.extend(livestage_control::midi::default_bindings());
+        b
+    }
+
+    /// Pushes the current bindings to the open MIDI input (no reconnect).
+    pub fn refresh_midi_bindings(&self) {
+        if let Some(m) = &self.midi_in {
+            m.set_bindings(self.midi_bindings());
+        }
     }
 
     pub fn undo(&mut self) {
@@ -1063,6 +1193,7 @@ impl ShowRuntime {
         if self.bundle.project.timecode != *self.timecode.config() {
             self.apply_timecode_config();
         }
+        self.refresh_midi_bindings();
         if dmx_changed {
             self.dmx = DmxEngine::new(self.bundle.project.dmx.clone());
             self.dmx.start_output();
@@ -1101,6 +1232,7 @@ impl ShowRuntime {
     }
 
     pub fn find_cue_mut(&mut self, id: CueId) -> Option<&mut AnyCue> {
-        find_cue_in(&mut self.bundle.project.cue_lists, id)
+        let p = &mut self.bundle.project;
+        find_cue_in(&mut p.cue_lists, &mut p.carts, id)
     }
 }

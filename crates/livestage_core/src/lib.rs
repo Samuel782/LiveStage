@@ -8,6 +8,7 @@
 //!   backbone with child cues fired at precise offsets.
 //! * [`cuelist`] — ordered cue lists with playhead, standby, auto-continue /
 //!   auto-follow and panic handling.
+//! * [`cart`] — cue carts: soundboard pads (toggle / retrigger / hold).
 //! * [`routing`] — logical displays, audio stems/buses/patch crosspoints.
 //! * [`projection`] — serialisable projection-mapping data (Bezier warp grid,
 //!   edge blend, polygon masks) and the pure math to evaluate it.
@@ -21,6 +22,7 @@
 
 pub mod action;
 pub mod bundle;
+pub mod cart;
 pub mod command;
 pub mod cue;
 pub mod cuelist;

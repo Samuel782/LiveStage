@@ -39,6 +39,7 @@ cargo run --release                        # opens ./shows/Demo Show.livestage (
 | **NDI streaming** | Receive any NDI source as a layer; publish any output's program feed at its own resolution (GPU-scaled, triple-buffered async readback). The NDI runtime is loaded at run time, never linked. |
 | **DMX** | Bit-exact Art-Net 4 and sACN (E1.31) output, fixture library with a validated patch (16-bit attributes), timed crossfades, LED pixel mapper fed from output canvases. |
 | **Control** | MIDI notes/CC/program change, MIDI Show Control, OSC in/out, WebSocket JSON API with live status push, two-stage panic (soft fade, then a hard cut on the second press). |
+| **Soundboard (cue carts)** | Pages of pads (4 × 4, 8 × 8 or any grid up to 16 × 16) for live busking: audio stingers, one-shot videos, DMX flash looks. Each pad is **Toggle**, **Retrigger** or **Hold / Gate**, has its own colour, and can be played from the mouse, a **keyboard key** or a **MIDI note** (with learn), or over OSC. Pads show a progress ring with the remaining time. |
 | **Timecode (SMPTE / MTC / Art-Net)** | 24, 25, 29.97 drop-frame, 29.97 and 30 fps with exact frame ↔ time math. Chase incoming **MIDI Time Code** or **Art-Net timecode** through a lock with drift compensation, freewheel and jump detection, or run the **internal generator** on the audio sample clock. Timeline cues can be **timecode slaves**, and whole cue lists can fire cues on timecode triggers, chasing jumps and pausing when timecode stops. |
 | **Editing safety** | Coalesced undo/redo that keeps running cues controllable, 30 s background autosave with crash recovery, multiple cue lists, drag-to-retime timeline editor. |
 | **Operator comfort** | Settings window (⌘,) for audio device / buffer / sample rate, control ports, output behaviour, accent colour, UI size and tool paths; macOS-style context menus with shortcut hints on cues and multiview cells. |
@@ -305,6 +306,29 @@ apply live, without dropouts.
 - **DMX**: universes (sACN / Art-Net / off), fixture patch with overlap checks, live universe view.
 - **Control & Log**: OSC/WebSocket/MIDI status, MIDI port selection, and the event log.
 
+### Soundboard (cue carts)
+
+The **Soundboard** tab holds carts: pages of pads that play independently of the cue lists (GO and
+the playhead never touch them; Stop All, Pause / Resume and Panic do).
+
+- **Play**: click or hold a pad, press its key, or play its MIDI note.
+  - **Toggle** starts the pad, and a second press stops it with the cue's fade-out.
+  - **Retrigger** restarts it from the top on every press.
+  - **Hold / Gate** plays only while held. It suits DMX flashes, which stay up after their fade until
+    the release.
+  - A playing pad lights up, with a ring showing progress and remaining time. **Stop pads** stops
+    them all.
+- **Edit pads**: rename the cart, choose the grid (presets or rows × columns; shrinking never deletes
+  pads), and click a pad to edit it.
+  - Put media on the pad from the show's assets (audio stinger, movie or still), the cue selected in
+    the cue list, or a new DMX flash.
+  - Set its mode and colour.
+  - **Set** a key or **Learn** a MIDI note. While learning, MIDI bindings are muted so the note does
+    not fire anything. Space, Esc, the arrows, PgUp / PgDn, P and R are reserved.
+  - The pad's cue opens in the **Inspector** for fades, gain, output, looks and the rest.
+- **Right-click** a pad to change its mode, use the selected cue, create a new DMX / video / timer
+  pad, or clear it.
+
 ### Timecode
 
 The **TIMECODE** box in the transport shows the show timecode, its source (INT / MTC / ART) and the
@@ -341,6 +365,7 @@ Labels are compared at the incoming rate, so a trigger at `01:00:00:00` works wi
 | **⌘/Ctrl ⌫** | Delete the selected cue |
 | **⌘/Ctrl Z**, **⇧⌘/Ctrl Z** | Undo / redo |
 | **⌘/Ctrl ,** | Settings |
+| *pad keys* | Play Soundboard pads (keys you assign; the visible cart wins when two carts share a key) |
 
 ---
 
@@ -383,17 +408,20 @@ My Show.livestage/
 | `/livestage/slide/next` · `previous` | | Step the running presentation |
 | `/livestage/slide` | `slide number` | Go to a slide (1-based) |
 | `/livestage/outputs` | `[1 / 0]` | Open / close program outputs |
+| `/livestage/cart/{c}/pad/{p}` | `[1 / 0]` | Press (default) / release pad *p* of cart *c* (1-based, row by row) |
+| `/livestage/cart/stop` | | Stop every playing pad |
 | `/livestage/timecode/start` · `stop` | | Internal timecode generator transport |
 | `/livestage/timecode/locate` | `"HH:MM:SS:FF"` | Move the internal generator |
 
 **WebSocket** (port 8765): send JSON commands such as `{"cmd":"go"}`, `{"cmd":"go_cue","number":"12"}`
 `{"cmd":"panic","hard":false}`, `{"cmd":"seek_cue","number":"7","position":95000000}` (µs) or
-`{"cmd":"next_slide"}`, `{"cmd":"timecode_locate","timecode":"01:00:00:00@25"}`. Each one is answered with `{"type":"ack"}`, and connected clients
+`{"cmd":"next_slide"}`, `{"cmd":"timecode_locate","timecode":"01:00:00:00@25"}`, `{"cmd":"cart_pad","cart":1,"pad":3,"down":true}`. Each one is answered with `{"type":"ack"}`, and connected clients
 receive a status document (standby cue, running cues with elapsed/remaining, timecode position and
 lock state) at up to 10 Hz.
 
 **MIDI**: note 60/61/62 on channel 1 = GO / STOP / PANIC by default. MIDI Show Control GO (with cue
-number), STOP, RESUME and ALL_OFF are supported. MIDI Time Code is read from its own port (see
+number), STOP, RESUME and ALL_OFF are supported. Cart pads bound to a note play on note-on and
+release on note-off; a pad takes precedence over a default note. MIDI Time Code is read from its own port (see
 [Timecode](#timecode)).
 
 ---
@@ -439,9 +467,9 @@ number), STOP, RESUME and ALL_OFF are supported. MIDI Time Code is read from its
 ## Testing
 
 ```bash
-cargo test --workspace                                                     # 114 tests
+cargo test --workspace                                                     # 120 tests
 PKG_CONFIG_PATH=$HOME/.local/ffmpeg-9/lib/pkgconfig \
-  cargo test --workspace --features livestage_ui/ffmpeg,livestage_video/ffmpeg  # 117 tests
+  cargo test --workspace --features livestage_ui/ffmpeg,livestage_video/ffmpeg  # 123 tests
 cargo clippy --workspace --all-targets
 ```
 
@@ -452,7 +480,9 @@ machine (including in-place seek), a click-free live audio seek, PDF and PowerPo
 test documents), background slide decoding, multiview layouts, and timecode: drop-frame math over a
 whole day, exact frame ↔ time round trips at every rate, MTC / Art-Net encode-decode, lock-in,
 drift compensation against a jittery sender running off-speed, freewheel / stop / jump / locate,
-midnight wrap, and slave behaviour (roll-in, chase, pause / stop / continue, re-sync with hold-off).
+midnight wrap, and slave behaviour (roll-in, chase, pause / stop / continue, re-sync with hold-off),
+and cart pads (toggle / retrigger / hold, DMX looks latched until release, grid resizing, MIDI
+note-off release).
 
 Live timecode check with a virtual MIDI source (macOS / Linux):
 
@@ -466,6 +496,8 @@ To review UI changes without a display:
 cargo run --release -- --ui-snapshot ui.png --go 4 --select 4 --tab multiview --size 1600x1000
 cargo run --release -- --ui-snapshot ui.png --import talk.pdf --go 8 --next-slide 1 --tab multiview
 cargo run --release -- --ui-snapshot ui.png --settings audio
+cargo run --release -- --ui-snapshot ui.png --tab soundboard --pad 1/2 --pad 1/6   # press pads
+cargo run --release -- --ui-snapshot ui.png --edit-pad 1/3                          # pad editor
 ```
 
 This renders the real UI offscreen (with live output canvases) to a PNG. `--go` may repeat; note

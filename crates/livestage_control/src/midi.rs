@@ -5,12 +5,16 @@ use crate::ControlError;
 use crossbeam_channel::Sender;
 use livestage_core::ShowCommand;
 use midir::{Ignore, MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Decoded MIDI message relevant to show control. Channels are 0-based.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MidiEvent {
     NoteOn { channel: u8, note: u8, velocity: u8 },
+    /// Note-off, including note-on with velocity 0.
+    NoteOff { channel: u8, note: u8 },
     ControlChange { channel: u8, controller: u8, value: u8 },
     ProgramChange { channel: u8, program: u8 },
     Msc(MscMessage),
@@ -44,6 +48,7 @@ pub fn parse(bytes: &[u8], msc_device: u8) -> Option<MidiEvent> {
         0x90 if bytes.len() >= 3 && bytes[2] > 0 => {
             Some(MidiEvent::NoteOn { channel: status & 0x0F, note: bytes[1], velocity: bytes[2] })
         }
+        0x80 | 0x90 if bytes.len() >= 3 => Some(MidiEvent::NoteOff { channel: status & 0x0F, note: bytes[1] }),
         0xB0 if bytes.len() >= 3 => {
             Some(MidiEvent::ControlChange { channel: status & 0x0F, controller: bytes[1], value: bytes[2] })
         }
@@ -90,6 +95,7 @@ fn parse_msc(b: &[u8], filter: u8) -> Option<MscMessage> {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MidiTrigger {
     Note { channel: u8, note: u8 },
+    NoteOff { channel: u8, note: u8 },
     ControlChange { channel: u8, controller: u8, threshold: u8 },
     ProgramChange { channel: u8, program: u8 },
 }
@@ -125,6 +131,7 @@ pub fn to_command(event: &MidiEvent, bindings: &[MidiBinding]) -> Option<ShowCom
     bindings.iter().find_map(|b| {
         let hit = match (&b.trigger, event) {
             (MidiTrigger::Note { channel, note }, MidiEvent::NoteOn { channel: c, note: n, .. }) => channel == c && note == n,
+            (MidiTrigger::NoteOff { channel, note }, MidiEvent::NoteOff { channel: c, note: n }) => channel == c && note == n,
             (
                 MidiTrigger::ControlChange { channel, controller, threshold },
                 MidiEvent::ControlChange { channel: c, controller: cc, value },
@@ -152,6 +159,8 @@ pub fn list_outputs() -> Vec<String> {
 pub struct MidiInputHandler {
     _conn: MidiInputConnection<()>,
     pub port_name: String,
+    bindings: Arc<RwLock<Vec<MidiBinding>>>,
+    learned: Arc<Mutex<Option<(u8, u8)>>>,
 }
 
 impl MidiInputHandler {
@@ -162,6 +171,9 @@ impl MidiInputHandler {
         msc_device: u8,
         tx: Sender<ControlEvent>,
     ) -> Result<Self, ControlError> {
+        let bindings = Arc::new(RwLock::new(bindings));
+        let learned = Arc::new(Mutex::new(None));
+        let (cb_bindings, cb_learned) = (bindings.clone(), learned.clone());
         let mut input = MidiInput::new("LiveStage").map_err(|e| ControlError::Midi(e.to_string()))?;
         input.ignore(Ignore::TimeAndActiveSense); // keep SysEx for MSC
         let ports = input.ports();
@@ -178,7 +190,10 @@ impl MidiInputHandler {
                 "livestage-in",
                 move |_stamp, bytes, _| {
                     if let Some(ev) = parse(bytes, msc_device) {
-                        if let Some(command) = to_command(&ev, &bindings) {
+                        if let MidiEvent::NoteOn { channel, note, .. } = ev {
+                            *cb_learned.lock() = Some((channel, note));
+                        }
+                        if let Some(command) = to_command(&ev, &cb_bindings.read()) {
                             let _ = tx.send(ControlEvent { source: ControlSource::Midi { port: source_name.clone() }, command });
                         }
                     }
@@ -187,7 +202,18 @@ impl MidiInputHandler {
             )
             .map_err(|e| ControlError::Midi(e.to_string()))?;
         tracing::info!(port = %name, "MIDI input open");
-        Ok(Self { _conn: conn, port_name: name })
+        Ok(Self { _conn: conn, port_name: name, bindings, learned })
+    }
+
+    /// Replaces the bindings without reopening the port.
+    pub fn set_bindings(&self, bindings: Vec<MidiBinding>) {
+        *self.bindings.write() = bindings;
+    }
+
+    /// The most recent note-on (channel, note) since the last call — for
+    /// "MIDI learn". Call once to clear before learning.
+    pub fn take_learned(&self) -> Option<(u8, u8)> {
+        self.learned.lock().take()
     }
 }
 
@@ -238,6 +264,12 @@ mod tests {
         let b = default_bindings();
         let ev = parse(&[0x90, 60, 100], 0x7F).unwrap();
         assert_eq!(to_command(&ev, &b), Some(ShowCommand::Go { list: None }));
-        assert!(parse(&[0x90, 60, 0], 0x7F).is_none(), "note-on velocity 0 is note-off");
+        assert_eq!(parse(&[0x90, 60, 0], 0x7F), Some(MidiEvent::NoteOff { channel: 0, note: 60 }), "note-on velocity 0 is note-off");
+        assert_eq!(to_command(&parse(&[0x90, 60, 0], 0x7F).unwrap(), &b), None, "GO is not re-fired on release");
+        let pad = vec![MidiBinding {
+            trigger: MidiTrigger::NoteOff { channel: 9, note: 36 },
+            command: ShowCommand::CartPad { cart: 1, pad: 3, down: false },
+        }];
+        assert_eq!(to_command(&parse(&[0x89, 36, 64], 0x7F).unwrap(), &pad), Some(ShowCommand::CartPad { cart: 1, pad: 3, down: false }));
     }
 }

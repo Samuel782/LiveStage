@@ -132,6 +132,9 @@ pub struct Project {
     /// Timecode source and lock settings.
     #[serde(default)]
     pub timecode: crate::timecode::TimecodeConfig,
+    /// Soundboard pages.
+    #[serde(default)]
+    pub carts: Vec<crate::cart::CueCart>,
 }
 
 pub(crate) fn unix_now() -> u64 {
@@ -160,6 +163,7 @@ impl Project {
             assets: Vec::new(),
             multiview: None,
             timecode: Default::default(),
+            carts: Vec::new(),
         }
     }
 
@@ -201,6 +205,11 @@ impl Project {
                 list.adopt_runtime_from(o);
             }
         }
+        for cart in &mut self.carts {
+            if let Some(o) = old.carts.iter().find(|c| c.id == cart.id) {
+                cart.adopt_runtime_from(o);
+            }
+        }
     }
 
     /// Configuration problems across the whole show.
@@ -216,6 +225,17 @@ impl Project {
                     if !a.is_safe() {
                         issues.push(format!("[{}] cue {}: unsafe asset path {a}", list.name, cue.header().number));
                     }
+                }
+            }
+        }
+        for cart in &self.carts {
+            for (slot, pad) in cart.pads.iter().enumerate() {
+                let Some(pad) = pad else { continue };
+                let issues_of = pad.cue.validate().into_iter().chain(
+                    pad.cue.assets().into_iter().filter(|a| !a.is_safe()).map(|a| format!("unsafe asset path {a}")),
+                );
+                for e in issues_of {
+                    issues.push(format!("[cart {}] pad {}: {e}", cart.name, slot + 1));
                 }
             }
         }

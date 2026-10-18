@@ -36,6 +36,11 @@ pub enum ShowCommand {
     SetMasterGain { db: f32 },
     /// Switch all program outputs in/out of kiosk fullscreen.
     SetOutputsFullscreen { enabled: bool },
+    /// Press (`down`) or release a cart pad. `cart` and `pad` are 1-based
+    /// (pads row by row).
+    CartPad { cart: usize, pad: usize, down: bool },
+    /// Stop every playing pad of every cart.
+    CartStopAll,
     /// Internal timecode generator transport (ignored for external sources).
     TimecodeStart,
     TimecodeStop,
