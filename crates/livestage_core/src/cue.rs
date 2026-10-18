@@ -109,6 +109,9 @@ pub struct CueHeader {
     pub armed: bool,
     #[serde(default)]
     pub color: Option<Rgb>,
+    /// Fire when show timecode reaches this (cue lists in timecode mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timecode: Option<crate::timecode::Timecode>,
     #[serde(skip)]
     pub runtime: CueRuntime,
 }
@@ -128,6 +131,7 @@ impl CueHeader {
             follow: FollowMode::None,
             armed: true,
             color: None,
+            timecode: None,
             runtime: CueRuntime::default(),
         }
     }
@@ -342,6 +346,21 @@ pub trait CueExt: Cue {
         if was_paused {
             self.pause(ctx);
         }
+    }
+
+    /// Re-times the cue's own clock so `elapsed` reads `position`, without
+    /// telling any engine. Used for sub-frame drift correction of cues whose
+    /// clock is the show clock (timecode slaving); media cues seek instead.
+    fn rebase(&mut self, ctx: &dyn CueContext, position: ShowTime) {
+        if self.state() != CueState::Running {
+            return;
+        }
+        let now = ctx.now();
+        let rt = &mut self.header_mut().runtime;
+        rt.started_at = now;
+        rt.start_offset = position;
+        rt.paused_total = ShowTime::ZERO;
+        rt.last_elapsed = position;
     }
 
     /// Return to idle (e.g. after a stop, when the list is reset).

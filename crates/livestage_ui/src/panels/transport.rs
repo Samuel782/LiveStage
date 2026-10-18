@@ -41,7 +41,8 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
     const STOP_W: f32 = 112.0;
     const PANIC_W: f32 = 140.0;
     const NEXT_MIN: f32 = 250.0;
-    let mut optional = [("output", 176.0, false), ("clock", 196.0, false), ("running", 270.0, false)];
+    // Dropped first → last when narrow: clock, timecode, outputs, running.
+    let mut optional = [("clock", 196.0, false), ("timecode", 214.0, false), ("output", 176.0, false), ("running", 270.0, false)];
     let mut used = GO_W + STOP_W + PANIC_W + NEXT_MIN + 3.0 * GAP;
     for o in optional.iter_mut().rev() {
         if used + o.1 + GAP <= full.width() {
@@ -140,6 +141,13 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
         });
     }
 
+    // TIMECODE
+    if shown("timecode") {
+        let r = take(width_of("timecode"));
+        ui.painter().rect_filled(r, 6.0, theme::PANEL_RAISED);
+        region(ui, r.shrink(8.0), |ui| timecode(ui, rt, st));
+    }
+
     // CLOCK
     if shown("clock") {
         let r = take(width_of("clock"));
@@ -157,6 +165,51 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
         let r = take(width_of("output"));
         region(ui, r, |ui| outputs_and_master(ui, rt, st));
     }
+}
+
+fn timecode(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+    use livestage_core::timecode::{LockState, TimecodeSource};
+    let t = rt.timecode.transport();
+    let source = rt.timecode.config().source;
+    let (dot, state) = match t.state {
+        LockState::Locked if t.running => (theme::active(), "LOCKED"),
+        LockState::Locked => (theme::active(), "READY"),
+        LockState::Freewheel => (theme::standby(), "FREEWHEEL"),
+        LockState::Locking => (theme::standby(), "LOCKING"),
+        LockState::Stopped => (theme::TEXT_DIM, "STOPPED"),
+    };
+    let state = if source == TimecodeSource::Internal { if t.running { "RUNNING" } else { "STOPPED" } } else { state };
+    let head = ui
+        .horizontal(|ui| {
+            caption(ui, &format!("TIMECODE · {}", source.short()));
+            ui.label(RichText::new("●").size(10.0).color(dot));
+            ui.label(RichText::new(state).size(11.0).strong().color(dot));
+        })
+        .response;
+    let color = if t.running { theme::active() } else { theme::TEXT };
+    let big = ui.add(egui::Label::new(RichText::new(t.timecode().to_string()).font(theme::clock_font(30.0)).color(color)).sense(egui::Sense::click()));
+    if head.union(big).on_hover_text("Timecode settings").clicked() {
+        st.settings_open = true;
+        st.settings_section = super::settings::Section::Timecode;
+    }
+    ui.horizontal(|ui| {
+        if source == TimecodeSource::Internal {
+            let (label, c) = if t.running { ("Stop", ShowCommand::TimecodeStop) } else { ("Start", ShowCommand::TimecodeStart) };
+            if ui.small_button(label).clicked() {
+                rt.command(ControlSource::Ui, c);
+            }
+            if ui.small_button("Reset").on_hover_text("Stop and park at the start timecode").clicked() {
+                rt.timecode.reset();
+            }
+            ui.label(RichText::new(t.rate.token()).size(11.0).color(theme::TEXT_DIM));
+        } else {
+            let detail = match t.state {
+                LockState::Stopped => t.rate.label().to_string(),
+                _ => format!("{} · {:+.0} ppm", t.rate.token(), t.drift_ppm()),
+            };
+            ui.label(RichText::new(detail).size(11.0).color(theme::TEXT_DIM));
+        }
+    });
 }
 
 fn outputs_and_master(ui: &mut Ui, rt: &mut ShowRuntime, _st: &mut UiState) {

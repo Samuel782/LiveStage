@@ -9,6 +9,8 @@
 
 use crate::cue::*;
 use crate::time::ShowTime;
+use crate::timecode::slave::{follow_slave, Followed};
+use crate::timecode::{TcTransport, TimecodeSlave};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -42,17 +44,28 @@ pub struct TimelineCue {
     /// Explicit length; otherwise derived from master / children.
     #[serde(default)]
     pub length: Option<ShowTime>,
+    /// Chase show timecode instead of waiting for GO.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timecode: Option<TimecodeSlave>,
 }
 
 impl TimelineCue {
     pub fn new(header: CueHeader, master: Option<AnyCue>) -> Self {
-        Self { header, master: master.map(Box::new), items: Vec::new(), length: None }
+        Self { header, master: master.map(Box::new), items: Vec::new(), length: None, timecode: None }
     }
 
     /// Inserts a child keeping the list ordered by offset.
     pub fn add(&mut self, offset: ShowTime, cue: AnyCue) {
         let idx = self.items.partition_point(|i| i.offset <= offset);
         self.items.insert(idx, TimelineItem::new(offset, cue));
+    }
+
+    /// Follows show timecode when slaved; no-op otherwise.
+    pub fn follow_timecode(&mut self, ctx: &mut dyn CueContext, t: &TcTransport) -> Followed {
+        let Some(mut slave) = self.timecode.take() else { return Followed::Nothing };
+        let r = follow_slave(self, &mut slave, ctx, t);
+        self.timecode = Some(slave);
+        r
     }
 
     fn timeline_clock(&self, ctx: &dyn CueContext) -> Option<ShowTime> {

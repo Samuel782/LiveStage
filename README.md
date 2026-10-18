@@ -39,6 +39,7 @@ cargo run --release                        # opens ./shows/Demo Show.livestage (
 | **NDI streaming** | Receive any NDI source as a layer; publish any output's program feed at its own resolution (GPU-scaled, triple-buffered async readback). The NDI runtime is loaded at run time, never linked. |
 | **DMX** | Bit-exact Art-Net 4 and sACN (E1.31) output, fixture library with a validated patch (16-bit attributes), timed crossfades, LED pixel mapper fed from output canvases. |
 | **Control** | MIDI notes/CC/program change, MIDI Show Control, OSC in/out, WebSocket JSON API with live status push, two-stage panic (soft fade, then a hard cut on the second press). |
+| **Timecode (SMPTE / MTC / Art-Net)** | 24, 25, 29.97 drop-frame, 29.97 and 30 fps with exact frame ↔ time math. Chase incoming **MIDI Time Code** or **Art-Net timecode** through a lock with drift compensation, freewheel and jump detection, or run the **internal generator** on the audio sample clock. Timeline cues can be **timecode slaves**, and whole cue lists can fire cues on timecode triggers, chasing jumps and pausing when timecode stops. |
 | **Editing safety** | Coalesced undo/redo that keeps running cues controllable, 30 s background autosave with crash recovery, multiple cue lists, drag-to-retime timeline editor. |
 | **Operator comfort** | Settings window (⌘,) for audio device / buffer / sample rate, control ports, output behaviour, accent colour, UI size and tool paths; macOS-style context menus with shortcut hints on cues and multiview cells. |
 
@@ -102,7 +103,7 @@ unit-testable (see `MockCtx` in `crates/livestage_core/src/cue.rs`).
 | `livestage-show` | show runtime: cue lists, audio/DMX/control engines | 1 kHz, real-time class; health shown in the status bar. |
 | `livestage-audio-host` | the `cpal` stream (`!Send`) | Parks until shutdown. |
 | audio callback | real-time renderer | No allocation, locking or I/O. |
-| decoder / slide loader / thumbnail / import / NDI / DMX / OSC / WS workers | their own I/O | Communicate through channels and atomics. |
+| decoder / slide loader / thumbnail / import / NDI / DMX / OSC / WS / Art-Net timecode workers | their own I/O | Communicate through channels and atomics. Timecode samples are time-stamped where they arrive (MIDI callback, UDP thread). |
 
 ---
 
@@ -304,6 +305,27 @@ apply live, without dropouts.
 - **DMX**: universes (sACN / Art-Net / off), fixture patch with overlap checks, live universe view.
 - **Control & Log**: OSC/WebSocket/MIDI status, MIDI port selection, and the event log.
 
+### Timecode
+
+The **TIMECODE** box in the transport shows the show timecode, its source (INT / MTC / ART) and the
+lock state (green LOCKED, amber LOCKING / FREEWHEEL). Click it to open **Settings → Timecode**:
+
+- **Source**: *Internal* (generator with Start / Stop / Reset / Locate, a frame rate, a start
+  timecode, and a clock: the audio sample clock (default) or the system clock), *MIDI Time Code*
+  (choose the MIDI input), or *Art-Net Timecode* (UDP port, shared with lighting software on the same
+  machine). External sources show measured drift (ppm) and jitter.
+- **Freewheel / jump threshold**: how long to roll through dropouts, and how big an error counts as a
+  jump.
+- **Cue lists in timecode mode**: tick a list, then give cues a **Timecode** trigger in the
+  Inspector. They fire when timecode reaches the trigger. A jump into the middle of a cue's fade or
+  media starts it part-way through. What happens when timecode stops is set per list (pause, stop,
+  or keep playing). Triggers appear in the cue grid's pre-wait column.
+- **Timeline slaves**: in the Inspector, tick **Timecode slave** on a timeline cue and set **Starts
+  at**. The timeline runs whenever timecode is inside it, follows jumps and locates, re-syncs beyond
+  the tolerance, and pauses, stops or keeps playing when timecode stops.
+
+Labels are compared at the incoming rate, so a trigger at `01:00:00:00` works with any frame rate.
+
 ### Keyboard
 
 | Key | Action |
@@ -361,14 +383,18 @@ My Show.livestage/
 | `/livestage/slide/next` · `previous` | | Step the running presentation |
 | `/livestage/slide` | `slide number` | Go to a slide (1-based) |
 | `/livestage/outputs` | `[1 / 0]` | Open / close program outputs |
+| `/livestage/timecode/start` · `stop` | | Internal timecode generator transport |
+| `/livestage/timecode/locate` | `"HH:MM:SS:FF"` | Move the internal generator |
 
 **WebSocket** (port 8765): send JSON commands such as `{"cmd":"go"}`, `{"cmd":"go_cue","number":"12"}`
 `{"cmd":"panic","hard":false}`, `{"cmd":"seek_cue","number":"7","position":95000000}` (µs) or
-`{"cmd":"next_slide"}`. Each one is answered with `{"type":"ack"}`, and connected clients
-receive a status document (standby cue, running cues with elapsed/remaining) at up to 10 Hz.
+`{"cmd":"next_slide"}`, `{"cmd":"timecode_locate","timecode":"01:00:00:00@25"}`. Each one is answered with `{"type":"ack"}`, and connected clients
+receive a status document (standby cue, running cues with elapsed/remaining, timecode position and
+lock state) at up to 10 Hz.
 
 **MIDI**: note 60/61/62 on channel 1 = GO / STOP / PANIC by default. MIDI Show Control GO (with cue
-number), STOP, RESUME and ALL_OFF are supported.
+number), STOP, RESUME and ALL_OFF are supported. MIDI Time Code is read from its own port (see
+[Timecode](#timecode)).
 
 ---
 
@@ -395,6 +421,16 @@ number), STOP, RESUME and ALL_OFF are supported.
   output thread.
 - **Presentations.** Slides decode on a worker thread with the current slide's neighbours
   prefetched; a slide change cross-fades from a snapshot of the previous slide.
+- **Timecode lock.** Samples are stamped on arrival (in the MIDI / UDP thread) and fed to a
+  phase + frequency loop on the show thread. Small errors are absorbed gradually (no audible or
+  visible steps) while the loop measures the sender's real speed, so positions between samples stay
+  accurate even when the sender's clock is ±0.1 % off. Errors beyond the jump threshold (default
+  4 frames) re-locate at once. After a dropout the lock freewheels (default 200 ms) and then reports
+  a stop. MTC delivers a sample every quarter frame (≈100/s at 25 fps); Art-Net one per frame.
+- **Timecode slaving.** Slaves compare their own clock with timecode every tick. Beyond the tolerance
+  (default 80 ms), media timelines re-sync with an in-place seek (de-clicked audio), followed by a
+  250 ms hold-off so an engine settling after a jump is not chased again. Timelines without a media
+  clock are corrected by re-timing their clock alone, so DMX looks are not re-fired.
 - **Undo.** Snapshot-based and coalesced (a fader drag is one step). Restoring a snapshot re-attaches
   live cue state by cue id, so running cues stay stoppable, and the live master level is never reverted.
 
@@ -403,9 +439,9 @@ number), STOP, RESUME and ALL_OFF are supported.
 ## Testing
 
 ```bash
-cargo test --workspace                                                     # 75 tests
+cargo test --workspace                                                     # 114 tests
 PKG_CONFIG_PATH=$HOME/.local/ffmpeg-9/lib/pkgconfig \
-  cargo test --workspace --features livestage_ui/ffmpeg,livestage_video/ffmpeg  # 78 tests
+  cargo test --workspace --features livestage_ui/ffmpeg,livestage_video/ffmpeg  # 117 tests
 cargo clippy --workspace --all-targets
 ```
 
@@ -413,7 +449,16 @@ Tests include headless GPU checks (warp/blend/mask, NV12 conversion, default-pro
 stream readback), a hardware-decode check on macOS, a live NDI send → discover → receive loopback
 (skipped when the NDI runtime is absent), bit-exact Art-Net/sACN packets, the cue/timeline state
 machine (including in-place seek), a click-free live audio seek, PDF and PowerPoint import (generated
-test documents), background slide decoding, and multiview layouts.
+test documents), background slide decoding, multiview layouts, and timecode: drop-frame math over a
+whole day, exact frame ↔ time round trips at every rate, MTC / Art-Net encode-decode, lock-in,
+drift compensation against a jittery sender running off-speed, freewheel / stop / jump / locate,
+midnight wrap, and slave behaviour (roll-in, chase, pause / stop / continue, re-sync with hold-off).
+
+Live timecode check with a virtual MIDI source (macOS / Linux):
+
+```bash
+cargo run -p livestage_control --example mtc_send -- 00:59:58:00 10 25   # creates "LiveStage MTC Test"
+```
 
 To review UI changes without a display:
 
@@ -429,6 +474,11 @@ that GO on audio cues plays through the default audio device.
 ---
 
 ## Known gaps
+
+- **Timecode** is input-only: LiveStage chases MTC and Art-Net timecode and generates timecode
+  internally, but does not yet transmit MTC / Art-Net timecode or read LTC from an audio input
+  (`mtc_send` is a test tool). Slaved media is kept in sync by de-clicked seeks beyond the
+  tolerance, not by varispeed resampling.
 
 - **Zero-copy video**: hardware frames are copied GPU→CPU→GPU as NV12. True zero-copy (IOSurface /
   D3D11 shared textures into `wgpu`) needs wgpu-hal interop. Audio inside movie files is ignored (use

@@ -19,6 +19,8 @@ use crate::cue::{AnyCue, Cue, CueContext, CueEvent, CueExt, FollowMode};
 use crate::id::{CueId, CueListId};
 use crate::state::CueState;
 use crate::time::ShowTime;
+use crate::timecode::slave::{follow, relative, Follow, Followed};
+use crate::timecode::{ListTimecode, TcTransport};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -39,6 +41,9 @@ pub struct CueList {
     pub id: CueListId,
     pub name: String,
     pub cues: Vec<AnyCue>,
+    /// Timecode mode: cues with a timecode trigger fire on their own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timecode: Option<ListTimecode>,
     #[serde(skip)]
     runtime: CueListRuntime,
 }
@@ -65,7 +70,7 @@ pub struct CueListStatus {
 
 impl CueList {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { id: CueListId::new(), name: name.into(), cues: Vec::new(), runtime: CueListRuntime::default() }
+        Self { id: CueListId::new(), name: name.into(), cues: Vec::new(), timecode: None, runtime: CueListRuntime::default() }
     }
 
     // ------------------------------------------------------------ queries --
@@ -153,19 +158,88 @@ impl CueList {
     }
 
     fn fire(&mut self, ctx: &mut dyn CueContext, index: usize) -> CueId {
-        let cue = &mut self.cues[index];
-        cue.go(ctx);
-        let id = cue.header().id;
-        let (follow, post_wait) = (cue.header().follow, cue.header().post_wait);
-        let pre_wait = cue.header().pre_wait;
+        self.cues[index].go(ctx);
+        let pre_wait = self.cues[index].header().pre_wait;
+        self.after_fire(ctx, index, pre_wait, ShowTime::ZERO);
+        self.cues[index].header().id
+    }
+
+    /// Bookkeeping after cue `index` was started (`start_in` from now,
+    /// already `into` deep): playhead history and auto-continue.
+    fn after_fire(&mut self, ctx: &mut dyn CueContext, index: usize, start_in: ShowTime, into: ShowTime) {
+        let h = self.cues[index].header();
+        let (follow, post_wait) = (h.follow, h.post_wait);
         self.runtime.last_go = Some(index);
         if follow == FollowMode::AutoContinue {
             if let Some(next) = self.next_armed(Some(index)) {
                 // Continue is measured from when this cue actually starts.
-                self.runtime.pending.push(Pending { index: next, at: ctx.now() + pre_wait + post_wait });
+                self.runtime.pending.push(Pending { index: next, at: ctx.now() + start_in + (post_wait - into) });
             }
         }
-        id
+    }
+
+    // ----------------------------------------------------------- timecode --
+
+    /// Follows show timecode: slaved timelines chase it, and in timecode
+    /// mode every armed cue with a timecode trigger fires when timecode
+    /// reaches it (and is chased, re-synced and paused like a timeline).
+    /// Call once per show tick, before [`CueList::tick`].
+    pub fn follow_timecode(&mut self, ctx: &mut dyn CueContext, t: &TcTransport) {
+        for c in &mut self.cues {
+            if let AnyCue::Timeline(tl) = c {
+                tl.follow_timecode(ctx, t);
+            }
+        }
+        let Some(mut tc) = self.timecode.take() else { return };
+        let edges = tc.follower.observe(t);
+        let mut last_fired = None;
+        for i in 0..self.cues.len() {
+            let cue = &self.cues[i];
+            let Some(trigger) = cue.header().timecode else { continue };
+            // Self-slaved timelines were handled above.
+            if !cue.header().armed || matches!(cue, AnyCue::Timeline(tl) if tl.timecode.is_some()) {
+                continue;
+            }
+            let id = cue.header().id;
+            let rel = relative(t.position, trigger, t);
+            let mut holdoff = tc.holdoff.get(&id).copied().unwrap_or_default();
+            let chase = cue.chase_on_catch_up();
+            let r = follow(
+                &mut self.cues[i],
+                ctx,
+                Follow {
+                    rel,
+                    prev_rel: edges.prev.map(|p| relative(p, trigger, t)),
+                    edges,
+                    running: t.running,
+                    tolerance: tc.tolerance,
+                    on_stop: tc.on_stop,
+                    chase,
+                    holdoff: &mut holdoff,
+                },
+            );
+            tc.holdoff.insert(id, holdoff);
+            if r == Followed::Started {
+                self.after_fire(ctx, i, ShowTime::ZERO, ShowTime::from_micros(rel.max(0) as u64));
+                last_fired = Some(i);
+            } else if r == Followed::Resynced && !edges.started && !edges.jumped {
+                tc.follower.resyncs += 1;
+            }
+        }
+        // Playhead: standby the next cue timecode will reach, or (past the
+        // last trigger) the cue after the one just fired, as GO would.
+        if last_fired.is_some() || edges.started || edges.jumped {
+            let next = (0..self.cues.len())
+                .find(|&i| {
+                    let h = self.cues[i].header();
+                    h.armed && h.timecode.is_some_and(|tr| relative(t.position, tr, t) < 0)
+                })
+                .or_else(|| last_fired.and_then(|i| self.next_armed(Some(i))));
+            if next.is_some() && next != self.runtime.standby {
+                self.set_standby(ctx, next);
+            }
+        }
+        self.timecode = Some(tc);
     }
 
     // --------------------------------------------------------------- tick --
@@ -279,6 +353,10 @@ impl CueList {
         for c in &mut self.cues {
             adopt_cue(c, old);
         }
+        if let (Some(tc), Some(otc)) = (&mut self.timecode, &old.timecode) {
+            tc.follower = otc.follower.clone();
+            tc.holdoff = otc.holdoff.clone();
+        }
         let remap = |i: usize| old.cues.get(i).map(|c| c.header().id).and_then(|id| self.index_of(id));
         self.runtime = CueListRuntime {
             standby: old.runtime.standby.and_then(remap),
@@ -322,6 +400,9 @@ fn adopt_cue(new: &mut AnyCue, old_list: &CueList) {
         s.current = os.current.min(s.slide_count().saturating_sub(1));
     }
     if let (AnyCue::Timeline(t), AnyCue::Timeline(ot)) = (new, old) {
+        if let (Some(tc), Some(otc)) = (&mut t.timecode, &ot.timecode) {
+            tc.follower = otc.follower.clone();
+        }
         if let Some(m) = t.master.as_deref_mut() {
             adopt_cue(m, old_list);
         }

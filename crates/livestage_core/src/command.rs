@@ -36,6 +36,11 @@ pub enum ShowCommand {
     SetMasterGain { db: f32 },
     /// Switch all program outputs in/out of kiosk fullscreen.
     SetOutputsFullscreen { enabled: bool },
+    /// Internal timecode generator transport (ignored for external sources).
+    TimecodeStart,
+    TimecodeStop,
+    /// Move the internal generator to a label (its rate is kept).
+    TimecodeLocate { timecode: crate::timecode::Timecode },
     /// Request a state snapshot (remote API).
     RequestStatus,
 }

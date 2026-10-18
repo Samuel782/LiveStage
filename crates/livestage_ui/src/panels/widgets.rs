@@ -164,3 +164,32 @@ pub fn shortcut(keys: &str) -> String {
         keys.replace("Cmd+", "Ctrl+")
     }
 }
+
+/// `HH:MM:SS:FF` editor. The text is committed (parsed at `rate`) when the
+/// field loses focus or Enter is pressed; invalid input is outlined and
+/// discarded. Returns true when `tc` changed.
+pub fn timecode_field(ui: &mut Ui, id: impl std::hash::Hash, tc: &mut livestage_core::Timecode, rate: livestage_core::FrameRate) -> bool {
+    use livestage_core::Timecode;
+    let id = ui.make_persistent_id(id);
+    let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| tc.with_rate(rate).to_string());
+    let parsed = Timecode::parse_with(&text, rate).map(|t| t.with_rate(rate));
+    let mut edit = egui::TextEdit::singleline(&mut text).font(crate::theme::clock_font(14.0)).desired_width(104.0).hint_text("HH:MM:SS:FF");
+    if parsed.is_err() {
+        edit = edit.text_color(crate::theme::stop());
+    }
+    let r = ui.add(edit);
+    let mut changed = false;
+    if r.lost_focus() {
+        if let Ok(t) = Timecode::parse_with(&text, rate).map(|t| t.with_rate(rate)) {
+            changed = t != *tc;
+            *tc = t;
+        }
+        ui.data_mut(|d| d.remove::<String>(id));
+    } else if r.has_focus() {
+        ui.data_mut(|d| d.insert_temp(id, text));
+    }
+    if parsed.is_err() && r.has_focus() {
+        r.on_hover_text(format!("Timecode as HH:MM:SS:FF at {rate}"));
+    }
+    changed
+}

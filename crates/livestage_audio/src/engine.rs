@@ -403,6 +403,19 @@ impl AudioEngine {
         frames.min(self.shared.callback_frames.load(Ordering::Relaxed) as u64)
     }
 
+    /// The device sample clock: frames rendered since the engine started,
+    /// interpolated between callbacks. None until the device has called back.
+    pub fn sample_clock(&self) -> Option<ShowTime> {
+        let at = self.shared.callback_at_ns.load(Ordering::Acquire);
+        if at == 0 {
+            return None;
+        }
+        let since_ns = (self.shared.epoch.elapsed().as_nanos() as u64).saturating_sub(at);
+        let extra = (since_ns * self.sample_rate as u64 / 1_000_000_000).min(self.shared.callback_frames.load(Ordering::Relaxed) as u64);
+        let frames = self.shared.frames_rendered.load(Ordering::Relaxed) + extra;
+        Some(ShowTime::from_frames(frames, self.sample_rate))
+    }
+
     pub fn media_finished(&self, cue: CueId) -> bool {
         self.voices.get(&cue).is_some_and(|v| v.finished.load(Ordering::Acquire))
     }

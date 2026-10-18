@@ -64,6 +64,7 @@ ffmpeg-next = { version = "9.0", default-features = false, features = ["codec", 
 # Control protocols
 midir = "0.10.4"
 rosc = "0.10.1"
+socket2 = { version = "0.6", features = ["all"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "net", "sync", "macros", "time"] }
 tokio-tungstenite = "0.26.2"
 futures-util = "0.3"

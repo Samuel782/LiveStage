@@ -129,6 +129,9 @@ pub struct Project {
     /// Operator multiview layout (None = automatic).
     #[serde(default)]
     pub multiview: Option<crate::multiview::MultiviewLayout>,
+    /// Timecode source and lock settings.
+    #[serde(default)]
+    pub timecode: crate::timecode::TimecodeConfig,
 }
 
 pub(crate) fn unix_now() -> u64 {
@@ -156,6 +159,7 @@ impl Project {
             control: ControlConfig::default(),
             assets: Vec::new(),
             multiview: None,
+            timecode: Default::default(),
         }
     }
 

@@ -4,6 +4,7 @@
 use livestage_audio::{AudioEngine, EngineConfig};
 use livestage_control::midi::{MidiInputHandler, MidiOutputHandler};
 use livestage_control::osc::{OscSender, OscServer};
+use livestage_control::timecode::{ArtNetTimecodeListener, MtcInput, TimecodeInput};
 use livestage_control::websocket::RemoteServer;
 use livestage_control::{ControlEvent, ControlHub, ControlSource, PanicController};
 use livestage_core::action::{AudioAction, ControlAction, EngineAction};
@@ -11,6 +12,7 @@ use livestage_core::cue::{AnyCue, Cue, CueContext, CueExt};
 use livestage_core::cuelist::{CueList, CueListStatus};
 use livestage_core::id::{CueId, CueListId};
 use livestage_core::project::{AssetKind, AssetRef};
+use livestage_core::timecode::{TimecodeEngine, TimecodeSource};
 use livestage_core::{ProjectBundle, ShowCommand, ShowTime};
 use livestage_dmx::DmxEngine;
 use livestage_core::action::VideoAction;
@@ -159,6 +161,8 @@ pub struct CueRow {
     pub is_standby: bool,
     /// Extra status shown in the action column (e.g. "Slide 3 / 12").
     pub detail: Option<String>,
+    /// Timecode trigger / slave start, shown in place of the pre-wait.
+    pub timecode: Option<livestage_core::Timecode>,
 }
 
 pub struct ShowRuntime {
@@ -194,11 +198,20 @@ pub struct ShowRuntime {
     pub office_path: Option<std::path::PathBuf>,
     /// Set by Settings: the app restarts OSC / WebSocket / MIDI outside the lock.
     pub restart_control_requested: bool,
+    /// Show timecode: source selection, lock and internal generator.
+    pub timecode: TimecodeEngine,
+    tc_tx: crossbeam_channel::Sender<TimecodeInput>,
+    tc_rx: crossbeam_channel::Receiver<TimecodeInput>,
+    mtc_in: Option<MtcInput>,
+    artnet_tc: Option<ArtNetTimecodeListener>,
+    /// What the timecode input is doing (port name or error), for the UI.
+    pub timecode_input: String,
 }
 
 impl ShowRuntime {
     pub fn new(bundle: ProjectBundle) -> Self {
         let (video_tx, video_rx) = crossbeam_channel::unbounded();
+        let (tc_tx, tc_rx) = crossbeam_channel::unbounded();
         let mut dmx = DmxEngine::new(bundle.project.dmx.clone());
         dmx.start_output();
         let mut rt = Self {
@@ -228,6 +241,12 @@ impl ShowRuntime {
             imports: Vec::new(),
             office_path: None,
             restart_control_requested: false,
+            timecode: TimecodeEngine::new(bundle.project.timecode.clone()),
+            tc_tx,
+            tc_rx,
+            mtc_in: None,
+            artnet_tc: None,
+            timecode_input: String::new(),
             bundle,
         };
         for e in rt.dmx.patch_errors.clone() {
@@ -235,6 +254,7 @@ impl ShowRuntime {
         }
         rt.start_audio();
         rt.start_control();
+        rt.start_timecode_input();
         for a in rt.bundle.missing_assets() {
             rt.log(LogLevel::Warn, format!("missing asset: {a}"));
         }
@@ -365,6 +385,48 @@ impl ShowRuntime {
         }
     }
 
+    /// Applies edited timecode settings (source, rate, ports, lock tuning).
+    pub fn apply_timecode_config(&mut self) {
+        let cfg = self.bundle.project.timecode.clone();
+        let reopen = cfg.source != self.timecode.config().source
+            || cfg.mtc_input != self.timecode.config().mtc_input
+            || cfg.artnet_port != self.timecode.config().artnet_port;
+        self.timecode.set_config(cfg);
+        if reopen {
+            self.start_timecode_input();
+        }
+    }
+
+    /// Opens the input for the configured timecode source (closing others).
+    pub fn start_timecode_input(&mut self) {
+        let cfg = self.bundle.project.timecode.clone();
+        self.mtc_in = None;
+        self.artnet_tc = None;
+        // Stale samples from a previous source must not reach the new lock.
+        while self.tc_rx.try_recv().is_ok() {}
+        self.timecode_input = match cfg.source {
+            TimecodeSource::Internal => "internal generator".into(),
+            TimecodeSource::Mtc => match MtcInput::open(cfg.mtc_input.as_deref(), self.tc_tx.clone()) {
+                Ok(m) => {
+                    let s = format!("MTC on {}", m.port_name);
+                    self.mtc_in = Some(m);
+                    s
+                }
+                Err(e) => format!("MTC unavailable: {e}"),
+            },
+            TimecodeSource::ArtNet => match ArtNetTimecodeListener::start(cfg.artnet_port, self.tc_tx.clone()) {
+                Ok(l) => {
+                    let s = format!("Art-Net on UDP {}", l.port);
+                    self.artnet_tc = Some(l);
+                    s
+                }
+                Err(e) => format!("Art-Net port {} unavailable: {e}", cfg.artnet_port),
+            },
+        };
+        let level = if self.timecode_input.contains("unavailable") { LogLevel::Warn } else { LogLevel::Info };
+        self.log(level, format!("timecode: {}", self.timecode_input));
+    }
+
     pub fn osc_port(&self) -> Option<u16> {
         self.osc.as_ref().map(|s| s.port)
     }
@@ -480,6 +542,17 @@ impl ShowRuntime {
                 self.actions.push(EngineAction::Audio(AudioAction::SetMasterGain { db }));
             }
             ShowCommand::SetOutputsFullscreen { enabled } => self.outputs_live_request = Some(enabled),
+            ShowCommand::TimecodeStart | ShowCommand::TimecodeStop | ShowCommand::TimecodeLocate { .. } => {
+                let applied = match cmd {
+                    ShowCommand::TimecodeStart => self.timecode.start(),
+                    ShowCommand::TimecodeStop => self.timecode.stop(),
+                    ShowCommand::TimecodeLocate { timecode } => self.timecode.locate(timecode),
+                    _ => unreachable!(),
+                };
+                if !applied {
+                    self.log(LogLevel::Warn, "timecode: the external source controls the transport");
+                }
+            }
             ShowCommand::RequestStatus => self.last_status = Instant::now() - std::time::Duration::from_secs(1),
         }
     }
@@ -716,6 +789,15 @@ impl ShowRuntime {
         for ev in events {
             self.execute(ev);
         }
+        // Timecode: feed received samples (stamped at arrival), advance the
+        // lock / generator, then let slaved timelines and lists chase it.
+        for input in self.tc_rx.try_iter() {
+            let local: ShowTime = input.at.saturating_duration_since(self.epoch).into();
+            self.timecode.feed(local, input.origin, input.sample);
+        }
+        let audio_clock = self.audio.as_ref().and_then(|a| a.sample_clock());
+        let tc = self.timecode.update(self.now(), audio_clock);
+        self.with_all_lists(|l, c| l.follow_timecode(c, &tc));
         self.with_all_lists(|l, c| l.tick(c));
         self.flush_actions();
 
@@ -738,6 +820,13 @@ impl ShowRuntime {
             "type": "status",
             "project": self.bundle.project.name,
             "outputs_live": self.outputs_live,
+            "timecode": {
+                "timecode": self.timecode.transport().timecode().to_string(),
+                "rate": self.timecode.transport().rate,
+                "running": self.timecode.transport().running,
+                "state": self.timecode.transport().state,
+                "source": self.timecode.config().source,
+            },
             "list": status,
         });
         remote.publish_status(doc.to_string());
@@ -782,6 +871,10 @@ impl ShowRuntime {
                         Some(format!("Slide {} / {}", at + 1, s.slide_count()))
                     }
                     _ => None,
+                },
+                timecode: match c {
+                    AnyCue::Timeline(t) => t.timecode.as_ref().map(|s| s.start).or(h.timecode),
+                    _ => h.timecode,
                 },
             });
             if let AnyCue::Timeline(t) = c {
@@ -967,6 +1060,9 @@ impl ShowRuntime {
         let dmx_changed = project.dmx != old.dmx;
         self.bundle.project = project;
         self.apply_audio_routing();
+        if self.bundle.project.timecode != *self.timecode.config() {
+            self.apply_timecode_config();
+        }
         if dmx_changed {
             self.dmx = DmxEngine::new(self.bundle.project.dmx.clone());
             self.dmx.start_output();

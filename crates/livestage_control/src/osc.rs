@@ -14,6 +14,8 @@
 //! | `/livestage/standby/{number}`    |                 | Set standby      |
 //! | `/livestage/master`              | `dB`            | Master gain      |
 //! | `/livestage/status`              |                 | Status request   |
+//! | `/livestage/timecode/start|stop` |                 | Internal TC transport |
+//! | `/livestage/timecode/locate`     | `"HH:MM:SS:FF"` | Internal TC locate |
 
 use crate::hub::{ControlEvent, ControlSource};
 use crate::ControlError;
@@ -66,6 +68,12 @@ pub fn parse_message(msg: &OscMessage) -> Option<ShowCommand> {
         ["slide", "next"] => ShowCommand::NextSlide,
         ["slide", "previous"] | ["slide", "prev"] => ShowCommand::PrevSlide,
         ["slide"] => ShowCommand::GotoSlide { slide: arg_f32(&msg.args, 0)?.max(1.0) as usize },
+        ["timecode", "start"] => ShowCommand::TimecodeStart,
+        ["timecode", "stop"] => ShowCommand::TimecodeStop,
+        ["timecode", "locate"] => match msg.args.first()? {
+            OscType::String(s) => ShowCommand::TimecodeLocate { timecode: s.parse().ok()? },
+            _ => return None,
+        },
         _ => return None,
     };
     Some(cmd)
@@ -178,6 +186,12 @@ mod tests {
             parse_message(&msg("/livestage/stop", vec![OscType::Float(2.0)])),
             Some(ShowCommand::StopAll { fade: Some(ShowTime::from_secs(2)) })
         );
+        assert_eq!(parse_message(&msg("/livestage/timecode/start", vec![])), Some(ShowCommand::TimecodeStart));
+        assert_eq!(
+            parse_message(&msg("/livestage/timecode/locate", vec![OscType::String("01:00:00:00".into())])),
+            Some(ShowCommand::TimecodeLocate { timecode: "01:00:00:00".parse().unwrap() })
+        );
+        assert_eq!(parse_message(&msg("/livestage/timecode/locate", vec![OscType::String("nope".into())])), None);
         assert_eq!(parse_message(&msg("/nope", vec![])), None);
     }
 

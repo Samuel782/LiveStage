@@ -16,6 +16,7 @@ pub enum Section {
     General,
     Audio,
     Control,
+    Timecode,
     Outputs,
     Files,
 }
@@ -27,12 +28,13 @@ impl Section {
         Self::ALL.into_iter().find(|s| s.title().to_lowercase().starts_with(&n)).unwrap_or_default()
     }
 
-    const ALL: [Section; 5] = [Section::General, Section::Audio, Section::Control, Section::Outputs, Section::Files];
+    const ALL: [Section; 6] = [Section::General, Section::Audio, Section::Control, Section::Timecode, Section::Outputs, Section::Files];
     fn title(self) -> &'static str {
         match self {
             Section::General => "General",
             Section::Audio => "Audio",
             Section::Control => "Control",
+            Section::Timecode => "Timecode",
             Section::Outputs => "Outputs & Video",
             Section::Files => "Files & Paths",
         }
@@ -62,6 +64,7 @@ pub fn window(ctx: &egui::Context, rt: &mut ShowRuntime, st: &mut UiState) {
                         Section::General => general(ui, st),
                         Section::Audio => audio(ui, rt, st),
                         Section::Control => control(ui, rt, st),
+                        Section::Timecode => timecode(ui, rt, st),
                         Section::Outputs => outputs(ui, st),
                         Section::Files => files(ui, rt, st),
                     });
@@ -302,6 +305,163 @@ fn control(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
     if changed {
         rt.mark_changed();
     }
+}
+
+fn timecode(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+    use livestage_control::{ControlSource, ShowCommand};
+    use livestage_core::timecode::{ClockBase, FrameRate, ListTimecode, LockState, OnTimecodeStop, TimecodeSource};
+    heading(ui, "Timecode", "this show");
+    if st.midi_inputs.is_empty() {
+        st.midi_inputs = livestage_control::midi::list_inputs();
+    }
+
+    // Live readout
+    let t = rt.timecode.transport();
+    let (color, state) = match t.state {
+        LockState::Locked => (theme::active(), if t.running { "Rolling" } else { "Locked" }),
+        LockState::Freewheel => (theme::standby(), "Freewheel"),
+        LockState::Locking => (theme::standby(), "Locking…"),
+        LockState::Stopped => (theme::TEXT_DIM, "Stopped"),
+    };
+    egui::Frame::new().fill(theme::PANEL_RAISED).corner_radius(8).inner_margin(10).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(t.timecode().to_string()).font(theme::clock_font(34.0)).color(if t.running { theme::active() } else { theme::TEXT }));
+            ui.vertical(|ui| {
+                ui.colored_label(color, RichText::new(state).strong());
+                ui.label(RichText::new(format!("{} · {}", t.rate, rt.timecode_input)).size(12.0).color(theme::TEXT_DIM));
+                if rt.timecode.config().source != TimecodeSource::Internal && t.state != LockState::Stopped {
+                    ui.label(
+                        RichText::new(format!("drift {:+.0} ppm · jitter {:+.1} ms", t.drift_ppm(), rt.timecode.lock_error_us() / 1000.0))
+                            .size(12.0)
+                            .color(theme::TEXT_DIM),
+                    );
+                }
+            });
+        });
+        if rt.timecode.config().source == TimecodeSource::Internal {
+            ui.horizontal(|ui| {
+                if ui.button(if t.running { "Stop" } else { "Start" }).clicked() {
+                    rt.command(ControlSource::Ui, if t.running { ShowCommand::TimecodeStop } else { ShowCommand::TimecodeStart });
+                }
+                if ui.button("Reset").on_hover_text("Stop and park at the start timecode").clicked() {
+                    rt.timecode.reset();
+                }
+                ui.separator();
+                ui.label("Locate");
+                // Shows the live position; typing a label and pressing Enter locates.
+                let mut target = t.timecode();
+                if super::widgets::timecode_field(ui, "set-tc-locate", &mut target, t.rate) {
+                    rt.command(ControlSource::Ui, ShowCommand::TimecodeLocate { timecode: target });
+                }
+            });
+        }
+    });
+    ui.add_space(8.0);
+
+    let mut changed = false;
+    let mut cfg = rt.bundle.project.timecode.clone();
+    egui::Grid::new("set-tc").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
+        ui.label("Source");
+        ComboBox::from_id_salt("set-tc-src").width(220.0).selected_text(cfg.source.label()).show_ui(ui, |ui| {
+            for src in TimecodeSource::ALL {
+                changed |= ui.selectable_value(&mut cfg.source, src, src.label()).changed();
+            }
+        });
+        ui.end_row();
+        match cfg.source {
+            TimecodeSource::Internal => {
+                ui.label("Frame rate");
+                ComboBox::from_id_salt("set-tc-rate").selected_text(cfg.rate.label()).show_ui(ui, |ui| {
+                    for r in FrameRate::ALL {
+                        changed |= ui.selectable_value(&mut cfg.rate, r, r.label()).changed();
+                    }
+                });
+                ui.end_row();
+                ui.label("Clock");
+                ComboBox::from_id_salt("set-tc-base").selected_text(cfg.internal_base.label()).show_ui(ui, |ui| {
+                    for b in [ClockBase::Audio, ClockBase::Wall] {
+                        changed |= ui.selectable_value(&mut cfg.internal_base, b, b.label()).changed();
+                    }
+                });
+                ui.end_row();
+                ui.label("Start at");
+                changed |= super::widgets::timecode_field(ui, "set-tc-start", &mut cfg.internal_start, cfg.rate);
+                ui.end_row();
+            }
+            TimecodeSource::Mtc => {
+                ui.label("MIDI input");
+                ui.horizontal(|ui| {
+                    let current = cfg.mtc_input.clone().unwrap_or_else(|| "First available".into());
+                    ComboBox::from_id_salt("set-tc-midi").width(260.0).selected_text(current).show_ui(ui, |ui| {
+                        changed |= ui.selectable_value(&mut cfg.mtc_input, None, "First available").changed();
+                        for p in &st.midi_inputs {
+                            changed |= ui.selectable_value(&mut cfg.mtc_input, Some(p.clone()), p).changed();
+                        }
+                    });
+                    if ui.small_button("Rescan").clicked() {
+                        st.midi_inputs = livestage_control::midi::list_inputs();
+                    }
+                });
+                ui.end_row();
+            }
+            TimecodeSource::ArtNet => {
+                ui.label("Art-Net port");
+                changed |= ui.add(DragValue::new(&mut cfg.artnet_port).range(1024..=65_535).prefix("UDP ")).changed();
+                ui.end_row();
+            }
+        }
+        if cfg.source != TimecodeSource::Internal {
+            ui.label("Freewheel");
+            ui.horizontal(|ui| {
+                let mut ms = cfg.lock.freewheel.as_micros() / 1000;
+                if ui.add(DragValue::new(&mut ms).range(0..=5_000).suffix(" ms")).changed() {
+                    cfg.lock.freewheel = livestage_core::ShowTime::from_millis(ms);
+                    changed = true;
+                }
+                hint(ui, "keep rolling through dropouts this long");
+            });
+            ui.end_row();
+            ui.label("Jump threshold");
+            ui.horizontal(|ui| {
+                changed |= ui.add(DragValue::new(&mut cfg.lock.jump_frames).range(1..=100).suffix(" frames")).changed();
+                hint(ui, "larger errors re-locate instead of drifting back");
+            });
+            ui.end_row();
+        }
+    });
+    if changed {
+        rt.bundle.project.timecode = cfg;
+        rt.apply_timecode_config();
+        rt.mark_changed();
+    }
+
+    ui.add_space(10.0);
+    ui.label(RichText::new("Cue lists in timecode mode").strong());
+    hint(ui, "Cues with a timecode trigger (Inspector → Timecode) fire on their own; chasing, pausing and re-sync follow the stream.");
+    let mut list_changed = false;
+    for list in &mut rt.bundle.project.cue_lists {
+        ui.horizontal(|ui| {
+            let mut on = list.timecode.is_some();
+            if ui.checkbox(&mut on, &list.name).changed() {
+                list.timecode = on.then(ListTimecode::new);
+                list_changed = true;
+            }
+            if let Some(tc) = &mut list.timecode {
+                ComboBox::from_id_salt(("set-tc-list", list.id)).selected_text(format!("on stop: {}", tc.on_stop.label())).show_ui(ui, |ui| {
+                    for o in OnTimecodeStop::ALL {
+                        list_changed |= ui.selectable_value(&mut tc.on_stop, o, o.label()).changed();
+                    }
+                });
+                let triggers = list.cues.iter().filter(|c| livestage_core::cue::Cue::header(*c).timecode.is_some()).count();
+                hint(ui, &format!("{triggers} triggered cue(s)"));
+            }
+        });
+    }
+    if list_changed {
+        rt.mark_changed();
+    }
+    ui.add_space(6.0);
+    hint(ui, "Timeline cues become slaves in the Inspector (Timecode slave). OSC: /livestage/timecode/start | stop | locate \"HH:MM:SS:FF\".");
 }
 
 fn outputs(ui: &mut Ui, st: &mut UiState) {

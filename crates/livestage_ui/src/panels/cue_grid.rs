@@ -223,11 +223,13 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
                     Col::Kind => cell(&p, rect, *r, row.kind, FontId::proportional(12.0), theme::TEXT_DIM, 0.0),
                     Col::Name => cell(&p, rect, *r, &row.name, FontId::proportional(16.0), text, indent),
                     Col::Pre => {
-                        let v = match row.offset {
-                            Some(o) => format!("@ {}", &o.to_clock_string()[3..]),
-                            None => secs(row.pre_wait),
+                        let (v, c) = match (row.offset, row.timecode) {
+                            (Some(o), _) => (format!("@ {}", &o.to_clock_string()[3..]), theme::TEXT_DIM),
+                            // Timecode-triggered: the trigger replaces the pre-wait.
+                            (None, Some(tc)) => (tc.to_string(), theme::accent()),
+                            (None, None) => (secs(row.pre_wait), theme::TEXT_DIM),
                         };
-                        cell(&p, rect, *r, v, FontId::monospace(13.0), theme::TEXT_DIM, 0.0);
+                        cell(&p, rect, *r, v, FontId::monospace(12.0), c, 0.0);
                     }
                     Col::Action => {
                         let ar = Rect::from_min_max(

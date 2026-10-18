@@ -27,6 +27,13 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
     // Only timelines need project data while the cue is mutably borrowed.
     let is_timeline = rt.bundle.project.active_list().and_then(|l| l.find(id)).is_some_and(|c| matches!(c, AnyCue::Timeline(_)));
     let project_snapshot = is_timeline.then(|| rt.bundle.project.clone());
+    // Timecode triggers apply to top-level cues of a list in timecode mode.
+    let tc_rate = rt.bundle.project.timecode.rate;
+    let (top_level, list_tc) = rt
+        .bundle
+        .project
+        .active_list()
+        .map_or((false, false), |l| (l.index_of(id).is_some(), l.timecode.is_some()));
     let Some(cue) = rt.find_cue_mut(id) else {
         st.selected = None;
         return;
@@ -84,6 +91,28 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
             ui.label("Armed");
             changed |= ui.checkbox(&mut h.armed, "").changed();
             ui.end_row();
+            if top_level {
+                ui.label("Timecode");
+                ui.horizontal(|ui| {
+                    let mut on = h.timecode.is_some();
+                    if ui.checkbox(&mut on, "").on_hover_text("Fire when show timecode reaches this").changed() {
+                        h.timecode = on.then(|| h.timecode.unwrap_or_else(|| livestage_core::Timecode::new(1, 0, 0, 0, tc_rate).unwrap_or_default()));
+                        changed = true;
+                    }
+                    match &mut h.timecode {
+                        Some(t) => {
+                            changed |= super::widgets::timecode_field(ui, ("cue-tc", id), t, tc_rate);
+                            if !list_tc {
+                                ui.label(RichText::new("list not in timecode mode").size(12.0).color(theme::standby()));
+                            }
+                        }
+                        None => {
+                            ui.weak("manual GO");
+                        }
+                    }
+                });
+                ui.end_row();
+            }
         });
         ui.separator();
         changed |= match cue {
@@ -561,11 +590,59 @@ fn control(ui: &mut Ui, cc: &mut ControlCue) -> bool {
 }
 
 fn timeline(ui: &mut Ui, t: &mut livestage_core::timeline::TimelineCue, p: &livestage_core::Project, next: &str, st: &mut UiState) -> bool {
+    use livestage_core::timecode::{OnTimecodeStop, TimecodeSlave};
     let mut c = false;
     ui.horizontal(|ui| {
         ui.label("Length");
         c |= opt_time_edit(ui, &mut t.length, "from master");
     });
+    // Timecode slave
+    let rate = p.timecode.rate;
+    let mut slaved = t.timecode.is_some();
+    if ui
+        .checkbox(&mut slaved, RichText::new("Timecode slave").strong())
+        .on_hover_text("Run whenever show timecode is inside this timeline, instead of on GO")
+        .changed()
+    {
+        t.timecode = slaved.then(|| TimecodeSlave::new(livestage_core::Timecode::new(1, 0, 0, 0, rate).unwrap_or_default()));
+        c = true;
+    }
+    if let Some(slave) = &mut t.timecode {
+        egui::Grid::new("tl-tc").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+            ui.label("Starts at");
+            ui.horizontal(|ui| {
+                c |= super::widgets::timecode_field(ui, ("tl-tc-start", t.header.id), &mut slave.start, rate);
+                if let Some(len) = t.length.or_else(|| t.master.as_ref().and_then(|m| m.duration())) {
+                    let end = livestage_core::Timecode::from_time(slave.start.with_rate(rate).to_time() + len, rate);
+                    ui.weak(format!("→ ends {end}"));
+                }
+            });
+            ui.end_row();
+            ui.label("When TC stops");
+            ComboBox::from_id_salt("tl-tc-stop").selected_text(slave.on_stop.label()).show_ui(ui, |ui| {
+                for o in OnTimecodeStop::ALL {
+                    c |= ui.selectable_value(&mut slave.on_stop, o, o.label()).changed();
+                }
+            });
+            ui.end_row();
+            ui.label("Re-sync beyond");
+            let mut ms = slave.tolerance.as_micros() / 1000;
+            if ui.add(egui::DragValue::new(&mut ms).range(5..=2000).suffix(" ms")).changed() {
+                slave.tolerance = ShowTime::from_millis(ms);
+                c = true;
+            }
+            ui.end_row();
+        });
+        ui.label(
+            RichText::new(format!(
+                "Follows {} · drift corrections so far: {}",
+                p.timecode.source.label(),
+                slave.follower.resyncs
+            ))
+            .size(12.0)
+            .color(theme::TEXT_DIM),
+        );
+    }
     match &t.master {
         Some(m) => {
             ui.horizontal(|ui| {

@@ -9,6 +9,7 @@ license.workspace = true
 livestage_core.workspace = true
 midir.workspace = true
 rosc.workspace = true
+socket2.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true

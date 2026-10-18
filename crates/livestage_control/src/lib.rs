@@ -4,11 +4,14 @@
 //! Show Control, WebSocket JSON, the keyboard panic key — is normalised to a
 //! core [`ShowCommand`] and delivered to the show thread through a single
 //! [`ControlHub`] channel, so the show thread has exactly one input queue.
+//! Timecode (MTC, Art-Net) is a stream rather than commands and arrives on
+//! its own channel of time-stamped samples ([`timecode`]).
 
 pub mod hub;
 pub mod midi;
 pub mod osc;
 pub mod panic;
+pub mod timecode;
 pub mod websocket;
 
 pub use hub::{ControlEvent, ControlHub, ControlSource};

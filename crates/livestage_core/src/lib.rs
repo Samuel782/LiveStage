@@ -11,6 +11,8 @@
 //! * [`routing`] — logical displays, audio stems/buses/patch crosspoints.
 //! * [`projection`] — serialisable projection-mapping data (Bezier warp grid,
 //!   edge blend, polygon masks) and the pure math to evaluate it.
+//! * [`timecode`] — SMPTE timecode math, MTC / Art-Net lock with drift
+//!   compensation, the internal generator and timecode-slaved cues.
 //! * [`project`] / [`bundle`] — the `.livestage` folder bundle format.
 //!
 //! Nothing in this crate talks to hardware. Cues emit [`EngineAction`]s
@@ -31,6 +33,7 @@ pub mod projection;
 pub mod routing;
 pub mod state;
 pub mod time;
+pub mod timecode;
 pub mod timeline;
 
 pub use action::{AudioAction, ControlAction, DmxAction, EngineAction, VideoAction};
@@ -43,4 +46,5 @@ pub use id::*;
 pub use project::Project;
 pub use state::{CueState, Rgb};
 pub use time::ShowTime;
+pub use timecode::{FrameRate, TcTransport, Timecode};
 pub use timeline::{TimelineCue, TimelineItem};
