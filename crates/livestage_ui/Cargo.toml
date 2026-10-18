@@ -1,0 +1,41 @@
+[package]
+name = "livestage_ui"
+description = "LiveStage operator application: egui control surface + kiosk program outputs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "livestage"
+path = "src/main.rs"
+
+[features]
+ffmpeg = ["livestage_video/ffmpeg"]
+
+[dependencies]
+livestage_core.workspace = true
+livestage_audio.workspace = true
+livestage_video.workspace = true
+livestage_dmx.workspace = true
+livestage_control.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+egui_dock.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+image.workspace = true
+pollster.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mach2 = "0.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

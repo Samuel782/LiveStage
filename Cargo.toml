@@ -1,0 +1,72 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/livestage_core",
+    "crates/livestage_audio",
+    "crates/livestage_video",
+    "crates/livestage_dmx",
+    "crates/livestage_control",
+    "crates/livestage_ui",
+]
+default-members = ["crates/livestage_ui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.88"
+authors = ["LiveStage contributors"]
+
+[workspace.dependencies]
+livestage_core = { path = "crates/livestage_core" }
+livestage_audio = { path = "crates/livestage_audio" }
+livestage_video = { path = "crates/livestage_video" }
+livestage_dmx = { path = "crates/livestage_dmx" }
+livestage_control = { path = "crates/livestage_control" }
+
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+uuid = { version = "1.28", features = ["v4", "serde"] }
+thiserror = "2.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+bytemuck = { version = "1.25", features = ["derive"] }
+
+# Real-time audio
+cpal = "0.15.3"
+symphonia = { version = "0.5.5", features = ["all"] }
+ringbuf = "0.4.8"
+
+# GPU / windowing / UI (versions chosen as a mutually compatible set)
+wgpu = "24.0.5"
+winit = "0.30.13"
+egui = "0.31.1"
+egui-wgpu = { version = "0.31.1", features = ["winit"] }
+egui-winit = "0.31.1"
+egui_dock = "0.16.0"
+pollster = "0.4"
+libloading = "0.8"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Optional movie decoding (links the system FFmpeg 9.x libraries)
+ffmpeg-next = { version = "9.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+
+# Control protocols
+midir = "0.10.4"
+rosc = "0.10.1"
+tokio = { version = "1.53", features = ["rt-multi-thread", "net", "sync", "macros", "time"] }
+tokio-tungstenite = "0.26.2"
+futures-util = "0.3"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

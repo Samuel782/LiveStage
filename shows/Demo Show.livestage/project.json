@@ -1,0 +1,1000 @@
+{
+  "schema_version": 2,
+  "id": "a7a04dc0-d262-411e-bacd-85c1723c8fd0",
+  "name": "Demo Show",
+  "created_at": 1792255988,
+  "modified_at": 1792319879,
+  "cue_lists": [
+    {
+      "id": "37fdc501-5ec5-46a5-ab8e-959b75753a7e",
+      "name": "Main Cue List",
+      "cues": [
+        {
+          "type": "timer",
+          "id": "1d537b50-e3b6-482f-8582-803479660814",
+          "number": "1",
+          "name": "Doors",
+          "notes": "",
+          "pre_wait": 0,
+          "post_wait": 0,
+          "follow": "None",
+          "armed": true,
+          "color": null,
+          "output": "2f6e02b5-bd68-40d4-89aa-6a02195af45c",
+          "timer": {
+            "mode": {
+              "mode": "time_of_day"
+            },
+            "label": "DOORS",
+            "font_size": 220.0,
+            "color": [
+              0.9499999,
+              0.9499999,
+              0.9499999,
+              1.0
+            ],
+            "warn_color": [
+              0.898,
+              0.224,
+              0.208,
+              1.0
+            ],
+            "warn_below": 30000000
+          },
+          "layer": 10,
+          "hold_at_zero": true
+        },
+        {
+          "type": "video",
+          "id": "e192b44b-f347-401d-9caf-3d05f697b5f3",
+          "number": "2",
+          "name": "Line-up test pattern",
+          "notes": "",
+          "pre_wait": 0,
+          "post_wait": 0,
+          "follow": "None",
+          "armed": true,
+          "color": null,
+          "output": "1212afeb-6b84-42dc-b1e1-bcdce1fe820e",
+          "content": {
+            "type": "test_pattern"
+          },
+          "layer": 0,
+          "opacity": 1.0,
+          "fade_in": 500000,
+          "fade_out": 500000,
+          "hold": null,
+          "media_length": null,
+          "end_behavior": "Hide"
+        },
+        {
+          "type": "dmx",
+          "id": "60858e6b-059f-4546-bea8-fe03e1f6207f",
+          "number": "3",
+          "name": "Preset: house half",
+          "notes": "",
+          "pre_wait": 0,
+          "post_wait": 0,
+          "follow": "None",
+          "armed": true,
+          "color": null,
+          "channels": [
+            {
+              "universe": 0,
+              "channel": 1,
+              "value": 128
+            },
+            {
+              "universe": 0,
+              "channel": 2,
+              "value": 128
+            }
+          ],
+          "attributes": [],
+          "fade": 3000000,
+          "release_on_stop": true
+        },
+        {
+          "type": "timeline",
+          "id": "e54150e2-66ab-4c16-afac-c8cfb9fe4d40",
+          "number": "4",
+          "name": "Song 1 — Timeline",
+          "notes": "",
+          "pre_wait": 0,
+          "post_wait": 0,
+          "follow": "None",
+          "armed": true,
+          "color": null,
+          "master": {
+            "type": "audio",
+            "id": "23733e53-9646-43bc-8ba7-205799848e1f",
+            "number": "4.0",
+            "name": "Backing track",
+            "notes": "",
+            "pre_wait": 0,
+            "post_wait": 0,
+            "follow": "None",
+            "armed": true,
+            "color": null,
+            "tracks": [
+              {
+                "asset": "assets/audio/LiveStage Demo Backing.wav",
+                "stem": "7ababf50-0a47-4d26-b3f1-c12872209b80",
+                "gain_db": -3.0,
+                "mute": false
+              }
+            ],
+            "click": {
+              "bpm": 120.0,
+              "beats_per_bar": 4,
+              "stem": "94d8ac99-cf09-431a-ade3-cfe32b31dfdc",
+              "gain_db": -10.0,
+              "count_in_bars": 0
+            },
+            "gain_db": 0.0,
+            "fade_in": 0,
+            "fade_out": 1500000,
+            "start_at": 0,
+            "end_at": null,
+            "looped": false,
+            "media_length": 24000000
+          },
+          "items": [
+            {
+              "offset": 0,
+              "cue": {
+                "type": "dmx",
+                "id": "32ee84ab-1412-434d-b992-038d690904fe",
+                "number": "4.1",
+                "name": "Verse look",
+                "notes": "",
+                "pre_wait": 0,
+                "post_wait": 0,
+                "follow": "None",
+                "armed": true,
+                "color": null,
+                "channels": [
+                  {
+                    "universe": 0,
+                    "channel": 1,
+                    "value": 255
+                  },
+                  {
+                    "universe": 0,
+                    "channel": 2,
+                    "value": 60
+                  },
+                  {
+                    "universe": 0,
+                    "channel": 3,
+                    "value": 0
+                  }
+                ],
+                "attributes": [],
+                "fade": 1000000,
+                "release_on_stop": true
+              }
+            },
+            {
+              "offset": 4000000,
+              "cue": {
+                "type": "video",
+                "id": "f0a62c9b-fd99-4070-9853-c323b5882767",
+                "number": "4.2",
+                "name": "Lyric: verse 1",
+                "notes": "",
+                "pre_wait": 0,
+                "post_wait": 0,
+                "follow": "None",
+                "armed": true,
+                "color": null,
+                "output": "1212afeb-6b84-42dc-b1e1-bcdce1fe820e",
+                "content": {
+                  "type": "text",
+                  "text": "Every light in the house is ours tonight",
+                  "font_size": 72.0,
+                  "color": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0
+                  ],
+                  "scroll_speed": 0.0,
+                  "mirror_horizontal": false
+                },
+                "layer": 5,
+                "opacity": 1.0,
+                "fade_in": 300000,
+                "fade_out": 300000,
+                "hold": 6000000,
+                "media_length": null,
+                "end_behavior": "Hide"
+              }
+            },
+            {
+              "offset": 8000000,
+              "cue": {
+                "type": "dmx",
+                "id": "4730da27-c643-42d7-942c-9f201e6a9381",
+                "number": "4.3",
+                "name": "Chorus hit",
+                "notes": "",
+                "pre_wait": 0,
+                "post_wait": 0,
+                "follow": "None",
+                "armed": true,
+                "color": null,
+                "channels": [
+                  {
+                    "universe": 0,
+                    "channel": 1,
+                    "value": 255
+                  },
+                  {
+                    "universe": 0,
+                    "channel": 2,
+                    "value": 255
+                  },
+                  {
+                    "universe": 0,
+                    "channel": 3,
+                    "value": 255
+                  }
+                ],
+                "attributes": [],
+                "fade": 200000,
+                "release_on_stop": true
+              }
+            },
+            {
+              "offset": 14000000,
+              "cue": {
+                "type": "timer",
+                "id": "54c18b4b-6dfb-4695-aeab-8409c3c9037a",
+                "number": "4.4",
+                "name": "Song ends in",
+                "notes": "",
+                "pre_wait": 0,
+                "post_wait": 0,
+                "follow": "None",
+                "armed": true,
+                "color": null,
+                "output": "2f6e02b5-bd68-40d4-89aa-6a02195af45c",
+                "timer": {
+                  "mode": {
+                    "mode": "count_down",
+                    "from": 10000000
+                  },
+                  "label": "SONG ENDS IN",
+                  "font_size": 220.0,
+                  "color": [
+                    0.95,
+                    0.95,
+                    0.95,
+                    1.0
+                  ],
+                  "warn_color": [
+                    0.898,
+                    0.224,
+                    0.208,
+                    1.0
+                  ],
+                  "warn_below": 30000000
+                },
+                "layer": 10,
+                "hold_at_zero": true
+              }
+            },
+            {
+              "offset": 16000000,
+              "cue": {
+                "type": "control",
+                "id": "defdd96d-acb2-4a1a-b82d-0a46252b5b1b",
+                "number": "4.5",
+                "name": "Marker: bridge",
+                "notes": "",
+                "pre_wait": 0,
+                "post_wait": 0,
+                "follow": "None",
+                "armed": true,
+                "color": null,
+                "action": {
+                  "type": "marker",
+                  "text": "Bridge reached"
+                }
+              }
+            }
+          ],
+          "length": null
+        },
+        {
+          "type": "video",
+          "id": "0cd1a453-260b-485f-84dc-9df16c3ac3d7",
+          "number": "5",
+          "name": "Teleprompter: speech",
+          "notes": "Scrolls at 40 pt/s on the confidence monitor",
+          "pre_wait": 0,
+          "post_wait": 0,
+          "follow": "None",
+          "armed": true,
+          "color": null,
+          "output": "2f6e02b5-bd68-40d4-89aa-6a02195af45c",
+          "content": {
+            "type": "text",
+            "text": "Good evening and welcome.\n\nPlease silence your phones.\n\nOur first act needs no introduction…",
+            "font_size": 64.0,
+            "color": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "scroll_speed": 40.0,
+            "mirror_horizontal": false
+          },
+          "layer": 1,
+          "opacity": 1.0,
+          "fade_in": 500000,
+          "fade_out": 500000,
+          "hold": null,
+          "media_length": null,
+          "end_behavior": "Hide"
+        },
+        {
+          "type": "control",
+          "id": "18a6305a-47af-4611-9bf2-d63376bf219e",
+          "number": "6",
+          "name": "Stop everything (2 s)",
+          "notes": "",
+          "pre_wait": 0,
+          "post_wait": 0,
+          "follow": "None",
+          "armed": true,
+          "color": null,
+          "action": {
+            "type": "command",
+            "cmd": "stop_all",
+            "fade": 2000000
+          }
+        },
+        {
+          "type": "audio",
+          "id": "5bc74105-edc1-46fd-8906-2a6b923edc84",
+          "number": "7",
+          "name": "Are You Gonna Be My Girl",
+          "notes": "",
+          "pre_wait": 0,
+          "post_wait": 0,
+          "follow": "None",
+          "armed": true,
+          "color": null,
+          "tracks": [
+            {
+              "asset": "assets/audio/Are You Gonna Be My Girl.mp3",
+              "stem": "7ababf50-0a47-4d26-b3f1-c12872209b80",
+              "gain_db": 0.0,
+              "mute": false
+            }
+          ],
+          "click": null,
+          "gain_db": 0.0,
+          "fade_in": 0,
+          "fade_out": 1000000,
+          "start_at": 0,
+          "end_at": null,
+          "looped": false,
+          "media_length": 213838367
+        }
+      ]
+    },
+    {
+      "id": "fec82ceb-398f-4577-9367-b5d9fbb80369",
+      "name": "Cue List 2",
+      "cues": []
+    }
+  ],
+  "active_cue_list": "37fdc501-5ec5-46a5-ab8e-959b75753a7e",
+  "displays": [
+    {
+      "id": "1212afeb-6b84-42dc-b1e1-bcdce1fe820e",
+      "name": "Main LED Wall",
+      "physical": null,
+      "canvas_size": [
+        3420,
+        2224
+      ],
+      "fullscreen": false,
+      "enabled": true,
+      "projection": {
+        "warp": {
+          "cols": 4,
+          "rows": 4,
+          "points": [
+            [
+              0.0,
+              0.0
+            ],
+            [
+              0.33333334,
+              0.0
+            ],
+            [
+              0.6666667,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.33333334
+            ],
+            [
+              0.33333334,
+              0.33333334
+            ],
+            [
+              0.6666667,
+              0.33333334
+            ],
+            [
+              1.0,
+              0.33333334
+            ],
+            [
+              0.0,
+              0.6666667
+            ],
+            [
+              0.33333334,
+              0.6666667
+            ],
+            [
+              0.6666667,
+              0.6666667
+            ],
+            [
+              1.0,
+              0.6666667
+            ],
+            [
+              0.0,
+              1.0
+            ],
+            [
+              0.33333334,
+              1.0
+            ],
+            [
+              0.6666667,
+              1.0
+            ],
+            [
+              1.0,
+              1.0
+            ]
+          ],
+          "subdivisions": 32
+        },
+        "blend": {
+          "left": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          },
+          "right": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          },
+          "top": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          },
+          "bottom": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          }
+        },
+        "masks": [],
+        "brightness": 1.0
+      },
+      "ndi_output": null,
+      "ndi_resolution": null
+    },
+    {
+      "id": "2f6e02b5-bd68-40d4-89aa-6a02195af45c",
+      "name": "Confidence Monitor",
+      "physical": null,
+      "canvas_size": [
+        1920,
+        1080
+      ],
+      "fullscreen": true,
+      "enabled": true,
+      "projection": {
+        "warp": {
+          "cols": 4,
+          "rows": 4,
+          "points": [
+            [
+              0.0,
+              0.0
+            ],
+            [
+              0.33333334,
+              0.0
+            ],
+            [
+              0.6666667,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.33333334
+            ],
+            [
+              0.33333334,
+              0.33333334
+            ],
+            [
+              0.6666667,
+              0.33333334
+            ],
+            [
+              1.0,
+              0.33333334
+            ],
+            [
+              0.0,
+              0.6666667
+            ],
+            [
+              0.33333334,
+              0.6666667
+            ],
+            [
+              0.6666667,
+              0.6666667
+            ],
+            [
+              1.0,
+              0.6666667
+            ],
+            [
+              0.0,
+              1.0
+            ],
+            [
+              0.33333334,
+              1.0
+            ],
+            [
+              0.6666667,
+              1.0
+            ],
+            [
+              1.0,
+              1.0
+            ]
+          ],
+          "subdivisions": 32
+        },
+        "blend": {
+          "left": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          },
+          "right": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          },
+          "top": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          },
+          "bottom": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          }
+        },
+        "masks": [],
+        "brightness": 1.0
+      },
+      "ndi_output": null,
+      "ndi_resolution": null
+    },
+    {
+      "id": "5ad8ee29-1f34-43c7-9d41-6de5237d742e",
+      "name": "Output 3",
+      "physical": null,
+      "canvas_size": [
+        1920,
+        1080
+      ],
+      "fullscreen": true,
+      "enabled": true,
+      "projection": {
+        "warp": {
+          "cols": 4,
+          "rows": 4,
+          "points": [
+            [
+              0.0,
+              0.0
+            ],
+            [
+              0.33333334,
+              0.0
+            ],
+            [
+              0.6666667,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.33333334
+            ],
+            [
+              0.33333334,
+              0.33333334
+            ],
+            [
+              0.6666667,
+              0.33333334
+            ],
+            [
+              1.0,
+              0.33333334
+            ],
+            [
+              0.0,
+              0.6666667
+            ],
+            [
+              0.33333334,
+              0.6666667
+            ],
+            [
+              0.6666667,
+              0.6666667
+            ],
+            [
+              1.0,
+              0.6666667
+            ],
+            [
+              0.0,
+              1.0
+            ],
+            [
+              0.33333334,
+              1.0
+            ],
+            [
+              0.6666667,
+              1.0
+            ],
+            [
+              1.0,
+              1.0
+            ]
+          ],
+          "subdivisions": 32
+        },
+        "blend": {
+          "left": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          },
+          "right": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          },
+          "top": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          },
+          "bottom": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          }
+        },
+        "masks": [],
+        "brightness": 1.0
+      },
+      "ndi_output": null,
+      "ndi_resolution": null
+    },
+    {
+      "id": "d56beae3-23df-446c-86c7-98282c10e32b",
+      "name": "Output 4",
+      "physical": null,
+      "canvas_size": [
+        1920,
+        1080
+      ],
+      "fullscreen": true,
+      "enabled": true,
+      "projection": {
+        "warp": {
+          "cols": 4,
+          "rows": 4,
+          "points": [
+            [
+              0.0,
+              0.0
+            ],
+            [
+              0.33333334,
+              0.0
+            ],
+            [
+              0.6666667,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.33333334
+            ],
+            [
+              0.33333334,
+              0.33333334
+            ],
+            [
+              0.6666667,
+              0.33333334
+            ],
+            [
+              1.0,
+              0.33333334
+            ],
+            [
+              0.0,
+              0.6666667
+            ],
+            [
+              0.33333334,
+              0.6666667
+            ],
+            [
+              0.6666667,
+              0.6666667
+            ],
+            [
+              1.0,
+              0.6666667
+            ],
+            [
+              0.0,
+              1.0
+            ],
+            [
+              0.33333334,
+              1.0
+            ],
+            [
+              0.6666667,
+              1.0
+            ],
+            [
+              1.0,
+              1.0
+            ]
+          ],
+          "subdivisions": 32
+        },
+        "blend": {
+          "left": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          },
+          "right": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          },
+          "top": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          },
+          "bottom": {
+            "width": 0.0,
+            "power": 2.0,
+            "gamma": 2.2
+          }
+        },
+        "masks": [],
+        "brightness": 1.0
+      },
+      "ndi_output": null,
+      "ndi_resolution": null
+    }
+  ],
+  "audio": {
+    "device_name": null,
+    "sample_rate": null,
+    "buffer_frames": 256,
+    "output_channels": 8,
+    "output_labels": [
+      "Out 1",
+      "Out 2",
+      "Out 3",
+      "Out 4",
+      "Out 5",
+      "Out 6",
+      "Out 7",
+      "Out 8"
+    ],
+    "stems": [
+      {
+        "id": "7ababf50-0a47-4d26-b3f1-c12872209b80",
+        "name": "Backing Tracks",
+        "channels": 2,
+        "gain_db": 0.0,
+        "mute": false
+      },
+      {
+        "id": "94d8ac99-cf09-431a-ade3-cfe32b31dfdc",
+        "name": "Click",
+        "channels": 1,
+        "gain_db": 0.0,
+        "mute": false
+      },
+      {
+        "id": "ce6c2658-b543-4580-ac1b-f0ff5fb39a10",
+        "name": "In-Ear Mix",
+        "channels": 2,
+        "gain_db": 0.0,
+        "mute": false
+      }
+    ],
+    "buses": [
+      {
+        "id": "ab73cc46-8193-4b7a-89d9-799e51670fce",
+        "name": "FOH Main",
+        "channels": [
+          0,
+          1
+        ]
+      },
+      {
+        "id": "f0321635-9db2-4717-b98e-5fbf39257e87",
+        "name": "Click",
+        "channels": [
+          2,
+          3
+        ]
+      },
+      {
+        "id": "193db02b-dfe3-4cf5-aaf0-a6f4ba1fdd0d",
+        "name": "In-Ears",
+        "channels": [
+          4,
+          5,
+          6,
+          7
+        ]
+      }
+    ],
+    "crosspoints": [
+      {
+        "stem": "7ababf50-0a47-4d26-b3f1-c12872209b80",
+        "source_channel": 1,
+        "output": 1,
+        "gain_db": 0.0
+      },
+      {
+        "stem": "94d8ac99-cf09-431a-ade3-cfe32b31dfdc",
+        "source_channel": 0,
+        "output": 2,
+        "gain_db": 0.0
+      },
+      {
+        "stem": "94d8ac99-cf09-431a-ade3-cfe32b31dfdc",
+        "source_channel": 0,
+        "output": 3,
+        "gain_db": 0.0
+      },
+      {
+        "stem": "ce6c2658-b543-4580-ac1b-f0ff5fb39a10",
+        "source_channel": 0,
+        "output": 4,
+        "gain_db": 0.0
+      },
+      {
+        "stem": "ce6c2658-b543-4580-ac1b-f0ff5fb39a10",
+        "source_channel": 1,
+        "output": 5,
+        "gain_db": 0.0
+      },
+      {
+        "stem": "ce6c2658-b543-4580-ac1b-f0ff5fb39a10",
+        "source_channel": 0,
+        "output": 6,
+        "gain_db": 0.0
+      },
+      {
+        "stem": "ce6c2658-b543-4580-ac1b-f0ff5fb39a10",
+        "source_channel": 1,
+        "output": 7,
+        "gain_db": 0.0
+      },
+      {
+        "stem": "7ababf50-0a47-4d26-b3f1-c12872209b80",
+        "source_channel": 0,
+        "output": 0,
+        "gain_db": 0.0
+      }
+    ],
+    "master_gain_db": 0.0
+  },
+  "dmx": {
+    "universes": [
+      {
+        "index": 0,
+        "name": "Universe 1",
+        "transport": {
+          "protocol": "sacn",
+          "universe": 1,
+          "priority": 100,
+          "destination": null
+        }
+      }
+    ],
+    "patch": [],
+    "pixel_maps": [],
+    "refresh_hz": 40.0
+  },
+  "control": {
+    "osc_enabled": true,
+    "osc_listen_port": 53100,
+    "websocket_enabled": true,
+    "websocket_port": 8765,
+    "midi_input": null,
+    "msc_device_id": 127
+  },
+  "assets": [
+    {
+      "id": "c4ad6edb-37e2-482a-887e-372eb1cf8102",
+      "path": "assets/audio/LiveStage Demo Backing.wav",
+      "kind": "audio",
+      "original_name": "LiveStage Demo Backing.wav",
+      "size_bytes": 4608044,
+      "imported_at": 1792255988
+    },
+    {
+      "id": "a34d826e-7596-45f1-8705-67394a90f9a1",
+      "path": "assets/audio/Are You Gonna Be My Girl.mp3",
+      "kind": "audio",
+      "original_name": "Are You Gonna Be My Girl.mp3",
+      "size_bytes": 8704111,
+      "imported_at": 1792305773
+    }
+  ]
+}

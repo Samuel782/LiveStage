@@ -1,0 +1,49 @@
+# ── Rust build output ───────────────────────────────────────────────
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+
+# ── OS / editor files ──────────────────────────────────────────────
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# ── Show bundles: keep manifests and folder layout, not media ──────
+# Imported media lives in <Show>.livestage/assets/<kind>/ and can be large
+# or licensed; the folder structure is kept via .gitkeep files.
+shows/*/assets/*/*
+!shows/*/assets/*/.gitkeep
+# Runtime by-products of the bundle format
+*.autosave.json
+*.autosave.json.tmp
+project.json.tmp
+project.json.bak
+
+# ── Logs / scratch ─────────────────────────────────────────────────
+*.log
+*.tmp
+/scratch/
+ui*.png
+
+# ── Locally built native libraries (FFmpeg, NDI, …) ────────────────
+# FFmpeg is expected in ~/.local/ffmpeg-9 (outside the repo); these catch
+# in-tree builds or vendored copies.
+/ffmpeg*/
+/vendor/ffmpeg*/
+/third_party/
+*.dylib
+*.so
+*.so.*
+*.dll
+*.a
+*.lib

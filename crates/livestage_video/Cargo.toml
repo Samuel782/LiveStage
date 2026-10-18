@@ -1,0 +1,26 @@
+[package]
+name = "livestage_video"
+description = "wgpu render engine: compositing, projection mapping, video sources, NDI interfaces"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+livestage_core.workspace = true
+wgpu.workspace = true
+bytemuck.workspace = true
+image.workspace = true
+chrono.workspace = true
+libloading.workspace = true
+parking_lot.workspace = true
+ffmpeg-next = { workspace = true, optional = true }
+
+thiserror.workspace = true
+tracing.workspace = true
+
+[features]
+# Movie-file backend via the system FFmpeg libraries (see README).
+ffmpeg = ["dep:ffmpeg-next"]
+
+[dev-dependencies]
+pollster.workspace = true

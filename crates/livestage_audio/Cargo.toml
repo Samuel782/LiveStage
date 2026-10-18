@@ -1,0 +1,15 @@
+[package]
+name = "livestage_audio"
+description = "Lock-free multi-channel audio engine: decoding, stem routing, click track"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+livestage_core.workspace = true
+cpal.workspace = true
+symphonia.workspace = true
+ringbuf.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true

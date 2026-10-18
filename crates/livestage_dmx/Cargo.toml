@@ -1,0 +1,13 @@
+[package]
+name = "livestage_dmx"
+description = "Art-Net / sACN output, fixture library & patch, pixel mapper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+livestage_core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+uuid.workspace = true
