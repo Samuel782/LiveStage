@@ -1,12 +1,12 @@
 //! Audio Channel Patch Bay: device, stems, crosspoint matrix, meters.
 
 use super::UiState;
-use crate::runtime::ShowRuntime;
+use crate::view::UiRuntime;
 use crate::theme;
 use egui::{Button, Color32, ComboBox, DragValue, RichText, Sense, Ui};
 use livestage_audio::gain_to_db;
 
-pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     let mut routing_changed = false;
     egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
         // ---- device
@@ -45,7 +45,7 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
         ui.separator();
 
         // ---- meters
-        if let Some(a) = &rt.audio {
+        if let Some(a) = &mut rt.audio {
             let peaks = a.take_peaks();
             st.meters.resize(peaks.len(), 0.0);
             for (m, p) in st.meters.iter_mut().zip(peaks) {

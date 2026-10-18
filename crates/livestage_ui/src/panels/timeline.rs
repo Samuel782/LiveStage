@@ -1,7 +1,7 @@
 //! Timeline editor: stacked cues on a time axis, drag to re-time.
 
 use super::UiState;
-use crate::runtime::ShowRuntime;
+use crate::view::UiRuntime;
 use crate::theme;
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui};
 use livestage_core::cue::{AnyCue, Cue, CueExt, CueKind};
@@ -26,7 +26,7 @@ fn kind_color(k: CueKind) -> Color32 {
 
 /// The timeline to show: the selected one, the one containing the selected
 /// child, or the first timeline in the active list.
-fn target(rt: &ShowRuntime, st: &UiState) -> Option<CueId> {
+fn target(rt: &UiRuntime, st: &UiState) -> Option<CueId> {
     let list = rt.bundle.project.active_list()?;
     let timelines = || list.cues.iter().filter(|c| matches!(c, AnyCue::Timeline(_)));
     st.selected
@@ -43,7 +43,7 @@ fn ruler_step(zoom: f32) -> f32 {
         .unwrap_or(600.0)
 }
 
-pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     let Some(tid) = target(rt, st) else {
         ui.label(RichText::new("No timeline cue in this list. Add one with “+ Add cue → Timeline”.").color(theme::TEXT_DIM));
         return;

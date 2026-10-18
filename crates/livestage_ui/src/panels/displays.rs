@@ -2,7 +2,7 @@
 //! previews, and projection mapping (Bezier warp, edge blend, masks).
 
 use super::{NdiStatus, Previews, UiState};
-use crate::runtime::ShowRuntime;
+use crate::view::UiRuntime;
 use crate::theme;
 use egui::{Color32, ComboBox, DragValue, Pos2, RichText, Sense, Stroke, Ui};
 use livestage_core::action::{VideoAction, VisualContent};
@@ -17,7 +17,7 @@ fn test_cue(id: OutputId) -> CueId {
     CueId(id.0)
 }
 
-pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState, physical: &[PhysicalDisplayInfo], previews: &Previews, ndi: &NdiStatus) {
+pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState, physical: &[PhysicalDisplayInfo], previews: &Previews, ndi: &NdiStatus) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("{} physical display(s) detected", physical.len())).color(theme::TEXT_DIM));
         if ui.button("+ Output").clicked() {

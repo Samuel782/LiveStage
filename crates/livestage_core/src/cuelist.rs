@@ -22,6 +22,7 @@ use crate::time::ShowTime;
 use crate::timecode::slave::{follow, relative, Follow, Followed};
 use crate::timecode::{ListTimecode, TcTransport};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Pending {
@@ -34,6 +35,21 @@ pub struct CueListRuntime {
     standby: Option<usize>,
     pending: Vec<Pending>,
     last_go: Option<usize>,
+}
+
+/// A cue in an edited list (see [`crate::edits`]): unchanged (by id) or the editor's version.
+pub(crate) enum CueSlot {
+    Keep(CueId),
+    Take(Box<AnyCue>),
+}
+
+impl CueSlot {
+    fn id(&self) -> CueId {
+        match self {
+            CueSlot::Keep(id) => *id,
+            CueSlot::Take(c) => c.header().id,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -353,21 +369,78 @@ impl CueList {
         for c in &mut self.cues {
             adopt_cue(c, old);
         }
-        if let (Some(tc), Some(otc)) = (&mut self.timecode, &old.timecode) {
+        self.adopt_list_state_from(old);
+    }
+
+    /// The list-level part of [`adopt_runtime_from`](Self::adopt_runtime_from):
+    /// standby, pending GOs, last GO and the timecode follower.
+    pub(crate) fn adopt_list_state_from(&mut self, old: &CueList) {
+        let ids: Vec<CueId> = old.cues.iter().map(|c| c.header().id).collect();
+        self.adopt_list_state(&ids, &old.runtime, old.timecode.as_ref());
+    }
+
+    /// List state from a list whose cues were `old_ids` (in order).
+    fn adopt_list_state(&mut self, old_ids: &[CueId], old: &CueListRuntime, old_tc: Option<&ListTimecode>) {
+        if let (Some(tc), Some(otc)) = (&mut self.timecode, old_tc) {
             tc.follower = otc.follower.clone();
             tc.holdoff = otc.holdoff.clone();
         }
-        let remap = |i: usize| old.cues.get(i).map(|c| c.header().id).and_then(|id| self.index_of(id));
+        let pos: std::collections::HashMap<CueId, usize> = self.cues.iter().enumerate().map(|(i, c)| (c.header().id, i)).collect();
+        let remap = |i: usize| old_ids.get(i).and_then(|id| pos.get(id).copied());
         self.runtime = CueListRuntime {
-            standby: old.runtime.standby.and_then(remap),
-            pending: old
-                .runtime
-                .pending
-                .iter()
-                .filter_map(|p| remap(p.index).map(|index| Pending { index, at: p.at }))
-                .collect(),
-            last_go: old.runtime.last_go.and_then(remap),
+            standby: old.standby.and_then(remap),
+            pending: old.pending.iter().filter_map(|p| remap(p.index).map(|index| Pending { index, at: p.at })).collect(),
+            last_go: old.last_go.and_then(remap),
         };
+    }
+
+    /// Builds the merged list for [`crate::edits`]: the editor's list-level
+    /// fields and cue order, unchanged cues moved over from `live`, edited
+    /// ones adopting live state, and cues `live` gained meanwhile appended.
+    pub(crate) fn rebuild_from_edit(mut shell: CueList, mut cues: Vec<CueSlot>, base_ids: &HashSet<CueId>, mut live: CueList) -> CueList {
+        for s in &mut cues {
+            if let CueSlot::Take(c) = s {
+                adopt_cue(c, &live);
+            }
+        }
+        let same_order = cues.len() == live.cues.len() && cues.iter().zip(&live.cues).all(|(s, c)| s.id() == c.header().id);
+        if same_order {
+            // Field edits only (the common case): swap the edited cues in
+            // place; the rest of the list is not touched.
+            shell.cues = std::mem::take(&mut live.cues);
+            for (i, s) in cues.into_iter().enumerate() {
+                if let CueSlot::Take(c) = s {
+                    shell.cues[i] = *c;
+                }
+            }
+            shell.runtime = std::mem::take(&mut live.runtime);
+            if let (Some(tc), Some(otc)) = (&mut shell.timecode, live.timecode) {
+                tc.follower = otc.follower;
+                tc.holdoff = otc.holdoff;
+            }
+            return shell;
+        }
+        let old_ids: Vec<CueId> = live.cues.iter().map(|c| c.header().id).collect();
+        let old_runtime = std::mem::take(&mut live.runtime);
+        let mut by_id: std::collections::HashMap<CueId, AnyCue> = live.cues.drain(..).map(|c| (c.header().id, c)).collect();
+        shell.cues = Vec::with_capacity(cues.len());
+        for s in cues {
+            match s {
+                // Deleted live while unchanged here: the deletion stands.
+                CueSlot::Keep(id) => shell.cues.extend(by_id.remove(&id)),
+                CueSlot::Take(c) => {
+                    by_id.remove(&c.header().id);
+                    shell.cues.push(*c);
+                }
+            }
+        }
+        for id in &old_ids {
+            if !base_ids.contains(id) {
+                shell.cues.extend(by_id.remove(id));
+            }
+        }
+        shell.adopt_list_state(&old_ids, &old_runtime, live.timecode.as_ref());
+        shell
     }
 
     // ------------------------------------------------------------- status --
@@ -391,7 +464,7 @@ impl CueList {
     }
 }
 
-fn adopt_cue(new: &mut AnyCue, old_list: &CueList) {
+pub(crate) fn adopt_cue(new: &mut AnyCue, old_list: &CueList) {
     let id = new.header().id;
     let Some(old) = old_list.find(id) else { return };
     new.header_mut().runtime = old.header().runtime.clone();

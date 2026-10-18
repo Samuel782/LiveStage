@@ -1,9 +1,10 @@
 //! The show thread: ticks every cue list, executes commands and drives the
 //! audio / DMX / control engines at a fixed high rate, independent of the UI.
 //!
-//! The UI only holds the runtime lock while laying out panels (no GPU work,
-//! no presentation), so a stalled or vsync-blocked UI never delays a cue.
-//! macOS window drags or a slow frame no longer freeze the show either.
+//! The UI never holds the runtime lock while laying out panels: it copies
+//! what it shows, lays out against the copy and folds edits back
+//! ([`crate::view`]), so a slow, stalled or vsync-blocked UI frame never
+//! delays a cue. macOS window drags no longer freeze the show either.
 
 use crate::runtime::{ShowRuntime, ShowStats};
 use parking_lot::Mutex;
@@ -74,5 +75,122 @@ mod tests {
     fn runtime_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<crate::runtime::ShowRuntime>();
+    }
+
+    use std::time::Duration;
+
+    /// Worst show-thread lock wait and lateness (µs) while a UI with a
+    /// `layout`-long frame runs `frames` frames, plus the median / max time
+    /// the UI held the lock per frame.
+    struct Run {
+        wait_us: u64,
+        late_us: u64,
+        holds: Vec<Duration>,
+    }
+
+    /// Runs the show thread at 1 kHz on a show with `cues` cues and drives
+    /// UI frames against it, either the old way (`under_lock`: layout while
+    /// holding the runtime) or with the frame copy, editing a cue every frame.
+    fn run_ui(cues: usize, layout: Duration, under_lock: bool) -> Run {
+        use super::*;
+        use crate::runtime::{renew_ids, ShowStats};
+        use crate::view::UiRuntime;
+        use livestage_core::cue::Cue;
+        use livestage_core::ProjectBundle;
+
+        let dir = std::env::temp_dir().join(format!("livestage-isolation-{}-{cues}-{under_lock}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut bundle = ProjectBundle::create(&dir, "Isolation").unwrap();
+        let demo: livestage_core::Project =
+            serde_json::from_slice(&std::fs::read("../../shows/Demo Show.livestage/project.json").unwrap()).unwrap();
+        let mut p = demo.clone();
+        p.dmx = Default::default(); // no Art-Net / sACN traffic from a test
+        p.control.osc_enabled = false;
+        p.control.websocket_enabled = false;
+        let template = demo.cue_lists[0].cues.clone();
+        let list = &mut p.cue_lists[0];
+        list.cues.truncate(cues);
+        while list.cues.len() < cues {
+            let mut c = template[list.cues.len() % template.len()].clone();
+            renew_ids(&mut c);
+            c.header_mut().number = (list.cues.len() + 1).to_string();
+            list.cues.push(c);
+        }
+        bundle.project = p;
+        let shared: SharedRuntime = Arc::new(Mutex::new(crate::runtime::ShowRuntime::new(bundle)));
+        shared.lock().reset_lists();
+        let stats = shared.lock().show_stats.clone();
+        let show = ShowThread::spawn(shared.clone(), SHOW_RATE_HZ).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        ShowStats::take(&stats.max_wait_us);
+        ShowStats::take(&stats.max_late_us);
+
+        let mut holds = Vec::new();
+        let mut view = UiRuntime::new(&shared.lock());
+        let edited = cues / 2;
+        for i in 0..30 {
+            if under_lock {
+                let t = Instant::now();
+                let guard = shared.lock();
+                std::thread::sleep(layout);
+                drop(guard);
+                holds.push(t.elapsed());
+            } else {
+                let t = Instant::now();
+                view.sync(&shared.lock());
+                let mut held = t.elapsed();
+                view.begin_frame();
+                view.bundle.project.cue_lists[0].cues[edited].header_mut().name = format!("edit {i}");
+                view.mark_changed();
+                std::thread::sleep(layout);
+                let edits = view.take_edits();
+                let t = Instant::now();
+                view.apply(&mut shared.lock(), edits);
+                held += t.elapsed();
+                holds.push(held);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let run = Run { wait_us: ShowStats::take(&stats.max_wait_us), late_us: ShowStats::take(&stats.max_late_us), holds };
+        if !under_lock {
+            let name = shared.lock().bundle.project.cue_lists[0].cues[edited].header().name.clone();
+            assert_eq!(name, "edit 29", "edits reach the live project");
+        }
+        drop(show);
+        let _ = std::fs::remove_dir_all(&dir);
+        run
+    }
+
+    /// A deliberately slow UI frame must not hold up the 1 kHz show thread:
+    /// the show thread's worst lock wait has to stay small and must not grow
+    /// with the layout time. The old pattern (layout under the lock) runs as
+    /// a control. Opens the default audio device, so it is ignored by default:
+    /// `cargo test -p livestage_ui --release slow_ui -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn slow_ui_does_not_delay_show_thread() {
+        let report = |what: &str, r: &mut Run| {
+            r.holds.sort();
+            println!(
+                "{what:<34} show thread waited ≤ {:>6} µs, ticked ≤ {:>6} µs late; UI held the lock median {:?}, max {:?}",
+                r.wait_us,
+                r.late_us,
+                r.holds[r.holds.len() / 2],
+                r.holds[r.holds.len() - 1]
+            );
+        };
+        let mut old = run_ui(1000, Duration::from_millis(20), true);
+        report("layout under lock, 1000 cues, 20 ms", &mut old);
+        let mut demo = run_ui(7, Duration::from_millis(20), false);
+        report("frame copy, demo show, 20 ms", &mut demo);
+        let mut big = run_ui(1000, Duration::from_millis(20), false);
+        report("frame copy, 1000 cues, 20 ms", &mut big);
+        let mut slower = run_ui(1000, Duration::from_millis(80), false);
+        report("frame copy, 1000 cues, 80 ms", &mut slower);
+
+        assert!(old.wait_us >= 15_000, "control run should block ({} µs)", old.wait_us);
+        assert!(demo.wait_us < 1_500, "demo show: show thread waited {} µs", demo.wait_us);
+        assert!(big.wait_us < 5_000, "1000 cues: show thread waited {} µs", big.wait_us);
+        assert!(slower.wait_us < 5_000, "a 4× slower layout must not lengthen the wait ({} µs)", slower.wait_us);
     }
 }

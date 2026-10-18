@@ -222,9 +222,15 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
     let mut textures = egui::TexturesDelta::default();
     // Extra passes while thumbnails decode on worker threads (bounded), then
     // one more so freshly uploaded thumbnails are drawn.
+    // Same frame cycle as the app: copy, lay out without the runtime, fold back.
+    let mut view = crate::view::UiRuntime::new(&rt);
     let mut i = 0;
     let mut output = loop {
-        let mut out = ctx.run(input(i as f64 * 0.016), |ctx| panels::draw(ctx, &mut rt, &mut ui, &[], &previews, &ndi));
+        view.sync(&rt);
+        view.begin_frame();
+        let mut out = ctx.run(input(i as f64 * 0.016), |ctx| panels::draw(ctx, &mut view, &mut ui, &[], &previews, &ndi));
+        let edits = view.take_edits();
+        view.apply(&mut rt, edits);
         textures.append(std::mem::take(&mut out.textures_delta));
         let settling = i < 4 || (ui.thumbs.pending() > 0 && i < 200);
         if i >= 3 && ui.thumbs.pending() > 0 {

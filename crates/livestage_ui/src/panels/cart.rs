@@ -9,7 +9,7 @@
 
 use super::widgets::{menu_item, menu_item_danger, menu_item_enabled, menu_separator};
 use super::{Tab, UiState};
-use crate::runtime::ShowRuntime;
+use crate::view::UiRuntime;
 use crate::theme;
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use livestage_control::{ControlSource, ShowCommand};
@@ -73,7 +73,7 @@ fn pad_color(p: &CartPad) -> Color32 {
     p.color.map(theme::rgb).unwrap_or_else(|| kind_color(p.cue.kind()))
 }
 
-pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     toolbar(ui, rt, st);
     if rt.bundle.project.carts.is_empty() {
         ui.add_space(24.0);
@@ -117,7 +117,7 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
     ui.allocate_rect(avail, Sense::hover());
 }
 
-fn toolbar(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+fn toolbar(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     ui.horizontal(|ui| {
         let mut select = None;
         for (i, k) in rt.bundle.project.carts.iter().enumerate() {
@@ -192,7 +192,7 @@ fn toolbar(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
     ui.add_space(4.0);
 }
 
-fn grid(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState, area: Rect) {
+fn grid(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState, area: Rect) {
     let page = st.cart_page;
     let (rows, cols) = {
         let k = &rt.bundle.project.carts[page];
@@ -338,7 +338,7 @@ fn short_time(t: ShowTime) -> String {
     }
 }
 
-fn pad_menu(resp: &egui::Response, rt: &mut ShowRuntime, st: &mut UiState, page: usize, slot: usize, pad: Option<&CartPad>) {
+fn pad_menu(resp: &egui::Response, rt: &mut UiRuntime, st: &mut UiState, page: usize, slot: usize, pad: Option<&CartPad>) {
     let list_cue = st.selected.and_then(|id| rt.bundle.project.active_list().and_then(|l| l.find(id))).cloned();
     resp.context_menu(|ui| {
         ui.set_min_width(220.0);
@@ -393,7 +393,7 @@ fn pad_menu(resp: &egui::Response, rt: &mut ShowRuntime, st: &mut UiState, page:
     });
 }
 
-fn new_pad(rt: &mut ShowRuntime, st: &mut UiState, page: usize, slot: usize, kind: CueKind) {
+fn new_pad(rt: &mut UiRuntime, st: &mut UiState, page: usize, slot: usize, kind: CueKind) {
     let mut cue = crate::demo::new_cue(&rt.bundle.project, kind, "");
     cue.header_mut().name = match kind {
         CueKind::Dmx => "Flash".into(),
@@ -414,7 +414,7 @@ fn new_pad(rt: &mut ShowRuntime, st: &mut UiState, page: usize, slot: usize, kin
 }
 
 /// Completes key / MIDI learn.
-fn poll_learn(ctx: &egui::Context, rt: &mut ShowRuntime, st: &mut UiState) {
+fn poll_learn(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
     match st.pad_learn {
         Some(PadLearn::Key { cart, slot }) => {
             let key = ctx.input(|i| {
@@ -457,7 +457,7 @@ fn poll_learn(ctx: &egui::Context, rt: &mut ShowRuntime, st: &mut UiState) {
     }
 }
 
-fn editor(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+fn editor(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     let (page, Some(slot)) = (st.cart_page, st.cart_slot) else { return };
     ui.horizontal(|ui| {
         ui.heading(format!("Pad {}", slot + 1));
@@ -558,8 +558,8 @@ fn editor(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
             // Silence bindings while learning so the note does not fire GO / pads.
             if let Some(m) = &rt.midi_in {
                 m.take_learned();
-                m.set_bindings(Vec::new());
             }
+            rt.silence_midi_bindings();
         }
         _ if learn != st.pad_learn => rt.refresh_midi_bindings(),
         _ => {}
@@ -601,7 +601,7 @@ fn hint(ui: &mut Ui, text: &str) {
 }
 
 /// Ways to put content on a pad: a media asset, the selected list cue, or a new cue.
-fn content_picker(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState, page: usize, slot: usize) {
+fn content_picker(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState, page: usize, slot: usize) {
     let playing = rt.bundle.project.carts[page].pad(slot).is_some_and(CartPad::is_playing);
     ui.add_enabled_ui(!playing, |ui| {
         let media: Vec<_> =
@@ -649,7 +649,7 @@ fn one_shot(mut cue: livestage_core::AnyCue) -> livestage_core::AnyCue {
 
 /// Pad keyboard triggers. Keys of the visible cart win over other carts.
 /// Called by the global shortcut handler before the fixed shortcuts.
-pub fn key_triggers(ctx: &egui::Context, rt: &ShowRuntime, st: &UiState) {
+pub fn key_triggers(ctx: &egui::Context, rt: &UiRuntime, st: &UiState) {
     let carts = &rt.bundle.project.carts;
     if carts.is_empty() || st.pad_learn.is_some() {
         return;

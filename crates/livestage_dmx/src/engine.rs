@@ -175,23 +175,12 @@ impl DmxEngine {
 
     /// Approximate emitted colour (0..=1 RGB, intensity applied) for the stage view.
     pub fn fixture_color(&self, fixture: FixtureId) -> Option<[f32; 3]> {
-        let attrs = self.patch.attributes_of(fixture);
-        if attrs.is_empty() {
-            return None;
-        }
-        let get = |a: &str| self.output(fixture, a);
-        let dimmer = if attrs.iter().any(|(_, r)| r.kind.is_intensity()) { attrs.iter().find(|(_, r)| r.kind.is_intensity()).and_then(|(n, _)| get(n)).unwrap_or(0.0) } else { 1.0 };
-        let has_rgb = get("red").is_some();
-        let mut c = if has_rgb {
-            let w = get("white").unwrap_or(0.0) + get("amber").unwrap_or(0.0) * 0.5;
-            [get("red").unwrap_or(0.0) + w, get("green").unwrap_or(0.0) + w * 0.8, get("blue").unwrap_or(0.0) + w * 0.6]
-        } else {
-            [1.0, 0.95, 0.85]
-        };
-        for v in &mut c {
-            *v = (*v * dimmer).clamp(0.0, 1.0);
-        }
-        Some(c)
+        fixture_color(&self.patch, fixture, |a| self.output(fixture, a))
+    }
+
+    /// Every slot value written by the last tick (for UI snapshots).
+    pub fn last_values(&self) -> &BTreeMap<crate::playback::Slot, f32> {
+        &self.last
     }
 
     pub fn universe(&self, index: u16) -> Option<&Universe> {
@@ -203,4 +192,25 @@ impl DmxEngine {
     pub fn packets_sent(&self) -> u64 {
         self.output.as_ref().map_or(0, |o| o.packets_sent.load(std::sync::atomic::Ordering::Relaxed))
     }
+}
+
+/// Approximate emitted colour (0..=1 RGB, intensity applied) of a fixture,
+/// given its attribute output values.
+pub fn fixture_color(patch: &Patch, fixture: FixtureId, get: impl Fn(&str) -> Option<f32>) -> Option<[f32; 3]> {
+    let attrs = patch.attributes_of(fixture);
+    if attrs.is_empty() {
+        return None;
+    }
+    let dimmer = if attrs.iter().any(|(_, r)| r.kind.is_intensity()) { attrs.iter().find(|(_, r)| r.kind.is_intensity()).and_then(|(n, _)| get(n)).unwrap_or(0.0) } else { 1.0 };
+    let has_rgb = get("red").is_some();
+    let mut c = if has_rgb {
+        let w = get("white").unwrap_or(0.0) + get("amber").unwrap_or(0.0) * 0.5;
+        [get("red").unwrap_or(0.0) + w, get("green").unwrap_or(0.0) + w * 0.8, get("blue").unwrap_or(0.0) + w * 0.6]
+    } else {
+        [1.0, 0.95, 0.85]
+    };
+    for v in &mut c {
+        *v = (*v * dimmer).clamp(0.0, 1.0);
+    }
+    Some(c)
 }

@@ -10,7 +10,8 @@
 //! turns it into a DMX cue that references the palettes it used.
 
 use super::UiState;
-use crate::runtime::{LogLevel, ShowRuntime};
+use crate::runtime::LogLevel;
+use crate::view::UiRuntime;
 use crate::theme;
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use livestage_core::cue::{AnyCue, Cue, CueHeader};
@@ -36,7 +37,7 @@ fn title_case(s: &str) -> String {
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
-pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     toolbar(ui, rt, st);
     if rt.bundle.project.dmx.patch.is_empty() {
         ui.add_space(24.0);
@@ -124,7 +125,7 @@ fn section(ui: &mut Ui, title: &str) {
 
 // ================================================================ toolbar ==
 
-fn toolbar(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+fn toolbar(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     let patch: Vec<(FixtureId, String)> = rt.bundle.project.dmx.patch.iter().map(|f| (f.id, f.definition.clone())).collect();
     ui.horizontal_wrapped(|ui| {
         let sel = &mut rt.dmx.console.programmer.selection;
@@ -173,7 +174,7 @@ fn toolbar(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
     ui.add_space(4.0);
 }
 
-fn record_cue(rt: &mut ShowRuntime, st: &mut UiState, update: bool) {
+fn record_cue(rt: &mut UiRuntime, st: &mut UiState, update: bool) {
     let (attributes, palettes) = rt.dmx.console.programmer.record();
     let effects = rt.dmx.console.console_effects();
     if update {
@@ -210,7 +211,7 @@ fn record_cue(rt: &mut ShowRuntime, st: &mut UiState, update: bool) {
 // ================================================================== stage ==
 
 /// Stage position of each patched fixture (stored, or a default grid).
-fn positions(rt: &ShowRuntime) -> Vec<(FixtureId, String, [f32; 2])> {
+fn positions(rt: &UiRuntime) -> Vec<(FixtureId, String, [f32; 2])> {
     let patch = &rt.bundle.project.dmx.patch;
     let cols = (patch.len() as f32).sqrt().ceil().max(1.0) as usize;
     patch
@@ -223,7 +224,7 @@ fn positions(rt: &ShowRuntime) -> Vec<(FixtureId, String, [f32; 2])> {
         .collect()
 }
 
-fn stage(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState, height: f32) {
+fn stage(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState, height: f32) {
     ui.horizontal(|ui| {
         section(ui, "STAGE");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -310,7 +311,7 @@ fn stage(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState, height: f32) {
     }
 }
 
-fn fixture_tiles(ui: &mut Ui, rt: &mut ShowRuntime, _st: &mut UiState) {
+fn fixture_tiles(ui: &mut Ui, rt: &mut UiRuntime, _st: &mut UiState) {
     section(ui, "FIXTURES");
     let fixtures: Vec<(FixtureId, String, u16, u16)> = rt.bundle.project.dmx.patch.iter().map(|f| (f.id, f.name.clone(), f.universe, f.address)).collect();
     egui::ScrollArea::vertical().id_salt("lx-tiles").show(ui, |ui| {
@@ -401,7 +402,7 @@ fn encoder(ui: &mut Ui, label: &str, value: f32, programmed: bool) -> EncoderEve
 }
 
 /// Attributes of the selection in one category, in fixture order.
-fn selection_attributes(rt: &ShowRuntime, kind: PaletteKind) -> Vec<String> {
+fn selection_attributes(rt: &UiRuntime, kind: PaletteKind) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for f in &rt.dmx.console.programmer.selection {
         for (name, r) in rt.dmx.patch().attributes_of(*f) {
@@ -415,7 +416,7 @@ fn selection_attributes(rt: &ShowRuntime, kind: PaletteKind) -> Vec<String> {
 
 /// Value shown for an attribute: the programmer's (if set) or the output,
 /// of the first selected fixture that has it.
-fn shown_value(rt: &ShowRuntime, attribute: &str) -> (f32, bool) {
+fn shown_value(rt: &UiRuntime, attribute: &str) -> (f32, bool) {
     let prog = &rt.dmx.console.programmer;
     let Some(f) = prog.selection.iter().find(|f| rt.dmx.patch().has_attribute(**f, attribute)) else { return (0.0, false) };
     match prog.get(*f, attribute) {
@@ -424,7 +425,7 @@ fn shown_value(rt: &ShowRuntime, attribute: &str) -> (f32, bool) {
     }
 }
 
-fn encoders(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+fn encoders(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     ui.horizontal(|ui| {
         for k in PaletteKind::ALL {
             if ui.selectable_label(st.light_tab == k, k.label()).clicked() {
@@ -479,7 +480,7 @@ fn encoders(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
 }
 
 /// Pan (x) / tilt (y) pad for the selection.
-fn xy_pad(ui: &mut Ui, rt: &mut ShowRuntime) {
+fn xy_pad(ui: &mut Ui, rt: &mut UiRuntime) {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(150.0, 150.0), Sense::click_and_drag());
     let p = ui.painter_at(rect);
     p.rect_filled(rect, 6.0, theme::PANEL_RECESSED);
@@ -503,7 +504,7 @@ fn xy_pad(ui: &mut Ui, rt: &mut ShowRuntime) {
 
 // =============================================================== palettes ==
 
-fn palettes(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+fn palettes(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     let kind = st.light_tab;
     ui.horizontal(|ui| {
         section(ui, &format!("{} PALETTES", kind.label().to_uppercase()));
@@ -583,7 +584,7 @@ fn swatch_of(p: &Palette) -> Option<Rgb> {
 
 // ================================================================ effects ==
 
-fn effects(ui: &mut Ui, rt: &mut ShowRuntime, _st: &mut UiState) {
+fn effects(ui: &mut Ui, rt: &mut UiRuntime, _st: &mut UiState) {
     let now = rt.now();
     ui.horizontal(|ui| {
         section(ui, "EFFECTS");
@@ -661,7 +662,7 @@ fn effects(ui: &mut Ui, rt: &mut ShowRuntime, _st: &mut UiState) {
 
 // ============================================================ submasters ==
 
-fn submasters(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+fn submasters(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     section(ui, "SUBMASTERS");
     let mut changed = false;
     egui::ScrollArea::horizontal().id_salt("lx-subs").show(ui, |ui| {

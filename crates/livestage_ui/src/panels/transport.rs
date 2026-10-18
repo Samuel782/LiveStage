@@ -6,7 +6,7 @@
 //! to overlap, and every region clips its own content.
 
 use super::UiState;
-use crate::runtime::ShowRuntime;
+use crate::view::UiRuntime;
 use crate::theme;
 use egui::{Align, Button, Color32, Layout, Rect, RichText, Ui, UiBuilder};
 use livestage_control::{ControlSource, ShowCommand};
@@ -31,10 +31,10 @@ fn big_button(ui: &mut Ui, rect: Rect, label: &str, size: f32, fill: Color32, te
     ui.put(rect, Button::new(RichText::new(label).size(size).strong().color(text)).fill(fill).corner_radius(6))
 }
 
-pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     let full = ui.max_rect();
     let h = full.height();
-    let cmd = |rt: &ShowRuntime, c: ShowCommand| rt.command(ControlSource::Ui, c);
+    let cmd = |rt: &UiRuntime, c: ShowCommand| rt.command(ControlSource::Ui, c);
 
     // Fixed regions; optional ones are dropped right-to-left when space runs out.
     const GO_W: f32 = 168.0;
@@ -167,7 +167,7 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
     }
 }
 
-fn timecode(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+fn timecode(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     use livestage_core::timecode::{LockState, TimecodeSource};
     let t = rt.timecode.transport();
     let source = rt.timecode.config().source;
@@ -212,7 +212,7 @@ fn timecode(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
     });
 }
 
-fn outputs_and_master(ui: &mut Ui, rt: &mut ShowRuntime, _st: &mut UiState) {
+fn outputs_and_master(ui: &mut Ui, rt: &mut UiRuntime, _st: &mut UiState) {
     let live = rt.outputs_live;
     let (txt, fill, color) = if live {
         ("OUTPUTS LIVE", theme::stop(), Color32::WHITE)
@@ -237,7 +237,7 @@ fn outputs_and_master(ui: &mut Ui, rt: &mut ShowRuntime, _st: &mut UiState) {
 }
 
 /// LiveStage / File / Edit / View / Show menus (macOS-style rows with shortcuts).
-pub fn menu_bar(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+pub fn menu_bar(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     use super::widgets::{menu_item, menu_item_danger, menu_item_enabled, menu_separator, shortcut};
     egui::menu::bar(ui, |ui| {
         ui.menu_button(RichText::new("LiveStage").strong(), |ui| {
@@ -328,7 +328,7 @@ pub fn menu_bar(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
 }
 
 /// Import dialog (File ▸ Import media…). Files can also be dropped on the window.
-pub fn import_window(ctx: &egui::Context, rt: &mut ShowRuntime, st: &mut UiState) {
+pub fn import_window(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
     if !st.import_open {
         return;
     }
@@ -362,7 +362,7 @@ pub fn import_window(ctx: &egui::Context, rt: &mut ShowRuntime, st: &mut UiState
 }
 
 /// Samples show-thread counters once per second.
-fn show_health(rt: &ShowRuntime, st: &mut UiState) {
+fn show_health(rt: &UiRuntime, st: &mut UiState) {
     use crate::runtime::ShowStats;
     use std::sync::atomic::Ordering;
     let now = std::time::Instant::now();
@@ -380,7 +380,7 @@ fn show_health(rt: &ShowRuntime, st: &mut UiState) {
     }
 }
 
-pub fn status_bar(ui: &mut Ui, rt: &ShowRuntime, st: &mut UiState) {
+pub fn status_bar(ui: &mut Ui, rt: &UiRuntime, st: &mut UiState) {
     show_health(rt, st);
     ui.horizontal_centered(|ui| {
         let dim = theme::TEXT_DIM;
@@ -389,7 +389,7 @@ pub fn status_bar(ui: &mut Ui, rt: &ShowRuntime, st: &mut UiState) {
                 let load = a.dsp_load();
                 let c = if load > 0.7 { theme::stop() } else { dim };
                 ui.label(RichText::new(format!("Audio: {} · {} Hz · {} ch · DSP {:.0}%", a.device_name(), a.sample_rate(), a.channels(), load * 100.0)).color(c));
-                let leaked = a.shared().leaked.load(std::sync::atomic::Ordering::Relaxed);
+                let leaked = a.leaked();
                 if leaked > 0 {
                     ui.colored_label(theme::standby(), format!("RT queue overflow ×{leaked}"));
                 }

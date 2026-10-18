@@ -215,6 +215,11 @@ impl MidiInputHandler {
     pub fn take_learned(&self) -> Option<(u8, u8)> {
         self.learned.lock().take()
     }
+
+    /// The slot MIDI learn writes to, for readers on other threads.
+    pub fn learn_slot(&self) -> Arc<Mutex<Option<(u8, u8)>>> {
+        self.learned.clone()
+    }
 }
 
 /// MIDI output for control cues.

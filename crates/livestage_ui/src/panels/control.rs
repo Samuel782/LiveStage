@@ -1,11 +1,12 @@
 //! Control surfaces status and the event log.
 
 use super::UiState;
-use crate::runtime::{LogLevel, ShowRuntime};
+use crate::runtime::LogLevel;
+use crate::view::UiRuntime;
 use crate::theme;
 use egui::{ComboBox, RichText, Ui};
 
-pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     egui::Grid::new("ctl").num_columns(2).show(ui, |ui| {
         ui.label("OSC (UDP)");
         ui.label(rt.osc_port().map_or("disabled".into(), |p| format!("listening on :{p}  —  /livestage/go, /livestage/cue/{{n}}/go, /livestage/panic")));

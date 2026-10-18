@@ -1,12 +1,12 @@
 //! DMX: universes, fixture patch, live universe view.
 
 use super::UiState;
-use crate::runtime::ShowRuntime;
+use crate::view::UiRuntime;
 use crate::theme;
 use egui::{Align2, Color32, ComboBox, DragValue, FontId, RichText, Sense, Ui};
 use livestage_core::dmx_config::{DmxTransport, PatchedFixture};
 
-pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     let mut apply = false;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.horizontal(|ui| {

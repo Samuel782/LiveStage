@@ -28,6 +28,7 @@ pub mod command;
 pub mod cue;
 pub mod cuelist;
 pub mod dmx_config;
+pub mod edits;
 pub mod error;
 pub mod id;
 pub mod lighting;

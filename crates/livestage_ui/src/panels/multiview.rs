@@ -5,7 +5,7 @@
 
 use super::widgets::{menu_heading, menu_item, menu_separator, scrub_bar};
 use super::{NdiStatus, Previews, UiState};
-use crate::runtime::ShowRuntime;
+use crate::view::UiRuntime;
 use crate::theme;
 use egui::{Align2, Color32, FontId, Rect, RichText, Sense, Stroke, Ui};
 use livestage_core::action::VisualContent;
@@ -39,7 +39,7 @@ enum Action {
     Auto,
 }
 
-pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState, previews: &Previews, ndi: &NdiStatus) {
+pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState, previews: &Previews, ndi: &NdiStatus) {
     let layout = rt.bundle.project.multiview.clone().unwrap_or_else(|| MultiviewLayout::auto(&rt.bundle.project.displays));
     let is_auto = rt.bundle.project.multiview.is_none();
     let mut actions = Vec::new();
@@ -115,7 +115,7 @@ fn toolbar(ui: &mut Ui, layout: &MultiviewLayout, is_auto: bool, actions: &mut V
     });
 }
 
-fn source_label(s: MultiviewSource, rt: &ShowRuntime) -> String {
+fn source_label(s: MultiviewSource, rt: &UiRuntime) -> String {
     match s {
         MultiviewSource::Empty => "Empty".into(),
         MultiviewSource::Output { id } => rt.bundle.project.display(id).map_or("Output (removed)".into(), |d| d.name.clone()),
@@ -126,7 +126,7 @@ fn source_label(s: MultiviewSource, rt: &ShowRuntime) -> String {
     }
 }
 
-fn source_menu(ui: &mut Ui, i: usize, current: MultiviewSource, rt: &ShowRuntime, actions: &mut Vec<Action>) {
+fn source_menu(ui: &mut Ui, i: usize, current: MultiviewSource, rt: &UiRuntime, actions: &mut Vec<Action>) {
     ui.set_min_width(250.0);
     menu_heading(ui, &format!("Cell {}", i + 1));
     let mut item = |ui: &mut Ui, s: MultiviewSource, label: String| {
@@ -154,7 +154,7 @@ fn cell(
     i: usize,
     rect: Rect,
     source: MultiviewSource,
-    rt: &ShowRuntime,
+    rt: &UiRuntime,
     st: &mut UiState,
     previews: &Previews,
     ndi: &NdiStatus,
@@ -209,7 +209,7 @@ fn fit_image(p: &egui::Painter, area: Rect, tex: egui::TextureId, size: egui::Ve
     r
 }
 
-fn output_cell(p: &egui::Painter, picture: Rect, id: OutputId, rt: &ShowRuntime, previews: &Previews, ndi: &NdiStatus) -> (String, Color32, Vec<(String, Color32)>) {
+fn output_cell(p: &egui::Painter, picture: Rect, id: OutputId, rt: &UiRuntime, previews: &Previews, ndi: &NdiStatus) -> (String, Color32, Vec<(String, Color32)>) {
     let Some(d) = rt.bundle.project.display(id) else {
         p.text(picture.center(), Align2::CENTER_CENTER, "Output removed", FontId::proportional(13.0), theme::TEXT_DIM);
         return ("—".into(), theme::BORDER, vec![]);
@@ -249,7 +249,7 @@ fn cue_output(c: &AnyCue) -> Option<OutputId> {
 fn program_cell(
     ui: &mut Ui,
     picture: Rect,
-    rt: &ShowRuntime,
+    rt: &UiRuntime,
     st: &mut UiState,
     previews: &Previews,
     actions: &mut Vec<Action>,
@@ -332,7 +332,7 @@ fn preview_asset(c: &AnyCue) -> Option<(AssetRef, ShowTime)> {
 }
 
 /// Draws the thumbnail of `asset` (or a waiting / failed note) contain-fitted into `area`.
-fn thumb(p: &egui::Painter, area: Rect, rt: &ShowRuntime, st: &mut UiState, asset: &AssetRef, at: ShowTime) -> bool {
+fn thumb(p: &egui::Painter, area: Rect, rt: &UiRuntime, st: &mut UiState, asset: &AssetRef, at: ShowTime) -> bool {
     let Ok(path) = rt.bundle.resolve(asset) else { return false };
     match st.thumbs.get(&path, at) {
         Some(tex) => {
@@ -379,7 +379,7 @@ fn describe(c: &AnyCue) -> String {
     }
 }
 
-fn next_cell(p: &egui::Painter, picture: Rect, rt: &ShowRuntime, st: &mut UiState, previews: &Previews) -> (String, Color32, Vec<(String, Color32)>) {
+fn next_cell(p: &egui::Painter, picture: Rect, rt: &UiRuntime, st: &mut UiState, previews: &Previews) -> (String, Color32, Vec<(String, Color32)>) {
     let Some(cue) = rt.standby_cue() else {
         p.text(picture.center(), Align2::CENTER_CENTER, "End of list", FontId::proportional(16.0), theme::TEXT_DIM);
         return ("NEXT".into(), theme::BORDER, vec![]);
@@ -425,7 +425,7 @@ fn next_cell(p: &egui::Painter, picture: Rect, rt: &ShowRuntime, st: &mut UiStat
     ("NEXT".into(), theme::standby(), badges)
 }
 
-fn slides_cell(p: &egui::Painter, picture: Rect, rt: &ShowRuntime, st: &mut UiState) -> (String, Color32, Vec<(String, Color32)>) {
+fn slides_cell(p: &egui::Painter, picture: Rect, rt: &UiRuntime, st: &mut UiState) -> (String, Color32, Vec<(String, Color32)>) {
     // The running presentation, else the next one on standby.
     let running = rt.current_slides().and_then(|id| rt.find_cue(id));
     let (cue, is_running) = match running {

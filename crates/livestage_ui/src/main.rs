@@ -17,6 +17,7 @@ mod runtime;
 mod show_thread;
 mod snapshot;
 mod undo;
+mod view;
 mod theme;
 mod thumbs;
 
@@ -31,6 +32,7 @@ use panels::{Previews, UiState};
 use runtime::{LogLevel, ShowRuntime};
 use std::collections::HashMap;
 use show_thread::{SharedRuntime, ShowThread};
+use view::UiRuntime;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -88,6 +90,8 @@ struct App {
     gfx: Option<Gfx>,
     /// Shared with the show thread; the UI locks it only while laying out panels.
     rt: Option<SharedRuntime>,
+    /// The UI's frame copy of the runtime (kept to reuse its allocations).
+    view: Option<UiRuntime>,
     show_thread: Option<ShowThread>,
     /// Renders and presents every program output (see [`display`]).
     output_thread: Option<OutputThread>,
@@ -244,13 +248,16 @@ impl App {
             }
         }
 
-        // 3. Panels: the lock is held only for egui layout; tessellation and
-        //    presentation run after it is released.
+        // 3. Panels lay out against a copy of the runtime (crate::view): the
+        //    lock is held only to copy state in and to fold edits back, never
+        //    during egui layout, tessellation or presentation.
+        let view = self.view.get_or_insert_with(|| UiRuntime::new(&shared.lock()));
+        view.sync(&shared.lock());
+        view.begin_frame();
         let (ui, physical, previews) = (&mut self.ui, &self.monitors.physical, &self.previews);
-        gfx.control.frame(&gfx.gpu, |ctx| {
-            let mut rt = shared.lock();
-            panels::draw(ctx, &mut rt, ui, physical, previews, &ndi);
-        });
+        gfx.control.frame(&gfx.gpu, |ctx| panels::draw(ctx, view, ui, physical, previews, &ndi));
+        let edits = view.take_edits();
+        view.apply(&mut shared.lock(), edits);
 
         // 4. Deferred work that must not run under the runtime lock.
         let restart = {
@@ -434,6 +441,7 @@ fn main() -> anyhow::Result<()> {
         launch: parse_args(),
         gfx: None,
         rt: None,
+        view: None,
         show_thread: None,
         output_thread: None,
         bundle_root: PathBuf::new(),

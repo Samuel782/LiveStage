@@ -100,9 +100,22 @@ unit-testable (see `MockCtx` in `crates/livestage_core/src/cue.rs`).
 
 | Thread | Owns | Notes |
 |---|---|---|
-| main | winit event loop, the operator window (egui), window creation | Locks the runtime only while laying out panels; its own vsync never delays outputs. |
+| main | winit event loop, the operator window (egui), window creation | Never lays out under the runtime lock: each frame copies the runtime state (`view::UiRuntime`), lays out against the copy, then merges edits and queued engine work back. Its own vsync never delays outputs. |
 | `livestage-output` | compositor, output canvases, program-window swapchains, NDI senders, pixel-map readback | Presents every program window independently of the operator window (paced by the outputs' vsync, 60 Hz when none is open). |
 | `livestage-show` | show runtime: cue lists, audio/DMX/control engines | 1 kHz, real-time class; health shown in the status bar. |
+
+**UI isolation.** The operator window holds the runtime lock for just two short steps per frame: copying the
+state the panels show, and applying their edits. Edits are diffed against the copy *outside* the lock
+(`livestage_core::edits`) and then moved in. Editor changes win, while everything the editor left alone
+keeps its live value: running cue state, OSC fader moves and imports that finished meanwhile. Engine actions
+(seek, save, undo, restart audio, …) run as queued operations. Measured with a deliberately slow 20 ms
+layout on Apple M2 (`cargo test -p livestage_ui --release slow_ui -- --ignored --nocapture`):
+
+| UI frame | Show thread worst wait for the lock |
+|---|---|
+| Old design (layout under the lock), 1000 cues | ≈ 30 ms |
+| Frame copy, demo show | ≈ 0.05–0.2 ms |
+| Frame copy, 1000 cues, editing a cue every frame | ≈ 1.1 ms (unchanged with an 80 ms layout) |
 | `livestage-audio-host` | the `cpal` stream (`!Send`) | Parks until shutdown. |
 | audio callback | real-time renderer | No allocation, locking or I/O. |
 | decoder / slide loader / thumbnail / import / NDI / DMX / OSC / WS / Art-Net timecode workers | their own I/O | Communicate through channels and atomics. Timecode samples are time-stamped where they arrive (MIDI callback, UDP thread). |

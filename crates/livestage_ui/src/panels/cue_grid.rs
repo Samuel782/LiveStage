@@ -2,7 +2,8 @@
 
 use super::widgets::{fmt_dur, menu_heading, menu_item, menu_item_danger, menu_item_enabled, menu_separator, shortcut};
 use super::UiState;
-use crate::runtime::{CueOp, CueRow, ShowRuntime, SlideNav};
+use crate::runtime::{CueOp, CueRow, SlideNav};
+use crate::view::UiRuntime;
 use crate::theme;
 use egui::{Align2, Color32, FontId, Rect, RichText, Sense, Ui};
 use livestage_core::cue::{Cue, CueKind, FollowMode};
@@ -106,7 +107,7 @@ fn secs(t: ShowTime) -> String {
 
 /// Cue list selector: GO, standby and the grid follow the active list;
 /// panic and stop-all always reach every list.
-fn list_tabs(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+fn list_tabs(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     let lists: Vec<(livestage_core::CueListId, String, bool)> = rt
         .bundle
         .project
@@ -168,7 +169,7 @@ fn list_tabs(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
     });
 }
 
-pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     list_tabs(ui, rt, st);
     toolbar(ui, rt, st);
     ui.add_space(4.0);
@@ -385,8 +386,8 @@ fn row_menu(ui: &mut Ui, row: &CueRow, actions: &mut Vec<RowAction>) {
     }
 }
 
-fn apply(rt: &mut ShowRuntime, st: &mut UiState, a: RowAction) {
-    let ui_cmd = |rt: &ShowRuntime, c: ShowCommand| rt.command(ControlSource::Ui, c);
+fn apply(rt: &mut UiRuntime, st: &mut UiState, a: RowAction) {
+    let ui_cmd = |rt: &UiRuntime, c: ShowCommand| rt.command(ControlSource::Ui, c);
     match a {
         RowAction::Seek(id, t) => rt.seek_cue(id, t),
         RowAction::Op(id, op) => rt.cue_op(id, op),
@@ -426,7 +427,7 @@ fn apply(rt: &mut ShowRuntime, st: &mut UiState, a: RowAction) {
     }
 }
 
-fn toolbar(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+fn toolbar(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     let sel_index = st.selected.and_then(|id| rt.bundle.project.active_list().and_then(|l| l.index_of(id)));
     ui.horizontal(|ui| {
         ui.menu_button(RichText::new("+ Add cue").strong(), |ui| {

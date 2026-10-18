@@ -257,4 +257,5 @@ mod tests {
         assert!(!AssetRef::new("/etc/passwd").is_safe());
         assert!(!AssetRef::new("assets/../../x").is_safe());
     }
+
 }

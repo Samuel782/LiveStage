@@ -76,7 +76,7 @@ pub fn renew_ids(c: &mut AnyCue) {
 }
 
 /// Depth-first search in every list and cart (timeline children included).
-fn find_cue_in<'a>(lists: &'a mut [CueList], carts: &'a mut [CueCart], id: CueId) -> Option<&'a mut AnyCue> {
+pub(crate) fn find_cue_in<'a>(lists: &'a mut [CueList], carts: &'a mut [CueCart], id: CueId) -> Option<&'a mut AnyCue> {
     fn find(c: &mut AnyCue, id: CueId) -> Option<&mut AnyCue> {
         if c.header().id == id {
             return Some(c);
@@ -228,6 +228,10 @@ pub struct ShowRuntime {
     artnet_tc: Option<ArtNetTimecodeListener>,
     /// What the timecode input is doing (port name or error), for the UI.
     pub timecode_input: String,
+    /// Bumped on every log line (UI copies the log only when it changed).
+    pub log_seq: u64,
+    /// Bumped when the DMX engine is rebuilt (new patch / library).
+    pub dmx_generation: u64,
 }
 
 impl ShowRuntime {
@@ -269,6 +273,8 @@ impl ShowRuntime {
             mtc_in: None,
             artnet_tc: None,
             timecode_input: String::new(),
+            log_seq: 0,
+            dmx_generation: 0,
             bundle,
         };
         for e in rt.dmx.patch_errors.clone() {
@@ -301,9 +307,9 @@ impl ShowRuntime {
         self.video_rx.clone()
     }
 
-    /// Sends a video action directly (operator tools such as test patterns).
-    pub fn send_video(&self, action: VideoAction) {
-        let _ = self.video_tx.send((self.now(), action));
+    /// Sender for video actions (the UI's frame copy sends test patterns through it).
+    pub fn video_sender(&self) -> crossbeam_channel::Sender<VideoMsg> {
+        self.video_tx.clone()
     }
 
     pub fn log(&mut self, level: LogLevel, text: impl Into<String>) {
@@ -314,6 +320,7 @@ impl ShowRuntime {
             LogLevel::Error => tracing::error!("{text}"),
         }
         self.log.push_back(LogLine { at: self.now(), text, level });
+        self.log_seq += 1;
         while self.log.len() > 500 {
             self.log.pop_front();
         }
@@ -455,6 +462,7 @@ impl ShowRuntime {
         let console = std::mem::take(&mut self.dmx.console);
         self.dmx = DmxEngine::new(self.bundle.project.dmx.clone());
         self.dmx.console = console;
+        self.dmx_generation += 1;
         self.dmx.start_output();
         for e in self.dmx.patch_errors.clone() {
             self.log(LogLevel::Warn, format!("DMX patch: {e}"));
@@ -755,40 +763,9 @@ impl ShowRuntime {
         self.actions = actions;
     }
 
-    /// Inserts a copy of a top-level cue right after it (fresh ids, next free number).
-    pub fn duplicate_cue(&mut self, id: CueId) -> Option<CueId> {
-        let number = self.next_cue_number();
-        let list = self.bundle.project.active_list_mut()?;
-        let i = list.index_of(id)?;
-        let mut copy = list.cues[i].clone();
-        renew_ids(&mut copy);
-        copy.header_mut().number = number;
-        copy.header_mut().name = format!("{} (copy)", copy.header().name);
-        let new_id = copy.header().id;
-        list.cues.insert(i + 1, copy);
-        self.after_structure_edit();
-        Some(new_id)
-    }
-
-    /// The most recently started running presentation, in any list.
-    pub fn current_slides(&self) -> Option<CueId> {
-        fn walk<'a>(c: &'a AnyCue, out: &mut Vec<&'a livestage_core::cue::SlideCue>) {
-            match c {
-                AnyCue::Slides(s) if s.state().is_active() => out.push(s),
-                AnyCue::Timeline(t) => t.items.iter().for_each(|i| walk(&i.cue, out)),
-                _ => {}
-            }
-        }
-        let mut found = Vec::new();
-        for c in self.bundle.project.cue_lists.iter().flat_map(|l| &l.cues) {
-            walk(c, &mut found);
-        }
-        found.into_iter().max_by_key(|s| s.header.runtime.started_at).map(|s| s.header.id)
-    }
-
     /// Next / previous / go-to on a presentation (`None` = the current one).
     pub fn slide_nav(&mut self, target: Option<CueId>, nav: SlideNav) -> bool {
-        let Some(id) = target.or_else(|| self.current_slides()) else {
+        let Some(id) = target.or_else(|| current_slides(&self.bundle.project)) else {
             self.log(LogLevel::Warn, "slides: no presentation is running");
             return false;
         };
@@ -870,7 +847,7 @@ impl ShowRuntime {
         for (name, dir, result) in finished {
             match result {
                 Ok(deck) => {
-                    let number = self.next_cue_number();
+                    let number = next_cue_number(&self.bundle.project);
                     let n = deck.slides.len();
                     let cue = crate::demo::slide_cue(&self.bundle.project, &number, &name, deck);
                     if let Some(l) = self.bundle.project.active_list_mut() {
@@ -947,127 +924,6 @@ impl ShowRuntime {
         self.bundle.project.active_list().map(|l| l.status(&ctx))
     }
 
-    /// Flattened rows (timeline children indented) for the cue grid.
-    pub fn cue_rows(&self) -> Vec<CueRow> {
-        let mut scratch = Vec::new();
-        let finished = self.video_finished.lock();
-        let ctx = Ctx { now: self.now(), actions: &mut scratch, audio: self.audio.as_ref(), video_finished: &finished };
-        let Some(list) = self.bundle.project.active_list() else { return vec![] };
-        let standby = list.standby_cue().map(|c| c.header().id);
-        let mut rows = Vec::new();
-        fn push(rows: &mut Vec<CueRow>, c: &AnyCue, depth: usize, offset: Option<ShowTime>, ctx: &dyn CueContext, standby: Option<CueId>) {
-            let h = c.header();
-            rows.push(CueRow {
-                id: h.id,
-                depth,
-                number: h.number.clone(),
-                name: h.name.clone(),
-                kind: c.kind().label(),
-                state: c.state(),
-                pre_wait: h.pre_wait,
-                post_wait: h.post_wait,
-                duration: c.duration(),
-                elapsed: c.elapsed(ctx),
-                progress: c.progress(ctx),
-                follow: h.follow,
-                armed: h.armed,
-                offset,
-                is_standby: standby == Some(h.id),
-                detail: match c {
-                    AnyCue::Slides(s) if s.slide_count() > 0 => {
-                        let at = if s.state().is_active() { s.current } else { s.start_slide };
-                        Some(format!("Slide {} / {}", at + 1, s.slide_count()))
-                    }
-                    _ => None,
-                },
-                timecode: match c {
-                    AnyCue::Timeline(t) => t.timecode.as_ref().map(|s| s.start).or(h.timecode),
-                    _ => h.timecode,
-                },
-            });
-            if let AnyCue::Timeline(t) = c {
-                if let Some(m) = &t.master {
-                    push(rows, m, depth + 1, Some(ShowTime::ZERO), ctx, None);
-                }
-                for i in &t.items {
-                    push(rows, &i.cue, depth + 1, Some(i.offset), ctx, None);
-                }
-            }
-        }
-        for c in &list.cues {
-            push(&mut rows, c, 0, None, &ctx, standby);
-        }
-        rows
-    }
-
-
-    /// Elapsed time of any cue (searching all lists and timelines).
-    pub fn elapsed_of(&self, id: CueId) -> Option<ShowTime> {
-        let mut scratch = Vec::new();
-        let finished = self.video_finished.lock();
-        let ctx = Ctx { now: self.now(), actions: &mut scratch, audio: self.audio.as_ref(), video_finished: &finished };
-        let cue = self.find_cue(id)?;
-        cue.state().is_active().then(|| cue.elapsed(&ctx))
-    }
-
-    pub fn add_cue_list(&mut self, name: &str) -> CueListId {
-        let mut list = CueList::new(name);
-        let id = list.id;
-        {
-            let now = self.now();
-            let finished = self.video_finished.lock();
-            let mut scratch = Vec::new();
-            let mut ctx = Ctx { now, actions: &mut scratch, audio: self.audio.as_ref(), video_finished: &finished };
-            list.reset(&mut ctx);
-        }
-        self.bundle.project.cue_lists.push(list);
-        self.bundle.project.active_cue_list = Some(id);
-        self.mark_changed();
-        id
-    }
-
-    /// The most recently started running cue: (number, name, elapsed, remaining).
-    /// Drives the large countdown in the transport bar.
-    pub fn running_summary(&self) -> Option<(String, String, ShowTime, Option<ShowTime>)> {
-        let list = self.bundle.project.active_list()?;
-        let cue = list
-            .cues
-            .iter()
-            .filter(|c| c.state().is_active())
-            .max_by_key(|c| c.header().runtime.started_at)?;
-        let mut scratch = Vec::new();
-        let finished = self.video_finished.lock();
-        let ctx = Ctx { now: self.now(), actions: &mut scratch, audio: self.audio.as_ref(), video_finished: &finished };
-        let h = cue.header();
-        Some((h.number.clone(), h.name.clone(), cue.elapsed(&ctx), cue.remaining(&ctx)))
-    }
-
-    /// The program cue (most recently started running cue of the active list)
-    /// and its elapsed time — what the multiview's PROGRAM cell shows.
-    pub fn program_cue(&self) -> Option<(&AnyCue, ShowTime)> {
-        let list = self.bundle.project.active_list()?;
-        let cue = list.cues.iter().filter(|c| c.state().is_active()).max_by_key(|c| c.header().runtime.started_at)?;
-        let mut scratch = Vec::new();
-        let finished = self.video_finished.lock();
-        let ctx = Ctx { now: self.now(), actions: &mut scratch, audio: self.audio.as_ref(), video_finished: &finished };
-        Some((cue, cue.elapsed(&ctx)))
-    }
-
-    /// The cue the next GO fires.
-    pub fn standby_cue(&self) -> Option<&AnyCue> {
-        self.bundle.project.active_list()?.standby_cue()
-    }
-
-    /// A cue by id in any list (timeline children included).
-    pub fn find_cue(&self, id: CueId) -> Option<&AnyCue> {
-        let p = &self.bundle.project;
-        p.cue_lists.iter().find_map(|l| l.find(id)).or_else(|| p.carts.iter().find_map(|k| k.find(id)))
-    }
-
-    pub fn running_count(&self) -> usize {
-        self.bundle.project.active_list().map_or(0, |l| l.cues.iter().filter(|c| c.state().is_active()).count())
-    }
-
     // --------------------------------------------------------- authoring --
 
     pub fn save(&mut self) {
@@ -1096,10 +952,10 @@ impl ShowRuntime {
             Ok(r) => r,
             Err(e) => return self.log(LogLevel::Error, format!("import failed: {e}")),
         };
-        let number = self.next_cue_number();
+        let number = next_cue_number(&self.bundle.project);
         let name = rec.original_name.rsplit_once('.').map_or(rec.original_name.clone(), |(n, _)| n.to_string());
         let cue = match rec.kind {
-            AssetKind::Audio | AssetKind::Video | AssetKind::Image => match self.cue_for_asset(&rec, &number, &name) {
+            AssetKind::Audio | AssetKind::Video | AssetKind::Image => match cue_for_asset(self.bundle.root(), &self.bundle.project, &rec, &number, &name) {
                 Some(c) => c,
                 None => return,
             },
@@ -1118,65 +974,6 @@ impl ShowRuntime {
         }
         self.mark_changed();
         self.log(LogLevel::Info, format!("imported {} as cue {number}", rec.path));
-    }
-
-    /// A playable cue for an imported audio / video / image asset.
-    pub fn cue_for_asset(&self, rec: &livestage_core::project::AssetRecord, number: &str, name: &str) -> Option<AnyCue> {
-        match rec.kind {
-            AssetKind::Audio => {
-                let media_length = self
-                    .bundle
-                    .resolve(&rec.path)
-                    .ok()
-                    .and_then(|p| livestage_audio::decode::probe(&p).ok())
-                    .and_then(|i| i.duration_secs())
-                    .map(ShowTime::from_secs_f64);
-                Some(crate::demo::audio_cue(&self.bundle.project, number, name, rec.path.clone(), media_length))
-            }
-            AssetKind::Video | AssetKind::Image => {
-                Some(crate::demo::visual_cue(&self.bundle.project, number, name, rec.path.clone(), rec.kind == AssetKind::Video))
-            }
-            AssetKind::Document | AssetKind::Data => None,
-        }
-    }
-
-    // -------------------------------------------------------------- carts --
-
-    pub fn add_cart(&mut self, rows: u8, cols: u8) -> usize {
-        let n = self.bundle.project.carts.len() + 1;
-        self.bundle.project.carts.push(CueCart::new(format!("Cart {n}"), rows, cols));
-        self.mark_changed();
-        n - 1
-    }
-
-    /// Puts `cue` on a pad (keeping the pad's mode, colour and bindings if
-    /// it already had them). The cue gets fresh ids and a pad number.
-    pub fn set_pad_cue(&mut self, cart: usize, slot: usize, mut cue: AnyCue) -> Option<CueId> {
-        let k = self.bundle.project.carts.get_mut(cart)?;
-        let old = k.pads.get_mut(slot)?;
-        renew_ids(&mut cue);
-        cue.header_mut().number = format!("C{}.{}", cart + 1, slot + 1);
-        cue.header_mut().pre_wait = ShowTime::ZERO;
-        cue.header_mut().follow = livestage_core::cue::FollowMode::None;
-        cue.header_mut().timecode = None;
-        let id = cue.header().id;
-        match old {
-            Some(p) if !p.is_playing() => p.cue = cue,
-            Some(_) => return None, // never swap a playing pad's cue
-            None => *old = Some(livestage_core::cart::CartPad::new(cue)),
-        }
-        self.mark_changed();
-        Some(id)
-    }
-
-    pub fn next_cue_number(&self) -> String {
-        let max = self
-            .bundle
-            .project
-            .active_list()
-            .map(|l| l.cues.iter().filter_map(|c| c.header().number.parse::<f64>().ok()).fold(0.0, f64::max))
-            .unwrap_or(0.0);
-        format!("{}", max.floor() as i64 + 1)
     }
 
     /// Records an edit (dirty flag, undo, autosave).
@@ -1281,8 +1078,99 @@ impl ShowRuntime {
         });
     }
 
-    pub fn find_cue_mut(&mut self, id: CueId) -> Option<&mut AnyCue> {
-        let p = &mut self.bundle.project;
-        find_cue_in(&mut p.cue_lists, &mut p.carts, id)
+
+}
+
+// ---------------------------------------------------------------- queries --
+// Shared by the runtime and the UI's frame copy (crate::view).
+
+/// The most recently started running presentation, in any list.
+pub fn current_slides(project: &livestage_core::Project) -> Option<CueId> {
+    fn walk<'a>(c: &'a AnyCue, out: &mut Vec<&'a livestage_core::cue::SlideCue>) {
+        match c {
+            AnyCue::Slides(s) if s.state().is_active() => out.push(s),
+            AnyCue::Timeline(t) => t.items.iter().for_each(|i| walk(&i.cue, out)),
+            _ => {}
+        }
     }
+    let mut found = Vec::new();
+    for c in project.cue_lists.iter().flat_map(|l| &l.cues) {
+        walk(c, &mut found);
+    }
+    found.into_iter().max_by_key(|s| s.header.runtime.started_at).map(|s| s.header.id)
+}
+
+/// The next whole cue number after the highest numeric one in the active list.
+pub fn next_cue_number(project: &livestage_core::Project) -> String {
+    let max = project
+        .active_list()
+        .map(|l| l.cues.iter().filter_map(|c| c.header().number.parse::<f64>().ok()).fold(0.0, f64::max))
+        .unwrap_or(0.0);
+    format!("{}", max.floor() as i64 + 1)
+}
+
+/// A playable cue for an imported audio / video / image asset.
+pub fn cue_for_asset(root: &Path, project: &livestage_core::Project, rec: &livestage_core::project::AssetRecord, number: &str, name: &str) -> Option<AnyCue> {
+    match rec.kind {
+        AssetKind::Audio => {
+            let media_length = livestage_core::bundle::resolve_asset(root, &rec.path)
+                .ok()
+                .and_then(|p| livestage_audio::decode::probe(&p).ok())
+                .and_then(|i| i.duration_secs())
+                .map(ShowTime::from_secs_f64);
+            Some(crate::demo::audio_cue(project, number, name, rec.path.clone(), media_length))
+        }
+        AssetKind::Video | AssetKind::Image => Some(crate::demo::visual_cue(project, number, name, rec.path.clone(), rec.kind == AssetKind::Video)),
+        AssetKind::Document | AssetKind::Data => None,
+    }
+}
+
+/// Flattened rows (timeline children indented) for the cue grid.
+pub fn cue_rows(project: &livestage_core::Project, ctx: &dyn CueContext) -> Vec<CueRow> {
+    let Some(list) = project.active_list() else { return vec![] };
+    let standby = list.standby_cue().map(|c| c.header().id);
+    let mut rows = Vec::new();
+    fn push(rows: &mut Vec<CueRow>, c: &AnyCue, depth: usize, offset: Option<ShowTime>, ctx: &dyn CueContext, standby: Option<CueId>) {
+        let h = c.header();
+        rows.push(CueRow {
+            id: h.id,
+            depth,
+            number: h.number.clone(),
+            name: h.name.clone(),
+            kind: c.kind().label(),
+            state: c.state(),
+            pre_wait: h.pre_wait,
+            post_wait: h.post_wait,
+            duration: c.duration(),
+            elapsed: c.elapsed(ctx),
+            progress: c.progress(ctx),
+            follow: h.follow,
+            armed: h.armed,
+            offset,
+            is_standby: standby == Some(h.id),
+            detail: match c {
+                AnyCue::Slides(s) if s.slide_count() > 0 => {
+                    let at = if s.state().is_active() { s.current } else { s.start_slide };
+                    Some(format!("Slide {} / {}", at + 1, s.slide_count()))
+                }
+                _ => None,
+            },
+            timecode: match c {
+                AnyCue::Timeline(t) => t.timecode.as_ref().map(|s| s.start).or(h.timecode),
+                _ => h.timecode,
+            },
+        });
+        if let AnyCue::Timeline(t) = c {
+            if let Some(m) = &t.master {
+                push(rows, m, depth + 1, Some(ShowTime::ZERO), ctx, None);
+            }
+            for i in &t.items {
+                push(rows, &i.cue, depth + 1, Some(i.offset), ctx, None);
+            }
+        }
+    }
+    for c in &list.cues {
+        push(&mut rows, c, 0, None, ctx, standby);
+    }
+    rows
 }

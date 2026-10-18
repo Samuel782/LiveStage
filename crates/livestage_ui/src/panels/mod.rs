@@ -14,7 +14,7 @@ mod timeline;
 mod transport;
 pub mod widgets;
 
-use crate::runtime::ShowRuntime;
+use crate::view::UiRuntime;
 use egui_dock::{DockArea, DockState, NodeIndex, TabViewer};
 use livestage_control::{ControlSource, ShowCommand};
 use livestage_core::id::CueId;
@@ -191,7 +191,7 @@ pub type Previews = HashMap<OutputId, (egui::TextureId, (u32, u32))>;
 pub type NdiStatus = HashMap<OutputId, i32>;
 
 struct Viewer<'a> {
-    rt: &'a mut ShowRuntime,
+    rt: &'a mut UiRuntime,
     st: &'a mut UiState,
     physical: &'a [PhysicalDisplayInfo],
     previews: &'a Previews,
@@ -222,7 +222,7 @@ impl TabViewer for Viewer<'_> {
     }
 }
 
-fn shortcuts(ctx: &egui::Context, rt: &mut ShowRuntime, st: &mut UiState) {
+fn shortcuts(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
     // Settings opens even while a text field has focus (as on macOS).
     if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
         st.settings_open = !st.settings_open;
@@ -309,7 +309,7 @@ fn quit_modal(ctx: &egui::Context, st: &mut UiState) {
     });
 }
 
-fn recovery_modal(ctx: &egui::Context, rt: &mut ShowRuntime, st: &mut UiState) {
+fn recovery_modal(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
     let Some(when) = st.recovery.clone() else { return };
     egui::Modal::new(egui::Id::new("recovery")).show(ctx, |ui| {
         ui.set_width(420.0);
@@ -322,7 +322,7 @@ fn recovery_modal(ctx: &egui::Context, rt: &mut ShowRuntime, st: &mut UiState) {
                 st.recovery = None;
             }
             if ui.button("Discard autosave").clicked() {
-                rt.bundle.discard_autosave();
+                rt.discard_autosave();
                 st.recovery = None;
             }
         });
@@ -357,7 +357,7 @@ fn media_banner(ctx: &egui::Context, st: &mut UiState) {
 
 pub fn draw(
     ctx: &egui::Context,
-    rt: &mut ShowRuntime,
+    rt: &mut UiRuntime,
     st: &mut UiState,
     physical: &[PhysicalDisplayInfo],
     previews: &Previews,
@@ -380,10 +380,7 @@ pub fn draw(
         }
     }
     let pointer_down = ctx.input(|i| i.pointer.any_down());
-    {
-        let current = &rt.bundle.project;
-        rt.undo.maybe_commit(current, pointer_down);
-    }
+    rt.commit_undo_when_idle(pointer_down);
     recovery_modal(ctx, rt, st);
     quit_modal(ctx, st);
     settings::window(ctx, rt, st);

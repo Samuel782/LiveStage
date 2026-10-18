@@ -2,7 +2,8 @@
 
 use super::widgets::{color_edit, opt_time_edit, scrub_bar, time_edit};
 use super::UiState;
-use crate::runtime::{ShowRuntime, SlideNav};
+use crate::runtime::SlideNav;
+use crate::view::UiRuntime;
 use crate::theme;
 use egui::{ComboBox, DragValue, RichText, TextEdit, Ui};
 use livestage_core::action::*;
@@ -11,7 +12,7 @@ use livestage_core::id::{OutputId, StemId};
 use livestage_core::project::AssetRef;
 use livestage_core::ShowTime;
 
-pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     let Some(id) = st.selected else {
         ui.label(RichText::new("Select a cue to edit it.").color(theme::TEXT_DIM));
         return;

@@ -5,7 +5,7 @@
 
 use super::UiState;
 use crate::prefs::Preferences;
-use crate::runtime::ShowRuntime;
+use crate::view::UiRuntime;
 use crate::theme::{self, Accent};
 use egui::{ComboBox, DragValue, RichText, Ui};
 use std::path::PathBuf;
@@ -41,7 +41,7 @@ impl Section {
     }
 }
 
-pub fn window(ctx: &egui::Context, rt: &mut ShowRuntime, st: &mut UiState) {
+pub fn window(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
     if !st.settings_open {
         return;
     }
@@ -172,7 +172,7 @@ fn general(ui: &mut Ui, st: &mut UiState) {
     hint(ui, "State colours (standby amber, active / GO green, stop red) are fixed so they always mean the same thing.");
 }
 
-fn audio(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+fn audio(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     heading(ui, "Audio", "this show");
     if st.audio_devices.is_empty() {
         st.audio_devices = livestage_audio::list_output_devices();
@@ -244,7 +244,7 @@ fn audio(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
     }
 }
 
-fn control(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+fn control(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     heading(ui, "Control", "this show");
     if st.midi_inputs.is_empty() {
         st.midi_inputs = livestage_control::midi::list_inputs();
@@ -307,7 +307,7 @@ fn control(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
     }
 }
 
-fn timecode(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+fn timecode(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     use livestage_control::{ControlSource, ShowCommand};
     use livestage_core::timecode::{ClockBase, FrameRate, ListTimecode, LockState, OnTimecodeStop, TimecodeSource};
     heading(ui, "Timecode", "this show");
@@ -520,7 +520,7 @@ fn outputs(ui: &mut Ui, st: &mut UiState) {
     hint(ui, "Window changes apply the next time outputs are opened.");
 }
 
-fn files(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
+fn files(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     heading(ui, "Files & Paths", "this Mac");
     let root = rt.bundle.root().to_path_buf();
     let p = &mut st.prefs;
