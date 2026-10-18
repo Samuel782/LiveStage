@@ -1,6 +1,7 @@
 //! Display Routing Manager: logical outputs → physical screens, live
 //! previews, and projection mapping (Bezier warp, edge blend, masks).
 
+use super::widgets::toggle;
 use super::{NdiStatus, Previews, UiState};
 use crate::view::UiRuntime;
 use crate::theme;
@@ -102,15 +103,15 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState, physical: &[Physi
                             });
                             ui.end_row();
                             ui.label("Kiosk fullscreen");
-                            dirty |= ui.checkbox(&mut d.fullscreen, "").changed();
+                            dirty |= toggle(ui, &mut d.fullscreen, "").changed();
                             ui.end_row();
                             ui.label("Enabled");
-                            dirty |= ui.checkbox(&mut d.enabled, "").changed();
+                            dirty |= toggle(ui, &mut d.enabled, "").changed();
                             ui.end_row();
                             ui.label("NDI output");
                             ui.horizontal(|ui| {
                                 let mut on = d.ndi_output.is_some();
-                                if ui.checkbox(&mut on, "").changed() {
+                                if toggle(ui, &mut on, "").changed() {
                                     d.ndi_output = on.then(|| format!("LiveStage {}", d.name));
                                     dirty = true;
                                 }
@@ -273,9 +274,9 @@ fn projection_editor(ui: &mut Ui, d: &mut LogicalDisplay, st: &mut UiState) -> b
     let mut remove = None;
     for (i, m) in pr.masks.iter_mut().enumerate() {
         ui.horizontal(|ui| {
-            c |= ui.checkbox(&mut m.enabled, "").changed();
+            c |= toggle(ui, &mut m.enabled, "").changed();
             c |= ui.text_edit_singleline(&mut m.name).changed();
-            c |= ui.checkbox(&mut m.invert, "show inside only").changed();
+            c |= toggle(ui, &mut m.invert, "show inside only").changed();
             ui.weak(format!("{} pts", m.points.len()));
             if ui.small_button("✖").clicked() {
                 remove = Some(i);

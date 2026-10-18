@@ -1,5 +1,6 @@
 //! Cue inspector: edits the selected cue (including timeline children).
 
+use super::widgets::toggle;
 use super::widgets::{color_edit, opt_time_edit, scrub_bar, time_edit};
 use super::UiState;
 use crate::runtime::SlideNav;
@@ -44,7 +45,6 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     };
     let mut changed = false;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        ui.heading(format!("{} cue", cue.kind().label()));
         let state = cue.state();
         if state.is_active() {
             ui.colored_label(theme::standby(), "Running — edits apply on next GO");
@@ -93,13 +93,13 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             changed |= time_edit(ui, &mut h.post_wait);
             ui.end_row();
             ui.label("Armed");
-            changed |= ui.checkbox(&mut h.armed, "").changed();
+            changed |= toggle(ui, &mut h.armed, "").changed();
             ui.end_row();
             if top_level {
                 ui.label("Timecode");
                 ui.horizontal(|ui| {
                     let mut on = h.timecode.is_some();
-                    if ui.checkbox(&mut on, "").on_hover_text("Fire when show timecode reaches this").changed() {
+                    if toggle(ui, &mut on, "").on_hover_text("Fire when show timecode reaches this").changed() {
                         h.timecode = on.then(|| h.timecode.unwrap_or_else(|| livestage_core::Timecode::new(1, 0, 0, 0, tc_rate).unwrap_or_default()));
                         changed = true;
                     }
@@ -299,7 +299,7 @@ fn audio(ui: &mut Ui, a: &mut AudioCue, stems: &[(StemId, String)], assets: &[As
         c |= opt_time_edit(ui, &mut a.end_at, "file end");
         ui.end_row();
         ui.label("Loop");
-        c |= ui.checkbox(&mut a.looped, "").changed();
+        c |= toggle(ui, &mut a.looped, "").changed();
         ui.end_row();
     });
     ui.label(RichText::new("Tracks / stems (start sample-synchronously)").strong());
@@ -314,7 +314,7 @@ fn audio(ui: &mut Ui, a: &mut AudioCue, stems: &[(StemId, String)], assets: &[As
                 }
             });
             c |= ui.add(DragValue::new(&mut t.gain_db).range(-96.0..=12.0).suffix(" dB")).changed();
-            c |= ui.checkbox(&mut t.mute, "mute").changed();
+            c |= toggle(ui, &mut t.mute, "mute").changed();
             if ui.small_button("✖").clicked() {
                 remove = Some(i);
             }
@@ -332,7 +332,7 @@ fn audio(ui: &mut Ui, a: &mut AudioCue, stems: &[(StemId, String)], assets: &[As
     }
     ui.separator();
     let mut has_click = a.click.is_some();
-    if ui.checkbox(&mut has_click, RichText::new("Click track").strong()).changed() {
+    if toggle(ui, &mut has_click, RichText::new("Click track").strong()).changed() {
         a.click = has_click.then(|| ClickTrack {
             bpm: 120.0,
             beats_per_bar: 4,
@@ -415,7 +415,7 @@ fn video(ui: &mut Ui, v: &mut VideoCue, outputs: &[(OutputId, String)], assets: 
     match &mut v.content {
         VisualContent::Video { asset, looped } => {
             c |= asset_combo(ui, "vasset", asset, assets);
-            c |= ui.checkbox(looped, "Loop").changed();
+            c |= toggle(ui, looped, "Loop").changed();
         }
         VisualContent::Image { asset } => c |= asset_combo(ui, "iasset", asset, assets),
         VisualContent::Slides { slides, .. } => {
@@ -426,7 +426,7 @@ fn video(ui: &mut Ui, v: &mut VideoCue, outputs: &[(OutputId, String)], assets: 
             ui.horizontal(|ui| {
                 c |= ui.add(DragValue::new(&mut t.font_size).range(8.0..=600.0).suffix(" pt")).changed();
                 c |= ui.add(DragValue::new(&mut t.scroll_speed).range(0.0..=500.0).suffix(" pt/s scroll")).changed();
-                c |= ui.checkbox(&mut t.mirror_horizontal, "Mirror (prompter glass)").changed();
+                c |= toggle(ui, &mut t.mirror_horizontal, "Mirror (prompter glass)").changed();
                 c |= color_edit(ui, &mut t.color);
             });
         }
@@ -501,7 +501,7 @@ fn timer(ui: &mut Ui, t: &mut TimerCue, outputs: &[(OutputId, String)]) -> bool 
         });
         ui.end_row();
         ui.label("Hold at zero");
-        c |= ui.checkbox(&mut t.hold_at_zero, "").changed();
+        c |= toggle(ui, &mut t.hold_at_zero, "").changed();
         ui.end_row();
     });
     c
@@ -512,7 +512,7 @@ fn dmx(ui: &mut Ui, d: &mut DmxCue, lighting: &livestage_core::lighting::Lightin
     ui.horizontal(|ui| {
         ui.label("Fade");
         c |= time_edit(ui, &mut d.fade);
-        c |= ui.checkbox(&mut d.release_on_stop, "Release on stop").changed();
+        c |= toggle(ui, &mut d.release_on_stop, "Release on stop").changed();
     });
     ui.label(RichText::new("Channels").strong());
     let mut remove = None;
@@ -585,7 +585,7 @@ fn dmx(ui: &mut Ui, d: &mut DmxCue, lighting: &livestage_core::lighting::Lightin
         ui.horizontal_wrapped(|ui| {
             for e in &lighting.effects {
                 let mut on = d.effects.contains(&e.id);
-                if ui.checkbox(&mut on, &e.name).changed() {
+                if toggle(ui, &mut on, &e.name).changed() {
                     if on {
                         d.effects.push(e.id);
                     } else {
@@ -649,8 +649,7 @@ fn timeline(ui: &mut Ui, t: &mut livestage_core::timeline::TimelineCue, p: &live
     // Timecode slave
     let rate = p.timecode.rate;
     let mut slaved = t.timecode.is_some();
-    if ui
-        .checkbox(&mut slaved, RichText::new("Timecode slave").strong())
+    if toggle(ui, &mut slaved, RichText::new("Timecode slave").strong())
         .on_hover_text("Run whenever show timecode is inside this timeline, instead of on GO")
         .changed()
     {

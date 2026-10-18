@@ -1,5 +1,6 @@
 //! Timeline editor: stacked cues on a time axis, drag to re-time.
 
+use super::widgets::toggle;
 use super::UiState;
 use crate::view::UiRuntime;
 use crate::theme;
@@ -13,15 +14,7 @@ const ROW: f32 = 30.0;
 const RULER: f32 = 24.0;
 
 fn kind_color(k: CueKind) -> Color32 {
-    match k {
-        CueKind::Audio => Color32::from_rgb(0x3D, 0x7E, 0xC9),
-        CueKind::Video => Color32::from_rgb(0x8E, 0x5C, 0xC7),
-        CueKind::Timer => theme::standby(),
-        CueKind::Dmx => theme::active(),
-        CueKind::Control => Color32::from_rgb(0x78, 0x78, 0x78),
-        CueKind::Slides => Color32::from_rgb(0xC0, 0x6A, 0x2B),
-        CueKind::Timeline => Color32::from_rgb(0x2E, 0x9C, 0x9C),
-    }
+    theme::kind_color(k)
 }
 
 /// The timeline to show: the selected one, the one containing the selected
@@ -68,7 +61,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                 Some(b) => format!("Snap to beat ({:.0} bpm)", 60.0 / b),
                 None => "Snap 0.1 s".to_string(),
             };
-            ui.checkbox(&mut st.tl_snap, snap_label);
+            toggle(ui, &mut st.tl_snap, snap_label);
         });
 
         let zoom = st.tl_zoom;

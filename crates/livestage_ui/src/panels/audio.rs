@@ -53,7 +53,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             }
         }
         let n_out = rt.bundle.project.audio.output_channels.max(device_ch) as usize;
-        ui.label(RichText::new("Output meters").strong());
+        super::widgets::caption(ui, "Output meters");
         ui.horizontal(|ui| {
             for ch in 0..n_out.min(64) {
                 let level = st.meters.get(ch).copied().unwrap_or(0.0);
@@ -84,7 +84,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
 
         // ---- stems
         let r = &mut rt.bundle.project.audio;
-        ui.label(RichText::new("Stems").strong());
+        super::widgets::caption(ui, "Stems");
         let buses = r.buses.clone();
         let mut patch_bus = None;
         egui::Grid::new("stems").striped(true).num_columns(5).show(ui, |ui| {

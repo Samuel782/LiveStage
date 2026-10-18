@@ -8,7 +8,7 @@
 //! learn); its cue also opens in the Inspector for detailed settings.
 
 use super::widgets::{menu_item, menu_item_danger, menu_item_enabled, menu_separator};
-use super::{Tab, UiState};
+use super::UiState;
 use crate::view::UiRuntime;
 use crate::theme;
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
@@ -59,14 +59,8 @@ fn reserved(key: egui::Key) -> bool {
     RESERVED_KEYS.contains(&key)
 }
 
-fn kind_color(kind: CueKind) -> Color32 {
-    match kind {
-        CueKind::Audio => Color32::from_rgb(0x1E, 0x88, 0xE5),
-        CueKind::Video | CueKind::Slides => Color32::from_rgb(0x8E, 0x24, 0xAA),
-        CueKind::Dmx => Color32::from_rgb(0x43, 0xA0, 0x47),
-        CueKind::Timer => Color32::from_rgb(0xFB, 0x8C, 0x00),
-        _ => Color32::from_rgb(0x60, 0x60, 0x66),
-    }
+fn kind_color(k: CueKind) -> Color32 {
+    theme::kind_color(k)
 }
 
 fn pad_color(p: &CartPad) -> Color32 {
@@ -580,7 +574,7 @@ fn editor(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         ui.label(RichText::new(format!("{} cue", pad.cue.kind().label())).strong());
         if ui.link("Open in Inspector").clicked() {
             st.selected = Some(pad.cue.header().id);
-            st.focus_tab(Tab::Inspector);
+            st.inspector_open = true;
         }
     });
     hint(ui, "Fades, gain, output, looks and the rest are set in the Inspector.");

@@ -1,19 +1,20 @@
-//! Transport bar (GO / NEXT / STOP / PANIC / countdown / clock / outputs),
+//! Command deck (GO / standby / STOP / PANIC keys and telemetry modules),
 //! menu bar and status bar.
 //!
-//! The transport is laid out in fixed regions computed from the available
-//! width. Optional regions are dropped on narrow windows rather than allowed
-//! to overlap, and every region clips its own content.
+//! The deck is laid out in fixed regions computed from the available
+//! width. Optional modules are dropped on narrow windows rather than
+//! allowed to overlap, and every region clips its own content.
 
+use super::widgets::{caption_text, key, module, small_key, KeyTone};
 use super::UiState;
-use crate::view::UiRuntime;
 use crate::theme;
-use egui::{Align, Button, Color32, Layout, Rect, RichText, Ui, UiBuilder};
+use crate::view::UiRuntime;
+use egui::{Align, Button, Layout, Rect, RichText, Ui, UiBuilder};
 use livestage_control::{ControlSource, ShowCommand};
 use livestage_core::ShowTime;
 
-pub const HEIGHT: f32 = 104.0;
-const GAP: f32 = 10.0;
+pub const HEIGHT: f32 = 112.0;
+const GAP: f32 = 8.0;
 
 /// Runs `f` inside `rect`, clipped to it.
 fn region(ui: &mut Ui, rect: Rect, f: impl FnOnce(&mut Ui)) {
@@ -23,26 +24,33 @@ fn region(ui: &mut Ui, rect: Rect, f: impl FnOnce(&mut Ui)) {
     });
 }
 
-fn caption(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(11.0).color(theme::TEXT_DIM).strong());
+/// Show-thread health, sampled once a second.
+#[derive(Default)]
+pub struct Health {
+    sampled: Option<std::time::Instant>,
+    ticks: u64,
+    pub hz: f32,
+    pub late_ms: f32,
+    pub lock_ms: f32,
+    pub tick_ms: f32,
 }
 
-fn big_button(ui: &mut Ui, rect: Rect, label: &str, size: f32, fill: Color32, text: Color32) -> egui::Response {
-    ui.put(rect, Button::new(RichText::new(label).size(size).strong().color(text)).fill(fill).corner_radius(6))
-}
-
+/// The command deck: GO, standby readout and transport keys, STOP / PANIC,
+/// then telemetry modules (running cue, timecode, system health, clock,
+/// outputs + master). Regions have fixed widths; optional modules drop
+/// out right-to-left on narrow windows instead of overlapping.
 pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
+    sample_health(rt, st);
     let full = ui.max_rect();
     let h = full.height();
     let cmd = |rt: &UiRuntime, c: ShowCommand| rt.command(ControlSource::Ui, c);
 
-    // Fixed regions; optional ones are dropped right-to-left when space runs out.
-    const GO_W: f32 = 168.0;
-    const STOP_W: f32 = 112.0;
-    const PANIC_W: f32 = 140.0;
-    const NEXT_MIN: f32 = 250.0;
-    // Dropped first → last when narrow: clock, timecode, outputs, running.
-    let mut optional = [("clock", 196.0, false), ("timecode", 214.0, false), ("output", 176.0, false), ("running", 270.0, false)];
+    const GO_W: f32 = 150.0;
+    const STOP_W: f32 = 100.0;
+    const PANIC_W: f32 = 124.0;
+    const NEXT_MIN: f32 = 280.0;
+    // Dropped first → last when narrow.
+    let mut optional = [("clock", 160.0, false), ("system", 196.0, false), ("timecode", 212.0, false), ("output", 176.0, false), ("running", 252.0, false)];
     let mut used = GO_W + STOP_W + PANIC_W + NEXT_MIN + 3.0 * GAP;
     for o in optional.iter_mut().rev() {
         if used + o.1 + GAP <= full.width() {
@@ -52,6 +60,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     }
     let shown = |name: &str| optional.iter().any(|o| o.0 == name && o.2);
     let width_of = |name: &str| optional.iter().find(|o| o.0 == name).map_or(0.0, |o| o.1);
+    st.deck_shows_system = shown("system");
 
     let mut x = full.left();
     let mut take = |w: f32| {
@@ -62,39 +71,43 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
 
     // GO
     let go_rect = take(GO_W);
-    if big_button(ui, go_rect, "GO", 40.0, theme::go(), Color32::BLACK).on_hover_text("Space").clicked() {
+    let standby = rt.bundle.project.active_list().and_then(|l| l.standby_cue()).is_some();
+    if key(ui, go_rect, "GO", 38.0, Some("SPACE"), KeyTone::Go, standby).on_hover_text("Fire the standby cue (Space)").clicked() {
         cmd(rt, ShowCommand::Go { list: None });
     }
 
     // NEXT (flexible)
     let next_w = full.width() - used + NEXT_MIN;
     let next_rect = take(next_w);
-    region(ui, next_rect, |ui| {
-        caption(ui, "NEXT UP");
+    let status = if standby { Some(("standby", theme::standby())) } else { Some(("end of list", theme::TEXT_FAINT)) };
+    let inner = module(ui, next_rect, "Next up", status);
+    region(ui, inner, |ui| {
         let (number, name) = match rt.bundle.project.active_list().and_then(|l| l.standby_cue()) {
             Some(c) => {
                 use livestage_core::cue::Cue;
                 (c.header().number.clone(), c.header().name.clone())
             }
-            None => (String::new(), "End of list".into()),
+            None => ("—".into(), "Nothing on standby".into()),
         };
         ui.horizontal(|ui| {
             ui.label(RichText::new(&number).font(theme::clock_font(26.0)).color(theme::standby()));
-            ui.add(egui::Label::new(RichText::new(name).size(24.0).strong().color(theme::standby())).truncate());
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(RichText::new(name).size(22.0).color(if standby { theme::TEXT } else { theme::TEXT_DIM })).truncate());
         });
-        ui.add_space(4.0);
+        ui.add_space(2.0);
         ui.horizontal(|ui| {
-            if ui.button("Prev").on_hover_text("Up arrow").clicked() {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            if small_key(ui, "◂ Prev").on_hover_text("Up arrow").clicked() {
                 cmd(rt, ShowCommand::StandbyPrevious);
             }
-            if ui.button("Next").on_hover_text("Down arrow").clicked() {
+            if small_key(ui, "Next ▸").on_hover_text("Down arrow").clicked() {
                 cmd(rt, ShowCommand::StandbyNext);
             }
-            ui.separator();
-            if ui.button("Pause all").on_hover_text("P").clicked() {
+            ui.add_space(6.0);
+            if small_key(ui, "Pause all").on_hover_text("P").clicked() {
                 cmd(rt, ShowCommand::PauseAll);
             }
-            if ui.button("Resume").on_hover_text("R").clicked() {
+            if small_key(ui, "Resume").on_hover_text("R").clicked() {
                 cmd(rt, ShowCommand::ResumeAll);
             }
         });
@@ -102,14 +115,11 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
 
     // STOP ALL / PANIC
     let stop_rect = take(STOP_W);
-    if big_button(ui, stop_rect, "STOP\nALL", 18.0, Color32::from_rgb(0x4A, 0x18, 0x17), theme::TEXT)
-        .on_hover_text("Stop every cue with a 1 s fade")
-        .clicked()
-    {
+    if key(ui, stop_rect, "STOP\nALL", 17.0, Some("1 s FADE"), KeyTone::Warn, false).on_hover_text("Stop every cue with a 1 s fade").clicked() {
         cmd(rt, ShowCommand::StopAll { fade: Some(ShowTime::from_secs(1)) });
     }
     let panic_rect = take(PANIC_W);
-    if big_button(ui, panic_rect, "PANIC", 28.0, theme::stop(), Color32::WHITE)
+    if key(ui, panic_rect, "PANIC", 26.0, Some("ESC"), KeyTone::Danger, false)
         .on_hover_text("Esc. Press twice within 1.5 s for a hard cut + DMX blackout")
         .clicked()
     {
@@ -119,24 +129,24 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     // RUNNING: large countdown of the latest running cue
     if shown("running") {
         let r = take(width_of("running"));
-        ui.painter().rect_filled(r, 6.0, theme::PANEL_RAISED);
-        region(ui, r.shrink(8.0), |ui| match rt.running_summary() {
+        let n = rt.running_count();
+        let status = (n > 0).then(|| (if n == 1 { "1 active".to_string() } else { format!("{n} active") }, theme::active()));
+        let inner = module(ui, r, "Running", status.as_ref().map(|(t, c)| (t.as_str(), *c)));
+        region(ui, inner, |ui| match rt.running_summary() {
             Some((number, name, elapsed, remaining)) => {
-                caption(ui, &format!("RUNNING · {} ACTIVE", rt.running_count()));
                 let (big, label) = match remaining {
-                    Some(rem) => (format!("-{}", &rem.to_clock_string()[3..]), "remaining"),
-                    None => (elapsed.to_clock_string()[3..].to_string(), "elapsed"),
+                    Some(rem) => (format!("-{}", &rem.to_clock_string()[3..]), "REM"),
+                    None => (elapsed.to_clock_string()[3..].to_string(), "ELAPSED"),
                 };
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(big).font(theme::clock_font(32.0)).color(theme::active()));
-                    ui.label(RichText::new(label).size(11.0).color(theme::TEXT_DIM));
+                    ui.label(RichText::new(big).font(theme::clock_font(30.0)).color(theme::active()));
+                    ui.label(caption_text(label));
                 });
-                ui.add(egui::Label::new(RichText::new(format!("{number}  {name}")).color(theme::TEXT)).truncate());
+                ui.add(egui::Label::new(RichText::new(format!("{number}  {name}")).color(theme::TEXT_DIM)).truncate());
             }
             None => {
-                caption(ui, "RUNNING");
-                ui.label(RichText::new("--:--.--").font(theme::clock_font(32.0)).color(theme::TEXT_DIM));
-                ui.label(RichText::new("No cues running").color(theme::TEXT_DIM));
+                ui.label(RichText::new("--:--.--").font(theme::clock_font(30.0)).color(theme::TEXT_FAINT));
+                ui.label(RichText::new("No cues running").color(theme::TEXT_FAINT));
             }
         });
     }
@@ -144,96 +154,130 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     // TIMECODE
     if shown("timecode") {
         let r = take(width_of("timecode"));
-        ui.painter().rect_filled(r, 6.0, theme::PANEL_RAISED);
-        region(ui, r.shrink(8.0), |ui| timecode(ui, rt, st));
+        timecode(ui, r, rt, st);
+    }
+
+    // SYSTEM HEALTH
+    if shown("system") {
+        let r = take(width_of("system"));
+        system(ui, r, rt, st);
     }
 
     // CLOCK
     if shown("clock") {
         let r = take(width_of("clock"));
-        ui.painter().rect_filled(r, 6.0, theme::PANEL_RAISED);
-        region(ui, r.shrink(8.0), |ui| {
-            caption(ui, "TIME OF DAY");
+        let inner = module(ui, r, "Time of day", None);
+        region(ui, inner, |ui| {
             let now = chrono::Local::now();
-            ui.label(RichText::new(now.format("%H:%M:%S").to_string()).font(theme::clock_font(34.0)).color(theme::TEXT));
-            ui.label(RichText::new(now.format("%a %d %b").to_string()).color(theme::TEXT_DIM));
+            ui.label(RichText::new(now.format("%H:%M:%S").to_string()).font(theme::clock_font(24.0)).color(theme::TEXT));
+            ui.label(caption_text(&now.format("%a %d %b").to_string()));
         });
     }
 
     // OUTPUTS + MASTER
     if shown("output") {
         let r = take(width_of("output"));
-        region(ui, r, |ui| outputs_and_master(ui, rt, st));
+        outputs_and_master(ui, r, rt);
     }
 }
 
-fn timecode(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
+fn timecode(ui: &mut Ui, rect: Rect, rt: &mut UiRuntime, st: &mut UiState) {
     use livestage_core::timecode::{LockState, TimecodeSource};
     let t = rt.timecode.transport();
     let source = rt.timecode.config().source;
     let (dot, state) = match t.state {
-        LockState::Locked if t.running => (theme::active(), "LOCKED"),
-        LockState::Locked => (theme::active(), "READY"),
-        LockState::Freewheel => (theme::standby(), "FREEWHEEL"),
-        LockState::Locking => (theme::standby(), "LOCKING"),
-        LockState::Stopped => (theme::TEXT_DIM, "STOPPED"),
+        LockState::Locked if t.running => (theme::active(), "locked"),
+        LockState::Locked => (theme::active(), "ready"),
+        LockState::Freewheel => (theme::standby(), "freewheel"),
+        LockState::Locking => (theme::standby(), "locking"),
+        LockState::Stopped => (theme::TEXT_FAINT, "stopped"),
     };
-    let state = if source == TimecodeSource::Internal { if t.running { "RUNNING" } else { "STOPPED" } } else { state };
-    let head = ui
-        .horizontal(|ui| {
-            caption(ui, &format!("TIMECODE · {}", source.short()));
-            ui.label(RichText::new("●").size(10.0).color(dot));
-            ui.label(RichText::new(state).size(11.0).strong().color(dot));
-        })
-        .response;
-    let color = if t.running { theme::active() } else { theme::TEXT };
-    let big = ui.add(egui::Label::new(RichText::new(t.timecode().to_string()).font(theme::clock_font(30.0)).color(color)).sense(egui::Sense::click()));
-    if head.union(big).on_hover_text("Timecode settings").clicked() {
-        st.settings_open = true;
-        st.settings_section = super::settings::Section::Timecode;
-    }
-    ui.horizontal(|ui| {
-        if source == TimecodeSource::Internal {
-            let (label, c) = if t.running { ("Stop", ShowCommand::TimecodeStop) } else { ("Start", ShowCommand::TimecodeStart) };
-            if ui.small_button(label).clicked() {
-                rt.command(ControlSource::Ui, c);
-            }
-            if ui.small_button("Reset").on_hover_text("Stop and park at the start timecode").clicked() {
-                rt.timecode.reset();
-            }
-            ui.label(RichText::new(t.rate.token()).size(11.0).color(theme::TEXT_DIM));
-        } else {
-            let detail = match t.state {
-                LockState::Stopped => t.rate.label().to_string(),
-                _ => format!("{} · {:+.0} ppm", t.rate.token(), t.drift_ppm()),
-            };
-            ui.label(RichText::new(detail).size(11.0).color(theme::TEXT_DIM));
+    let (dot, state) = if source == TimecodeSource::Internal {
+        if t.running { (theme::active(), "running") } else { (theme::TEXT_FAINT, "stopped") }
+    } else {
+        (dot, state)
+    };
+    let title = format!("Timecode · {}", source.short());
+    let inner = module(ui, rect, &title, Some((state, dot)));
+    region(ui, inner, |ui| {
+        let color = if t.running { theme::active() } else { theme::TEXT };
+        let big = ui.add(egui::Label::new(RichText::new(t.timecode().to_string()).font(theme::clock_font(26.0)).color(color)).sense(egui::Sense::click()));
+        if big.on_hover_text("Timecode settings").clicked() {
+            st.settings_open = true;
+            st.settings_section = super::settings::Section::Timecode;
         }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            if source == TimecodeSource::Internal {
+                let (label, c) = if t.running { ("Stop", ShowCommand::TimecodeStop) } else { ("Start", ShowCommand::TimecodeStart) };
+                if small_key(ui, label).clicked() {
+                    rt.command(ControlSource::Ui, c);
+                }
+                if small_key(ui, "Reset").on_hover_text("Stop and park at the start timecode").clicked() {
+                    rt.timecode.reset();
+                }
+                ui.label(caption_text(t.rate.token()));
+            } else {
+                let detail = match t.state {
+                    LockState::Stopped => t.rate.label().to_string(),
+                    _ => format!("{} · {:+.0} ppm", t.rate.token(), t.drift_ppm()),
+                };
+                ui.label(caption_text(&detail));
+            }
+        });
     });
 }
 
-fn outputs_and_master(ui: &mut Ui, rt: &mut UiRuntime, _st: &mut UiState) {
+/// Show thread rate and timing, audio DSP load and output frame rate.
+fn system(ui: &mut Ui, rect: Rect, rt: &UiRuntime, st: &UiState) {
+    let hlt = &st.health;
+    let dsp = rt.audio.as_ref().map(|a| a.dsp_load());
+    let ok = hlt.hz > 900.0 && hlt.late_ms < 2.0 && dsp.is_none_or(|d| d < 0.7);
+    let measured = hlt.hz > 0.0;
+    let status = if !measured { ("starting", theme::TEXT_FAINT) } else if ok { ("nominal", theme::active()) } else { ("check", theme::standby()) };
+    let inner = module(ui, rect, "System", Some(status));
+    let sched = rt.show_stats.scheduling.lock().clone();
+    let cells = [
+        ("SHOW", if measured { format!("{:.0} Hz", hlt.hz) } else { "—".into() }, hlt.hz > 900.0 || !measured),
+        ("LATE", if measured { format!("{:.1} ms", hlt.late_ms) } else { "—".into() }, hlt.late_ms < 2.0),
+        ("DSP", dsp.map_or("off".into(), |d| format!("{:.0} %", d * 100.0)), dsp.is_some_and(|d| d < 0.7)),
+        ("OUT", format!("{:.0} fps", st.output_fps), true),
+    ];
+    let p = ui.painter();
+    let cw = inner.width() / 2.0;
+    for (i, (label, value, good)) in cells.iter().enumerate() {
+        let o = inner.min + egui::vec2((i % 2) as f32 * cw, (i / 2) as f32 * 36.0);
+        p.text(o, egui::Align2::LEFT_TOP, *label, egui::FontId::proportional(9.5), theme::TEXT_FAINT);
+        let c = if *good { theme::TEXT } else { theme::standby() };
+        p.text(o + egui::vec2(0.0, 12.0), egui::Align2::LEFT_TOP, value, theme::clock_font(15.0), c);
+    }
+    ui.allocate_rect(rect, egui::Sense::hover()).on_hover_text(format!(
+        "Show thread: {:.0} Hz, worst lateness {:.1} ms, lock wait {:.1} ms, tick {:.2} ms (last second)\nScheduling: {sched}",
+        hlt.hz, hlt.late_ms, hlt.lock_ms, hlt.tick_ms
+    ));
+}
+
+fn outputs_and_master(ui: &mut Ui, rect: Rect, rt: &mut UiRuntime) {
     let live = rt.outputs_live;
-    let (txt, fill, color) = if live {
-        ("OUTPUTS LIVE", theme::stop(), Color32::WHITE)
-    } else {
-        ("Outputs off", Color32::from_rgb(0x2A, 0x2A, 0x2A), theme::TEXT)
-    };
-    let w = ui.available_width();
-    if ui
-        .add_sized([w, 44.0], Button::new(RichText::new(txt).strong().size(15.0).color(color)).fill(fill).corner_radius(6))
-        .on_hover_text("Open / close program windows (kiosk fullscreen on mapped screens)")
-        .clicked()
-    {
+    let key_rect = Rect::from_min_size(rect.min, egui::vec2(rect.width(), 52.0));
+    let (label, tone) = if live { ("OUTPUTS LIVE", KeyTone::Danger) } else { ("OUTPUTS OFF", KeyTone::Neutral) };
+    if key(ui, key_rect, label, 14.0, None, tone, live).on_hover_text("Open / close program windows (kiosk fullscreen on mapped screens)").clicked() {
         rt.command(ControlSource::Ui, ShowCommand::SetOutputsFullscreen { enabled: !live });
     }
-    ui.add_space(6.0);
-    caption(ui, "MASTER");
-    let mut db = rt.bundle.project.audio.master_gain_db;
-    ui.spacing_mut().slider_width = w - 64.0;
-    if ui.add(egui::Slider::new(&mut db, -60.0..=6.0).suffix(" dB").fixed_decimals(1)).changed() {
-        rt.command(ControlSource::Ui, ShowCommand::SetMasterGain { db });
-    }
+    let below = Rect::from_min_max(egui::pos2(rect.left(), key_rect.bottom() + 8.0), rect.max);
+    region(ui, below, |ui| {
+        let mut db = rt.bundle.project.audio.master_gain_db;
+        ui.horizontal(|ui| {
+            ui.label(caption_text("Master"));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(RichText::new(format!("{db:+.1} dB")).font(theme::clock_font(12.0)).color(theme::TEXT));
+            });
+        });
+        ui.spacing_mut().slider_width = ui.available_width();
+        if ui.add(egui::Slider::new(&mut db, -60.0..=6.0).show_value(false)).changed() {
+            rt.command(ControlSource::Ui, ShowCommand::SetMasterGain { db });
+        }
+    });
 }
 
 /// LiveStage / File / Edit / View / Show menus (macOS-style rows with shortcuts).
@@ -280,6 +324,9 @@ pub fn menu_bar(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                 }
             }
             menu_separator(ui);
+            if menu_item(ui, if st.inspector_open { "Hide inspector" } else { "Show inspector" }, None).clicked() {
+                st.inspector_open = !st.inspector_open;
+            }
             if menu_item(ui, "Reset layout", None).clicked() {
                 st.reset_layout();
             }
@@ -362,26 +409,30 @@ pub fn import_window(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) 
 }
 
 /// Samples show-thread counters once per second.
-fn show_health(rt: &UiRuntime, st: &mut UiState) {
+fn sample_health(rt: &UiRuntime, st: &mut UiState) {
     use crate::runtime::ShowStats;
     use std::sync::atomic::Ordering;
     let now = std::time::Instant::now();
     let ticks = rt.show_stats.ticks.load(Ordering::Relaxed);
-    match st.health.0 {
+    let h = &mut st.health;
+    match h.sampled {
         Some(at) if now.duration_since(at).as_secs_f32() < 1.0 => {}
         Some(at) => {
-            let hz = (ticks - st.health.1) as f32 / now.duration_since(at).as_secs_f32();
-            let late = ShowStats::take(&rt.show_stats.max_late_us) as f32 / 1000.0;
-            let wait = ShowStats::take(&rt.show_stats.max_wait_us) as f32 / 1000.0;
-            let tick = ShowStats::take(&rt.show_stats.max_tick_us) as f32 / 1000.0;
-            st.health = (Some(now), ticks, format!("Show {hz:.0} Hz · late ≤{late:.1} ms · lock ≤{wait:.1} ms · tick ≤{tick:.2} ms"));
+            h.hz = (ticks - h.ticks) as f32 / now.duration_since(at).as_secs_f32();
+            h.late_ms = ShowStats::take(&rt.show_stats.max_late_us) as f32 / 1000.0;
+            h.lock_ms = ShowStats::take(&rt.show_stats.max_wait_us) as f32 / 1000.0;
+            h.tick_ms = ShowStats::take(&rt.show_stats.max_tick_us) as f32 / 1000.0;
+            h.sampled = Some(now);
+            h.ticks = ticks;
         }
-        None => st.health = (Some(now), ticks, "Show thread starting…".into()),
+        None => {
+            h.sampled = Some(now);
+            h.ticks = ticks;
+        }
     }
 }
 
 pub fn status_bar(ui: &mut Ui, rt: &UiRuntime, st: &mut UiState) {
-    show_health(rt, st);
     ui.horizontal_centered(|ui| {
         let dim = theme::TEXT_DIM;
         match &rt.audio {
@@ -399,16 +450,17 @@ pub fn status_bar(ui: &mut Ui, rt: &UiRuntime, st: &mut UiState) {
             }
         }
         ui.separator();
-        let sched = rt.show_stats.scheduling.lock().clone();
-        ui.label(RichText::new(&st.health.2).color(dim)).on_hover_text(format!("Scheduling: {sched}\nWorst values over the last second"));
-        ui.separator();
+        if !st.deck_shows_system {
+            let h = &st.health;
+            ui.label(RichText::new(format!("Show {:.0} Hz · late ≤{:.1} ms", h.hz, h.late_ms)).color(dim));
+            ui.separator();
+            ui.label(RichText::new(format!("Outputs {:.0} fps", st.output_fps)).color(dim));
+            ui.separator();
+        }
         if !livestage_video::capabilities::movie_support().movies_available() {
             ui.colored_label(theme::stop(), "Movies off").on_hover_text(livestage_video::capabilities::movie_support().summary());
             ui.separator();
         }
-        ui.label(RichText::new(format!("Outputs {:.0} fps", st.output_fps)).color(dim))
-            .on_hover_text("Output render thread (independent of this window): canvases, program windows, NDI");
-        ui.separator();
         ui.label(RichText::new(format!("DMX {} pkts", rt.dmx.packets_sent())).color(dim));
         ui.separator();
         let osc = rt.osc_port().map_or("OSC off".to_string(), |p| format!("OSC :{p}"));

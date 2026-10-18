@@ -3,14 +3,14 @@
 use super::UiState;
 use crate::view::UiRuntime;
 use crate::theme;
-use egui::{Align2, Color32, ComboBox, DragValue, FontId, RichText, Sense, Ui};
+use egui::{Align2, Color32, ComboBox, DragValue, FontId, Sense, Ui};
 use livestage_core::dmx_config::{DmxTransport, PatchedFixture};
 
 pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     let mut apply = false;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Universes").strong());
+            super::widgets::caption(ui, "Universes");
             ui.weak(format!("{} packets sent", rt.dmx.packets_sent()));
         });
         let cfg = &mut rt.bundle.project.dmx;
@@ -73,7 +73,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         });
         ui.separator();
 
-        ui.label(RichText::new("Fixture patch").strong());
+        super::widgets::caption(ui, "Fixture patch");
         let defs: Vec<(String, String, Vec<String>)> = rt
             .dmx
             .library
@@ -140,7 +140,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         ui.separator();
 
         // Universe 1 live view.
-        ui.label(RichText::new("Universe 1 output").strong());
+        super::widgets::caption(ui, "Universe 1 output");
         if let Some(u) = rt.dmx.universe(0) {
             let cols = 32;
             let cell = ((ui.available_width() - 4.0) / cols as f32).floor().clamp(14.0, 28.0);

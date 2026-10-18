@@ -41,7 +41,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         ui.end_row();
     });
     ui.separator();
-    ui.label(RichText::new("Event log").strong());
+    super::widgets::caption(ui, "Event log");
     egui::ScrollArea::vertical().auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
         for l in &rt.log {
             let c = match l.level {

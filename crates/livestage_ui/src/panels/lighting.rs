@@ -120,7 +120,7 @@ fn column(ui: &mut Ui, rect: Rect, id: &str, f: impl FnOnce(&mut Ui)) {
 }
 
 fn section(ui: &mut Ui, title: &str) {
-    ui.label(RichText::new(title).size(12.0).strong().color(theme::TEXT_DIM));
+    super::widgets::caption(ui, title);
 }
 
 // ================================================================ toolbar ==
@@ -350,57 +350,6 @@ fn fixture_tiles(ui: &mut Ui, rt: &mut UiRuntime, _st: &mut UiState) {
 
 // =============================================================== encoders ==
 
-enum EncoderEvent {
-    None,
-    Set(f32),
-    Release,
-}
-
-/// Rotary encoder: drag up / down or scroll; Shift for fine; double-click releases.
-fn encoder(ui: &mut Ui, label: &str, value: f32, programmed: bool) -> EncoderEvent {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(72.0, 86.0), Sense::click_and_drag());
-    let p = ui.painter_at(rect);
-    let c = Pos2::new(rect.center().x, rect.top() + 32.0);
-    let r = 26.0;
-    p.circle_filled(c, r, theme::PANEL_RECESSED);
-    let start = 0.75 * PI;
-    let sweep = 1.5 * PI;
-    let arc = |from: f32, to: f32, stroke: Stroke| {
-        let n = (((to - from) / sweep) * 48.0).ceil().max(2.0) as usize;
-        let pts: Vec<Pos2> = (0..=n).map(|i| from + (to - from) * i as f32 / n as f32).map(|a| c + Vec2::new(a.cos(), a.sin()) * (r - 4.0)).collect();
-        p.add(egui::Shape::line(pts, stroke));
-    };
-    arc(start, start + sweep, Stroke::new(4.0_f32, Color32::from_gray(55)));
-    let color = if programmed { theme::accent() } else { theme::TEXT_DIM };
-    if value > 0.0 {
-        arc(start, start + sweep * value.clamp(0.0, 1.0), Stroke::new(4.0_f32, color));
-    }
-    let a = start + sweep * value.clamp(0.0, 1.0);
-    p.line_segment([c + Vec2::new(a.cos(), a.sin()) * (r - 14.0), c + Vec2::new(a.cos(), a.sin()) * (r - 6.0)], Stroke::new(2.0_f32, theme::TEXT));
-    p.text(c, Align2::CENTER_CENTER, format!("{:.0}", value * 100.0), FontId::monospace(12.0), if programmed { theme::TEXT } else { theme::TEXT_DIM });
-    p.text(Pos2::new(rect.center().x, rect.bottom() - 4.0), Align2::CENTER_BOTTOM, title_case(label), FontId::proportional(11.0), theme::TEXT);
-    let resp = resp.on_hover_text("Drag or scroll · Shift = fine · double-click releases");
-    if resp.double_clicked() {
-        return EncoderEvent::Release;
-    }
-    let fine = ui.input(|i| i.modifiers.shift);
-    let scale = if fine { 0.1 } else { 1.0 };
-    if resp.dragged() {
-        let d = resp.drag_delta();
-        let delta = (d.x - d.y) / 160.0 * scale;
-        if delta != 0.0 {
-            return EncoderEvent::Set((value + delta).clamp(0.0, 1.0));
-        }
-    }
-    if resp.hovered() {
-        let s = ui.input(|i| i.smooth_scroll_delta.y);
-        if s != 0.0 {
-            return EncoderEvent::Set((value + s / 500.0 * scale).clamp(0.0, 1.0));
-        }
-    }
-    EncoderEvent::None
-}
-
 /// Attributes of the selection in one category, in fixture order.
 fn selection_attributes(rt: &UiRuntime, kind: PaletteKind) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -450,10 +399,10 @@ fn encoders(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         }
         for a in &attrs {
             let (v, programmed) = shown_value(rt, a);
-            match encoder(ui, a, v, programmed) {
-                EncoderEvent::Set(v) => rt.dmx.programmer_set(a, v),
-                EncoderEvent::Release => rt.dmx.programmer_release(a),
-                EncoderEvent::None => {}
+            match super::widgets::encoder(ui, &title_case(a), v, programmed) {
+                super::widgets::EncoderEvent::Set(v) => rt.dmx.programmer_set(a, v),
+                super::widgets::EncoderEvent::Release => rt.dmx.programmer_release(a),
+                super::widgets::EncoderEvent::None => {}
             }
         }
     });

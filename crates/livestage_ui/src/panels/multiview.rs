@@ -3,6 +3,7 @@
 //! cue with a preview of its content, the running presentation's current
 //! and upcoming slide (with text and speaker notes), or a clock.
 
+use super::widgets::toggle;
 use super::widgets::{menu_heading, menu_item, menu_separator, scrub_bar};
 use super::{NdiStatus, Previews, UiState};
 use crate::view::UiRuntime;
@@ -103,7 +104,7 @@ fn toolbar(ui: &mut Ui, layout: &MultiviewLayout, is_auto: bool, actions: &mut V
         ui.label(RichText::new("Custom").color(theme::TEXT_DIM));
         let mut changed = ui.add(egui::DragValue::new(&mut r).range(1..=MultiviewLayout::MAX).suffix(" rows")).changed();
         changed |= ui.add(egui::DragValue::new(&mut c).range(1..=MultiviewLayout::MAX).suffix(" cols")).changed();
-        changed |= ui.checkbox(&mut f, "featured").on_hover_text("First cell spans 2 × 2").changed();
+        changed |= toggle(ui, &mut f, "featured").on_hover_text("First cell spans 2 × 2").changed();
         if changed {
             actions.push(Action::Grid(r, c, f));
         }

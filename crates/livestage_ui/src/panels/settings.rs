@@ -3,6 +3,7 @@
 //! Two kinds of settings, labelled as such: *this Mac* (preferences file)
 //! and *this show* (saved in the show bundle so they travel with it).
 
+use super::widgets::toggle;
 use super::UiState;
 use crate::prefs::Preferences;
 use crate::view::UiRuntime;
@@ -113,7 +114,7 @@ fn sidebar(ui: &mut Ui, st: &mut UiState) {
 fn heading(ui: &mut Ui, title: &str, scope: &str) {
     ui.horizontal(|ui| {
         ui.heading(title);
-        ui.label(RichText::new(scope).size(12.0).color(theme::TEXT_DIM));
+        ui.label(super::widgets::caption_text(scope));
     });
     ui.add_space(4.0);
 }
@@ -159,7 +160,7 @@ fn general(ui: &mut Ui, st: &mut UiState) {
         ui.add(egui::Slider::new(&mut st.prefs.ui_scale, 0.8..=1.6).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)));
         ui.end_row();
         ui.label("Quitting");
-        ui.checkbox(&mut st.prefs.confirm_quit_when_live, "Ask before quitting while outputs are live");
+        toggle(ui, &mut st.prefs.confirm_quit_when_live, "Ask before quitting while outputs are live");
         ui.end_row();
         ui.label("Crash recovery");
         ui.horizontal(|ui| {
@@ -254,13 +255,13 @@ fn control(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     egui::Grid::new("set-control").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
         ui.label("OSC input");
         ui.horizontal(|ui| {
-            changed |= ui.checkbox(&mut c.osc_enabled, "enabled").changed();
+            changed |= toggle(ui, &mut c.osc_enabled, "enabled").changed();
             changed |= ui.add_enabled(c.osc_enabled, DragValue::new(&mut c.osc_listen_port).range(1024..=65_535).prefix("UDP ")).changed();
         });
         ui.end_row();
         ui.label("WebSocket remote");
         ui.horizontal(|ui| {
-            changed |= ui.checkbox(&mut c.websocket_enabled, "enabled").changed();
+            changed |= toggle(ui, &mut c.websocket_enabled, "enabled").changed();
             changed |= ui.add_enabled(c.websocket_enabled, DragValue::new(&mut c.websocket_port).range(1024..=65_535).prefix("TCP ")).changed();
         });
         ui.end_row();
@@ -281,7 +282,7 @@ fn control(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         ui.label("MIDI Show Control");
         ui.horizontal(|ui| {
             let mut all = c.msc_device_id == 0x7F;
-            if ui.checkbox(&mut all, "all device ids").changed() {
+            if toggle(ui, &mut all, "all device ids").changed() {
                 c.msc_device_id = if all { 0x7F } else { 0 };
                 changed = true;
             }
@@ -442,7 +443,7 @@ fn timecode(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     for list in &mut rt.bundle.project.cue_lists {
         ui.horizontal(|ui| {
             let mut on = list.timecode.is_some();
-            if ui.checkbox(&mut on, &list.name).changed() {
+            if toggle(ui, &mut on, &list.name).changed() {
                 list.timecode = on.then(ListTimecode::new);
                 list_changed = true;
             }
@@ -470,9 +471,9 @@ fn outputs(ui: &mut Ui, st: &mut UiState) {
     egui::Grid::new("set-outputs").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
         ui.label("Program outputs");
         ui.vertical(|ui| {
-            ui.checkbox(&mut p.outputs_on_launch, "Open outputs when a show is loaded");
-            ui.checkbox(&mut p.outputs_always_on_top, "Keep kiosk outputs above other windows");
-            ui.checkbox(&mut p.hide_cursor_on_outputs, "Hide the mouse pointer on kiosk outputs");
+            toggle(ui, &mut p.outputs_on_launch, "Open outputs when a show is loaded");
+            toggle(ui, &mut p.outputs_always_on_top, "Keep kiosk outputs above other windows");
+            toggle(ui, &mut p.hide_cursor_on_outputs, "Hide the mouse pointer on kiosk outputs");
         });
         ui.end_row();
         ui.label("Movie playback");
@@ -499,7 +500,7 @@ fn outputs(ui: &mut Ui, st: &mut UiState) {
         ui.end_row();
         ui.label("Video decoding");
         ui.vertical(|ui| {
-            ui.checkbox(&mut p.hardware_decode, "Hardware decoding (VideoToolbox / D3D11VA / VAAPI)");
+            toggle(ui, &mut p.hardware_decode, "Hardware decoding (VideoToolbox / D3D11VA / VAAPI)");
             hint(ui, "Takes effect after restarting LiveStage.");
         });
         ui.end_row();

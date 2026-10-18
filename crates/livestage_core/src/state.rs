@@ -18,14 +18,14 @@ impl Rgb {
 /// Canonical state palette.
 pub mod palette {
     use super::Rgb;
-    /// Standby — Amber `#FFC107`.
-    pub const STANDBY: Rgb = Rgb::hex(0xFFC107);
-    /// Active / playing — Leaf Green `#4CAF50`.
-    pub const ACTIVE: Rgb = Rgb::hex(0x4CAF50);
-    /// GO button — Emerald Green `#00C853`.
-    pub const GO: Rgb = Rgb::hex(0x00C853);
-    /// Stop / Panic — Crimson Red `#E53935`.
-    pub const STOP: Rgb = Rgb::hex(0xE53935);
+    /// Standby — Cyberpunk Amber `#FFB020`.
+    pub const STANDBY: Rgb = Rgb::hex(0xFFB020);
+    /// Active / playing — Laser Emerald `#00F5A0`.
+    pub const ACTIVE: Rgb = Rgb::hex(0x00F5A0);
+    /// GO key — Laser Emerald, one step deeper for a large lit surface `#00E091`.
+    pub const GO: Rgb = Rgb::hex(0x00E091);
+    /// Stop / Panic / errors — Deep Crimson `#D3123A`.
+    pub const STOP: Rgb = Rgb::hex(0xD3123A);
 }
 
 /// Lifecycle state of a single cue.

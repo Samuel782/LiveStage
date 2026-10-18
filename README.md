@@ -216,31 +216,42 @@ cargo run -p livestage_video --example render_deck -- talk.pptx /tmp/slides 1920
 
 ### Window layout
 
+The interface uses an "obsidian telemetry" look: carbon surfaces (`#0A0A0C`–`#141418`), hairline
+structure, tabular figures for every clock, and three signal colours that only ever mean one thing:
+**Cyberpunk Amber** = standby, **Laser Emerald** = active / GO, **Deep Crimson** = panic and errors.
+On macOS the system faces (SF Pro, SF Mono) are used when present.
+
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────────┐
 │ LiveStage  File  Edit  View  Show │ Demo Show                                        menu bar│
-├────────────┬──────────────────────────────┬────────┬─────────┬──────────────┬──────────┬───────┤
-│            │ NEXT UP                      │        │         │ RUNNING·1    │ TIME OF  │OUTPUTS│
-│     GO     │ 5  Teleprompter: speech      │ STOP   │  PANIC  │ -00:20.81    │ DAY      │ LIVE  │
-│            │ [Prev][Next] [Pause][Resume] │ ALL    │         │ 4 Song 1     │ 12:29:14 │MASTER │
-├────────────┴──────────────────────────────┴────────┴─────────┴───┬──────────┴──────────┴───────┤
-│ Cue List                                                         │ Inspector                   │
-│ [Main Cue List] [Cue List 2] [+ List]                            │ Timeline cue                │
-│ [+ Add cue] [Move up] [Move down] [Delete]                       │ Number   4                  │
-│ ┌──────────────────────────────────────────────────────────────┐ │ Name     Song 1 — Timeline  │
-│ │ cue grid (see below)                                         │ │ Pre-wait 0.00 s   Follow …  │
-│ └──────────────────────────────────────────────────────────────┘ │ type-specific settings …    │
-├──────────────────────────────────────────────────────────────────┴─────────────────────────────┤
-│ Timeline │ Multiview │ Display Routing │ Audio Patch │ DMX │ Control & Log          bottom tabs│
-│                                                                                                │
+├────────┬───────────────────────┬──────┬───────┬───────────┬──────────┬────────┬───────┬───────┤
+│        │ NEXT UP     ● STANDBY │ STOP │       │ RUNNING   │ TIMECODE │ SYSTEM │ TIME  │OUTPUTS│
+│   GO   │ 5  Teleprompter       │ ALL  │ PANIC │ -00:20.81 │ 01:00:.. │ 1000Hz │ 12:29 │  OFF  │
+│  SPACE │ ◂PREV NEXT▸ PAUSE RES │      │  ESC  │ 4 Song 1  │ START …  │ DSP 3% │       │MASTER │
+├────────┴───────────────────────┴──────┴───────┴───────────┴──────────┴────────┴───┬───┴───────┤
+│ [Main Cue List] [Cue List 2] [+ List]   [+ Add cue] [Move up] [Move down] [Delete]  │ INSPECTOR▸│
+│ #   TYPE      NAME                         ACTION              STATE                │ (DMX) PLAY│
+│ 3   (DMX)     Preset: house half           00:01.52 / 00:03.00  (PLAY)              │ 3 Preset… │
+│ 4   (TIMELINE) Song 1 — Timeline           00:24.00             (STANDBY)           │ settings… │
+├─────────────────────────────────────────────────────────────────────────────────────┴───────────┤
+│ TIMELINE │ MULTIVIEW │ SOUNDBOARD │ LIGHTING │ DISPLAY ROUTING │ AUDIO PATCH │ DMX │ CONTROL    │
+│ tool dock (full width, resizable, tabs can be split and rearranged)                            │
 ├────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ Audio · 48000 Hz · 2 ch │ Show 1000 Hz · late ≤0.4 ms │ Outputs 60 fps │ DMX │ OSC · WS     │
+│ Audio · 48000 Hz · 2 ch │ DMX │ OSC · WS │ last log line                              status bar│
 └────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- The **transport bar** is laid out in fixed regions. On narrow windows the clock and output regions
-  drop out (they stay reachable from the *Show* menu) instead of overlapping.
-- Panels are dockable: drag tabs to rearrange, and use **View ▸ Reset layout** to restore the default.
+- The **command deck** is laid out in fixed regions: tactile keys (GO, STOP ALL, PANIC, OUTPUTS)
+  and telemetry modules (next up, running cue, timecode, system health, time of day). On narrow
+  windows the clock, system and timecode modules drop out instead of overlapping; health then
+  moves to the status bar.
+- The **cue grid** is the fixed core of the window: alternating row bands per cue, type tags, state
+  badges, a progress trace under running cues, and amber / emerald signal bars on the left edge.
+- The **inspector** sits to the right of the grid with a context header (type, number, name, state).
+  Collapse it to a thin rail with ▸ (or **View ▸ Hide inspector**); drag its edge to resize.
+- The **tool dock** spans the full width under the grid. Drag tabs to split or rearrange, drag its
+  top edge to resize, and use **View ▸ Reset layout** to restore the default.
+- Checkboxes are toggle switches; lighting attributes use graduated rotary encoders.
 - Drop media files or presentations onto the window (or use **File ▸ Import…**, ⌘I). They are
   copied into the show and a matching cue is created; presentations render in the background with a
   progress indicator in the menu bar.

@@ -48,7 +48,7 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            accent: Accent::Emerald,
+            accent: Accent::Ice,
             ui_scale: 1.0,
             outputs_on_launch: false,
             outputs_always_on_top: true,
