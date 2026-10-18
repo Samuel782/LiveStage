@@ -173,6 +173,9 @@ pub enum DmxAction {
         cue: CueId,
         channels: Vec<DmxChannelValue>,
         attributes: Vec<FixtureAttributeValue>,
+        /// Resolved against the current palettes when applied.
+        palettes: Vec<crate::lighting::PaletteRef>,
+        effects: Vec<crate::id::EffectId>,
         fade: ShowTime,
     },
     Release { cue: CueId, fade: ShowTime },

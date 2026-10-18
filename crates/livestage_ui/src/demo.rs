@@ -98,6 +98,8 @@ pub fn new_cue(p: &Project, kind: CueKind, number: &str) -> AnyCue {
             attributes: vec![],
             fade: ShowTime::from_secs(2),
             release_on_stop: true,
+            palettes: vec![],
+            effects: vec![],
         }),
         CueKind::Control => AnyCue::Control(ControlCue {
             header: h,
@@ -138,6 +140,8 @@ fn dmx_look(number: &str, name: &str, values: &[(u16, u8)], fade_ms: u64) -> Any
         attributes: vec![],
         fade: ShowTime::from_millis(fade_ms),
         release_on_stop: true,
+        palettes: vec![],
+        effects: vec![],
     })
 }
 
@@ -269,4 +273,114 @@ pub fn create_demo(parent: &Path) -> CoreResult<ProjectBundle> {
     bundle.project.active_list_mut().expect("default list").cues = cues;
     bundle.save()?;
     Ok(bundle)
+}
+
+/// Patches a small touring rig with palettes, submasters, effects and a
+/// stage plot, so the lighting console can be tried without a real patch.
+/// Fixtures go on universe 1 after anything already patched.
+pub fn lighting_rig(p: &mut Project) {
+    use livestage_core::dmx_config::PatchedFixture;
+    use livestage_core::id::FixtureId;
+    use livestage_core::lighting::{Effect, EffectKind, LightValue, Palette, PaletteKind, Submaster, SubmasterKind};
+    use livestage_core::state::Rgb;
+
+    let mut next = p.dmx.patch.iter().filter(|f| f.universe == 0).map(|f| f.address + 12).max().unwrap_or(1);
+    let mut add = |p: &mut Project, name: String, def: &str, mode: &str, footprint: u16, at: [f32; 2]| -> FixtureId {
+        let id = FixtureId::new();
+        p.dmx.patch.push(PatchedFixture { id, name, definition: def.into(), mode: mode.into(), universe: 0, address: next });
+        p.lighting.stage.insert(id, at);
+        next += footprint;
+        id
+    };
+    let heads: Vec<_> = (0..4).map(|i| add(p, format!("Spot {}", i + 1), "generic/moving-head", "12ch", 12, [0.2 + 0.2 * i as f32, 0.18])).collect();
+    let wash: Vec<_> = (0..6).map(|i| add(p, format!("Wash {}", i + 1), "generic/rgbw-par", "5ch", 5, [0.1 + 0.16 * i as f32, 0.72])).collect();
+    let floor: Vec<_> = (0..4).map(|i| add(p, format!("Floor {}", i + 1), "generic/rgb-par", "3ch", 3, [0.25 + 0.17 * i as f32, 0.45])).collect();
+    let blinders: Vec<_> = (0..2).map(|i| add(p, format!("Blinder {}", i + 1), "generic/dimmer", "8bit", 1, [0.04 + 0.92 * i as f32, 0.5])).collect();
+    let pars: Vec<_> = wash.iter().chain(&floor).copied().collect();
+
+    let l = &mut p.lighting;
+    let color = |name: &str, c: Rgb, white: f32| {
+        let mut pal = Palette::new(
+            name,
+            PaletteKind::Color,
+            vec![
+                LightValue::any("red", c.0 as f32 / 255.0),
+                LightValue::any("green", c.1 as f32 / 255.0),
+                LightValue::any("blue", c.2 as f32 / 255.0),
+                LightValue::any("white", white),
+            ],
+        );
+        pal.swatch = Some(c);
+        pal
+    };
+    l.palettes.extend([
+        color("Red", Rgb(255, 0, 0), 0.0),
+        color("Amber", Rgb(255, 140, 0), 0.0),
+        color("Blue", Rgb(0, 40, 255), 0.0),
+        color("Magenta", Rgb(255, 0, 200), 0.0),
+        color("Cyan", Rgb(0, 220, 255), 0.0),
+        color("White", Rgb(255, 255, 255), 1.0),
+    ]);
+    let full = Palette::new("Full", PaletteKind::Intensity, vec![LightValue::any("intensity", 1.0)]);
+    let half = Palette::new("Half", PaletteKind::Intensity, vec![LightValue::any("intensity", 0.5)]);
+    l.palettes.extend([full, half]);
+    let pos = |name: &str, f: &dyn Fn(usize) -> (f32, f32)| {
+        let values = heads.iter().enumerate().flat_map(|(i, h)| {
+            let (pan, tilt) = f(i);
+            [LightValue::of(*h, "pan", pan), LightValue::of(*h, "tilt", tilt)]
+        });
+        Palette::new(name, PaletteKind::Position, values.collect())
+    };
+    l.palettes.extend([
+        pos("Centre", &|_| (0.5, 0.5)),
+        pos("Audience", &|i| (0.42 + 0.05 * i as f32, 0.82)),
+        pos("Cross", &|i| (if i < 2 { 0.65 } else { 0.35 }, 0.62)),
+        pos("Drum riser", &|i| (0.5 + 0.04 * (1.5 - i as f32), 0.35)),
+    ]);
+    l.palettes.extend([
+        Palette::new("Open", PaletteKind::Beam, vec![LightValue::any("gobo", 0.0), LightValue::any("zoom", 0.5)]),
+        Palette::new("Gobo spin", PaletteKind::Beam, vec![LightValue::any("gobo", 0.6), LightValue::any("zoom", 0.3)]),
+        Palette::new("Wide", PaletteKind::Beam, vec![LightValue::any("gobo", 0.0), LightValue::any("zoom", 1.0)]),
+    ]);
+
+    let sub = |name: &str, kind: SubmasterKind, fixtures: Vec<FixtureId>, color: Rgb| {
+        let mut s = Submaster::new(name, kind, fixtures);
+        s.color = Some(color);
+        s
+    };
+    l.submasters.extend([
+        sub("Blinders", SubmasterKind::Additive { values: vec![LightValue::any("intensity", 1.0)] }, blinders.clone(), Rgb(255, 214, 120)),
+        sub("Strobe", SubmasterKind::Strobe { min_hz: 2.0, max_hz: 18.0 }, vec![], Rgb(240, 240, 240)),
+        sub(
+            "Warm wash",
+            SubmasterKind::Additive {
+                values: vec![LightValue::any("intensity", 1.0), LightValue::any("red", 1.0), LightValue::any("green", 0.45), LightValue::any("blue", 0.05)],
+            },
+            wash.clone(),
+            Rgb(255, 140, 40),
+        ),
+        sub("Heads", SubmasterKind::Inhibit, heads.clone(), Rgb(120, 170, 255)),
+        sub("Pars", SubmasterKind::Inhibit, pars.clone(), Rgb(255, 120, 200)),
+    ]);
+
+    let fx = |name: &str, kind: EffectKind, fixtures: &[FixtureId], rate: f32, size: f32, spread: f32| {
+        let mut e = Effect::new(name, kind, fixtures.to_vec());
+        e.rate_hz = rate;
+        e.size = size;
+        e.spread = spread;
+        e
+    };
+    l.effects.extend([
+        fx("Ballyhoo circle", EffectKind::Circle, &heads, 0.2, 0.35, 0.5),
+        fx("Tilt wave", EffectKind::Sine { attribute: "tilt".into() }, &heads, 0.3, 0.3, 1.0),
+        fx(
+            "Rainbow chase",
+            EffectKind::ColorChase { colors: vec![Rgb(255, 0, 0), Rgb(255, 200, 0), Rgb(0, 255, 60), Rgb(0, 200, 255), Rgb(40, 0, 255), Rgb(255, 0, 200)] },
+            &pars,
+            0.25,
+            1.0,
+            1.0,
+        ),
+        fx("Dimmer chase", EffectKind::DimmerChase, &wash, 1.0, 1.0, 1.0),
+    ]);
 }

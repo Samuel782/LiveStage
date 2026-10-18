@@ -41,6 +41,17 @@ pub enum ShowCommand {
     CartPad { cart: usize, pad: usize, down: bool },
     /// Stop every playing pad of every cart.
     CartStopAll,
+    /// Lighting: submaster fader level (1-based, 0..=1).
+    SetSubmaster { sub: usize, level: f32 },
+    /// Lighting: hold (`down`) / release a submaster's flash button.
+    FlashSubmaster { sub: usize, down: bool },
+    SetGrandMaster { level: f32 },
+    /// Lighting: desk blackout (intensities to zero; positions and colours hold).
+    SetBlackout { enabled: bool },
+    /// Lighting: start / stop an effect (1-based) from the console.
+    SetEffect { effect: usize, running: bool },
+    /// Lighting: clear the programmer.
+    ClearProgrammer,
     /// Internal timecode generator transport (ignored for external sources).
     TimecodeStart,
     TimecodeStop,

@@ -5,6 +5,8 @@
 //!           [--go <cue number>]... [--next-slide <n>] [--select <cue number>] [--run-ms 1500]
 //!           [--tab <name>] [--import <file>]... [--settings <section>]
 //!           [--pad <cart>/<pad>]... [--edit-pad <cart>/<pad>]
+//!           [--demo-rig] [--select-all-fixtures] [--apply-palette <name>]...
+//!           [--fx <n>]... [--sub <n>=<level>]...
 //! ```
 //!
 //! Used for visual review of layout changes and in CI-style checks. It
@@ -42,6 +44,13 @@ pub struct SnapshotArgs {
     pub pads: Vec<(usize, usize)>,
     /// Opens the Soundboard in edit mode on this pad.
     pub edit_pad: Option<(usize, usize)>,
+    /// Lighting: patch the demo rig, select every fixture, apply palettes
+    /// to the programmer, start effects (1-based), set submasters.
+    pub demo_rig: bool,
+    pub select_all_fixtures: bool,
+    pub palettes: Vec<String>,
+    pub fx: Vec<usize>,
+    pub subs: Vec<(usize, f32)>,
 }
 
 impl SnapshotArgs {
@@ -61,6 +70,15 @@ impl SnapshotArgs {
             settings: None,
             pads: Vec::new(),
             edit_pad: None,
+            demo_rig: args.iter().any(|a| a == "--demo-rig"),
+            select_all_fixtures: args.iter().any(|a| a == "--select-all-fixtures"),
+            palettes: args.windows(2).filter(|w| w[0] == "--apply-palette").map(|w| w[1].clone()).collect(),
+            fx: args.windows(2).filter(|w| w[0] == "--fx").filter_map(|w| w[1].parse().ok()).collect(),
+            subs: args
+                .windows(2)
+                .filter(|w| w[0] == "--sub")
+                .filter_map(|w| w[1].split_once('=').and_then(|(n, l)| Some((n.parse().ok()?, l.parse().ok()?))))
+                .collect(),
         };
         let cart_pad = |v: &str| v.split_once('/').and_then(|(c, p)| Some((c.parse().ok()?, p.parse().ok()?)));
         let val = |flag: &str| args.iter().position(|a| a == flag).and_then(|j| args.get(j + 1)).cloned();
@@ -90,6 +108,24 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
         None => ProjectBundle::open(std::env::current_dir()?.join("shows/Demo Show.livestage")).context("demo show")?,
     };
     let mut rt = ShowRuntime::new(bundle);
+    if a.demo_rig {
+        crate::demo::lighting_rig(&mut rt.bundle.project);
+        rt.rebuild_dmx();
+    }
+    if a.select_all_fixtures {
+        rt.dmx.console.programmer.selection = rt.bundle.project.dmx.patch.iter().map(|f| f.id).collect();
+    }
+    for name in &a.palettes {
+        if let Some(p) = rt.bundle.project.lighting.palettes.iter().find(|p| p.name.eq_ignore_ascii_case(name)).cloned() {
+            rt.dmx.programmer_apply_palette(&p);
+        }
+    }
+    for &effect in &a.fx {
+        rt.command(ControlSource::Ui, ShowCommand::SetEffect { effect, running: true });
+    }
+    for &(sub, level) in &a.subs {
+        rt.command(ControlSource::Ui, ShowCommand::SetSubmaster { sub, level });
+    }
     for f in &a.import {
         rt.import_and_create_cue(f);
     }

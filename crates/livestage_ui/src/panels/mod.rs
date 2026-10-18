@@ -2,6 +2,7 @@
 
 mod audio;
 pub mod cart;
+pub mod lighting;
 mod control;
 mod cue_grid;
 mod displays;
@@ -28,6 +29,7 @@ pub enum Tab {
     Timeline,
     Multiview,
     Carts,
+    Lighting,
     Displays,
     AudioPatch,
     Dmx,
@@ -35,8 +37,18 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 9] =
-        [Tab::CueList, Tab::Inspector, Tab::Timeline, Tab::Multiview, Tab::Carts, Tab::Displays, Tab::AudioPatch, Tab::Dmx, Tab::Control];
+    pub const ALL: [Tab; 10] = [
+        Tab::CueList,
+        Tab::Inspector,
+        Tab::Timeline,
+        Tab::Multiview,
+        Tab::Carts,
+        Tab::Lighting,
+        Tab::Displays,
+        Tab::AudioPatch,
+        Tab::Dmx,
+        Tab::Control,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -45,6 +57,7 @@ impl Tab {
             Tab::Timeline => "Timeline",
             Tab::Multiview => "Multiview",
             Tab::Carts => "Soundboard",
+            Tab::Lighting => "Lighting",
             Tab::Displays => "Display Routing",
             Tab::AudioPatch => "Audio Patch",
             Tab::Dmx => "DMX",
@@ -61,7 +74,7 @@ fn default_dock() -> DockState<Tab> {
     let [top, _bottom] = tree.split_below(
         NodeIndex::root(),
         0.64,
-        vec![Tab::Timeline, Tab::Multiview, Tab::Carts, Tab::Displays, Tab::AudioPatch, Tab::Dmx, Tab::Control],
+        vec![Tab::Timeline, Tab::Multiview, Tab::Carts, Tab::Lighting, Tab::Displays, Tab::AudioPatch, Tab::Dmx, Tab::Control],
     );
     tree.split_right(top, 0.63, vec![Tab::Inspector]);
     dock
@@ -105,6 +118,12 @@ pub struct UiState {
     pub cart_slot: Option<usize>,
     pub pad_pointer: Option<(usize, usize)>,
     pub pad_learn: Option<cart::PadLearn>,
+    /// Lighting console: encoder / palette category, stage plot editing,
+    /// and the submaster whose flash button the pointer holds.
+    pub light_tab: livestage_core::lighting::PaletteKind,
+    pub light_move: bool,
+    pub light_drag: Option<lighting::StageDrag>,
+    pub light_flash: Option<livestage_core::id::SubmasterId>,
 }
 
 impl Default for UiState {
@@ -139,6 +158,10 @@ impl Default for UiState {
             cart_slot: None,
             pad_pointer: None,
             pad_learn: None,
+            light_tab: livestage_core::lighting::PaletteKind::Color,
+            light_move: false,
+            light_drag: None,
+            light_flash: None,
         }
     }
 }
@@ -184,6 +207,7 @@ impl TabViewer for Viewer<'_> {
             Tab::Timeline => timeline::show(ui, self.rt, self.st),
             Tab::Multiview => multiview::show(ui, self.rt, self.st, self.previews, self.ndi),
             Tab::Carts => cart::show(ui, self.rt, self.st),
+            Tab::Lighting => lighting::show(ui, self.rt, self.st),
             Tab::Displays => displays::show(ui, self.rt, self.st, self.physical, self.previews, self.ndi),
             Tab::AudioPatch => audio::show(ui, self.rt, self.st),
             Tab::Dmx => dmx::show(ui, self.rt, self.st),
@@ -317,6 +341,13 @@ pub fn draw(
         if !ctx.input(|i| i.pointer.primary_down()) {
             rt.command(ControlSource::Ui, ShowCommand::CartPad { cart: cart + 1, pad: pad + 1, down: false });
             st.pad_pointer = None;
+        }
+    }
+    // Likewise a submaster flash button.
+    if let Some(id) = st.light_flash {
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            rt.dmx.console.flashes.remove(&id);
+            st.light_flash = None;
         }
     }
     let pointer_down = ctx.input(|i| i.pointer.any_down());

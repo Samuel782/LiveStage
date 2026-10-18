@@ -5,10 +5,13 @@
 //! * [`output`] — a paced UDP transmitter thread.
 //! * [`fixture`] — fixture definitions, built-in library and the patch.
 //! * [`playback`] — LTP crossfade engine driven by DMX cues.
+//! * [`console`] — programmer, palettes, effects, submasters and masters
+//!   layered on top of playback.
 //! * [`pixelmap`] — samples video canvases onto LED matrices.
 //! * [`engine`] — glue implementing core `DmxAction`s.
 
 pub mod artnet;
+pub mod console;
 pub mod engine;
 pub mod fixture;
 pub mod output;

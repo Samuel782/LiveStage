@@ -16,6 +16,12 @@
 //! | `/livestage/status`              |                 | Status request   |
 //! | `/livestage/cart/{c}/pad/{p}`    | `[1 / 0]`       | Press / release a cart pad |
 //! | `/livestage/cart/stop`           |                 | Stop all pads    |
+//! | `/livestage/sub/{n}`             | `level 0..1`    | Submaster fader  |
+//! | `/livestage/sub/{n}/flash`       | `[1 / 0]`       | Submaster flash  |
+//! | `/livestage/gm`                  | `level 0..1`    | Grand master     |
+//! | `/livestage/blackout`            | `[1 / 0]`       | Desk blackout    |
+//! | `/livestage/fx/{n}`              | `[1 / 0]`       | Start / stop effect |
+//! | `/livestage/programmer/clear`    |                 | Clear programmer |
 //! | `/livestage/timecode/start|stop` |                 | Internal TC transport |
 //! | `/livestage/timecode/locate`     | `"HH:MM:SS:FF"` | Internal TC locate |
 
@@ -77,6 +83,12 @@ pub fn parse_message(msg: &OscMessage) -> Option<ShowCommand> {
             // No argument = press; 0 releases (for hold pads).
             down: arg_f32(&msg.args, 0).is_none_or(|v| v >= 0.5),
         },
+        ["sub", n] => ShowCommand::SetSubmaster { sub: n.parse().ok()?, level: arg_f32(&msg.args, 0)?.clamp(0.0, 1.0) },
+        ["sub", n, "flash"] => ShowCommand::FlashSubmaster { sub: n.parse().ok()?, down: arg_f32(&msg.args, 0).is_none_or(|v| v >= 0.5) },
+        ["gm"] | ["grandmaster"] => ShowCommand::SetGrandMaster { level: arg_f32(&msg.args, 0)?.clamp(0.0, 1.0) },
+        ["blackout"] | ["dbo"] => ShowCommand::SetBlackout { enabled: arg_f32(&msg.args, 0).is_none_or(|v| v >= 0.5) },
+        ["fx", n] => ShowCommand::SetEffect { effect: n.parse().ok()?, running: arg_f32(&msg.args, 0).is_none_or(|v| v >= 0.5) },
+        ["programmer", "clear"] => ShowCommand::ClearProgrammer,
         ["timecode", "start"] => ShowCommand::TimecodeStart,
         ["timecode", "stop"] => ShowCommand::TimecodeStop,
         ["timecode", "locate"] => match msg.args.first()? {
@@ -210,6 +222,13 @@ mod tests {
             Some(ShowCommand::CartPad { cart: 1, pad: 3, down: false })
         );
         assert_eq!(parse_message(&msg("/livestage/cart/x/pad/3", vec![])), None);
+        assert_eq!(
+            parse_message(&msg("/livestage/sub/2", vec![OscType::Float(0.75)])),
+            Some(ShowCommand::SetSubmaster { sub: 2, level: 0.75 })
+        );
+        assert_eq!(parse_message(&msg("/livestage/gm", vec![OscType::Float(1.5)])), Some(ShowCommand::SetGrandMaster { level: 1.0 }));
+        assert_eq!(parse_message(&msg("/livestage/fx/3", vec![OscType::Int(0)])), Some(ShowCommand::SetEffect { effect: 3, running: false }));
+        assert_eq!(parse_message(&msg("/livestage/blackout", vec![])), Some(ShowCommand::SetBlackout { enabled: true }));
         assert_eq!(parse_message(&msg("/nope", vec![])), None);
     }
 

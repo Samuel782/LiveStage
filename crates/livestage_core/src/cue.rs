@@ -679,6 +679,12 @@ pub struct DmxCue {
     /// Release the look when the cue is stopped.
     #[serde(default = "yes")]
     pub release_on_stop: bool,
+    /// Palettes resolved when the cue runs (explicit attributes win).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub palettes: Vec<crate::lighting::PaletteRef>,
+    /// Lighting effects started with the look and stopped on release.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<crate::id::EffectId>,
 }
 
 impl Cue for DmxCue {
@@ -699,6 +705,8 @@ impl Cue for DmxCue {
             cue: self.header.id,
             channels: self.channels.clone(),
             attributes: self.attributes.clone(),
+            palettes: self.palettes.clone(),
+            effects: self.effects.clone(),
             fade: self.fade - offset,
         }));
     }
@@ -1034,6 +1042,8 @@ pub(crate) mod test_support {
             attributes: vec![],
             fade: ShowTime::from_millis(fade_ms),
             release_on_stop: true,
+            palettes: vec![],
+            effects: vec![],
         })
     }
 }

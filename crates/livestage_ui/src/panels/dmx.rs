@@ -159,9 +159,7 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
         }
     });
     if apply {
-        let cfg = rt.bundle.project.dmx.clone();
-        rt.dmx = livestage_dmx::DmxEngine::new(cfg);
-        rt.dmx.start_output();
+        rt.rebuild_dmx();
         rt.mark_changed();
     }
 }

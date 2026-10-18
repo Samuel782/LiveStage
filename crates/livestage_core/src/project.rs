@@ -135,6 +135,9 @@ pub struct Project {
     /// Soundboard pages.
     #[serde(default)]
     pub carts: Vec<crate::cart::CueCart>,
+    /// Lighting console: palettes, submasters, effects, stage plot.
+    #[serde(default)]
+    pub lighting: crate::lighting::LightingConfig,
 }
 
 pub(crate) fn unix_now() -> u64 {
@@ -164,6 +167,7 @@ impl Project {
             multiview: None,
             timecode: Default::default(),
             carts: Vec::new(),
+            lighting: Default::default(),
         }
     }
 

@@ -449,6 +449,25 @@ impl ShowRuntime {
         self.log(level, format!("timecode: {}", self.timecode_input));
     }
 
+    /// Rebuilds the DMX engine from the show's DMX configuration (patch,
+    /// universes, transports), carrying the console state over.
+    pub fn rebuild_dmx(&mut self) {
+        let console = std::mem::take(&mut self.dmx.console);
+        self.dmx = DmxEngine::new(self.bundle.project.dmx.clone());
+        self.dmx.console = console;
+        self.dmx.start_output();
+        for e in self.dmx.patch_errors.clone() {
+            self.log(LogLevel::Warn, format!("DMX patch: {e}"));
+        }
+    }
+
+    /// Call after editing palettes: looks on stage that use them follow.
+    pub fn palettes_edited(&mut self) {
+        let now = self.now();
+        self.dmx.palettes_changed(now, &self.bundle.project.lighting);
+        self.mark_changed();
+    }
+
     pub fn osc_port(&self) -> Option<u16> {
         self.osc.as_ref().map(|s| s.port)
     }
@@ -612,6 +631,31 @@ impl ShowRuntime {
                 self.actions.push(EngineAction::Audio(AudioAction::SetMasterGain { db }));
             }
             ShowCommand::SetOutputsFullscreen { enabled } => self.outputs_live_request = Some(enabled),
+            ShowCommand::SetSubmaster { sub, level } => {
+                match self.bundle.project.lighting.submasters.get_mut(sub.wrapping_sub(1)) {
+                    Some(s) => s.level = level.clamp(0.0, 1.0),
+                    None => self.log(LogLevel::Warn, format!("no submaster {sub}")),
+                }
+            }
+            ShowCommand::FlashSubmaster { sub, down } => {
+                if let Some(id) = self.bundle.project.lighting.submasters.get(sub.wrapping_sub(1)).map(|s| s.id) {
+                    if down {
+                        self.dmx.console.flashes.insert(id);
+                    } else {
+                        self.dmx.console.flashes.remove(&id);
+                    }
+                }
+            }
+            ShowCommand::SetGrandMaster { level } => self.bundle.project.lighting.grand_master = level.clamp(0.0, 1.0),
+            ShowCommand::SetBlackout { enabled } => self.dmx.console.blackout = enabled,
+            ShowCommand::SetEffect { effect, running } => {
+                let now = self.now();
+                match self.bundle.project.lighting.effects.get(effect.wrapping_sub(1)).map(|e| e.id) {
+                    Some(id) => self.dmx.console.set_effect(id, running, now),
+                    None => self.log(LogLevel::Warn, format!("no effect {effect}")),
+                }
+            }
+            ShowCommand::ClearProgrammer => self.dmx.console.programmer.clear(),
             ShowCommand::TimecodeStart | ShowCommand::TimecodeStop | ShowCommand::TimecodeLocate { .. } => {
                 let applied = match cmd {
                     ShowCommand::TimecodeStart => self.timecode.start(),
@@ -643,7 +687,7 @@ impl ShowRuntime {
                 EngineAction::Video(v) => {
                     let _ = self.video_tx.send((now, v.clone()));
                 }
-                EngineAction::Dmx(d) => self.dmx.handle(now, d),
+                EngineAction::Dmx(d) => self.dmx.handle(now, d, &bundle.project.lighting),
                 EngineAction::Control(c) => follow_up.push(c.clone()),
             }
         }
@@ -869,7 +913,7 @@ impl ShowRuntime {
         if let Some(a) = &mut self.audio {
             a.maintenance();
         }
-        self.dmx.tick(now);
+        self.dmx.tick(now, &self.bundle.project.lighting);
         self.publish_status();
     }
 
@@ -1188,15 +1232,21 @@ impl ShowRuntime {
         project.adopt_runtime_from(&old);
         project.audio.master_gain_db = old.audio.master_gain_db;
         let dmx_changed = project.dmx != old.dmx;
+        // Fader positions are live controls: undo never moves them.
+        project.lighting.set_levels(&old.lighting.levels());
+        let palettes_changed = project.lighting.palettes != old.lighting.palettes;
         self.bundle.project = project;
+        if palettes_changed {
+            let now = self.now();
+            self.dmx.palettes_changed(now, &self.bundle.project.lighting);
+        }
         self.apply_audio_routing();
         if self.bundle.project.timecode != *self.timecode.config() {
             self.apply_timecode_config();
         }
         self.refresh_midi_bindings();
         if dmx_changed {
-            self.dmx = DmxEngine::new(self.bundle.project.dmx.clone());
-            self.dmx.start_output();
+            self.rebuild_dmx();
         }
         // If the standby cue no longer exists, put the playhead on the first cue.
         self.with_all_lists(|l, c| {

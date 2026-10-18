@@ -132,6 +132,11 @@ impl DmxPlayback {
         self.owners.clear();
     }
 
+    /// Current value of every slot playback drives: (slot, value, fine byte, kind).
+    pub fn values(&self, now: ShowTime) -> impl Iterator<Item = (Slot, f32, Option<u16>, AttributeKind)> + '_ {
+        self.channels.iter().map(move |(slot, st)| (*slot, st.value_at(now), st.fine, st.kind))
+    }
+
     /// Writes current values into the universes (keyed by internal index).
     pub fn render(&self, now: ShowTime, universes: &mut BTreeMap<u16, Universe>) {
         for (slot, st) in &self.channels {

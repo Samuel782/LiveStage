@@ -2,6 +2,7 @@
 
 use livestage_core::dmx_config::PatchedFixture;
 use livestage_core::id::FixtureId;
+use livestage_core::lighting::PaletteKind;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,6 +29,24 @@ impl AttributeKind {
     /// Attributes forced to zero by a blackout.
     pub fn is_intensity(self) -> bool {
         matches!(self, AttributeKind::Intensity)
+    }
+
+    /// Additive colour emitters: the "virtual dimmer" of fixtures that have
+    /// no intensity channel.
+    pub fn is_emitter(self) -> bool {
+        matches!(self, AttributeKind::Red | AttributeKind::Green | AttributeKind::Blue | AttributeKind::White | AttributeKind::Amber | AttributeKind::Uv)
+    }
+
+    /// The palette category this attribute belongs to.
+    pub fn category(self) -> Option<PaletteKind> {
+        use AttributeKind::*;
+        Some(match self {
+            Intensity => PaletteKind::Intensity,
+            Red | Green | Blue | White | Amber | Uv | ColorWheel => PaletteKind::Color,
+            Pan | Tilt => PaletteKind::Position,
+            Zoom | Focus | Gobo | Shutter => PaletteKind::Beam,
+            Control | Generic => return None,
+        })
     }
 }
 
@@ -189,6 +208,8 @@ struct PatchEntry {
 #[derive(Debug, Clone, Default)]
 pub struct Patch {
     entries: HashMap<FixtureId, PatchEntry>,
+    /// Fixtures in patch order.
+    order: Vec<FixtureId>,
 }
 
 impl Patch {
@@ -197,6 +218,7 @@ impl Patch {
     pub fn build(fixtures: &[PatchedFixture], library: &FixtureLibrary) -> (Self, Vec<String>) {
         let mut errors = Vec::new();
         let mut entries = HashMap::new();
+        let mut order = Vec::new();
         let mut occupied: HashMap<(u16, u16), &str> = HashMap::new();
         for f in fixtures {
             let Some(def) = library.get(&f.definition) else {
@@ -221,9 +243,46 @@ impl Patch {
             if let Some((ch, other)) = clash {
                 errors.push(format!("{}: overlaps {other} at {}.{ch}", f.name, f.universe + 1));
             }
-            entries.insert(f.id, PatchEntry { fixture: f.clone(), mode: mode.clone() });
+            if entries.insert(f.id, PatchEntry { fixture: f.clone(), mode: mode.clone() }).is_none() {
+                order.push(f.id);
+            }
         }
-        (Self { entries }, errors)
+        (Self { entries, order }, errors)
+    }
+
+    /// Patched fixtures in patch order.
+    pub fn fixtures(&self) -> impl Iterator<Item = (&PatchedFixture, &FixtureMode)> + '_ {
+        self.order.iter().filter_map(|id| self.entries.get(id)).map(|e| (&e.fixture, &e.mode))
+    }
+
+    pub fn fixture(&self, id: FixtureId) -> Option<(&PatchedFixture, &FixtureMode)> {
+        self.entries.get(&id).map(|e| (&e.fixture, &e.mode))
+    }
+
+    /// Every attribute of one fixture, resolved.
+    pub fn attributes_of(&self, id: FixtureId) -> Vec<(&'static str, ResolvedAttribute)> {
+        let Some(e) = self.entries.get(&id) else { return vec![] };
+        let base = e.fixture.address - 1;
+        e.mode
+            .attributes
+            .iter()
+            .map(|a| {
+                (
+                    a.name,
+                    ResolvedAttribute {
+                        universe: e.fixture.universe,
+                        coarse: base + a.coarse + 1,
+                        fine: a.fine.map(|f| base + f + 1),
+                        kind: a.kind,
+                        default: a.default,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    pub fn has_attribute(&self, id: FixtureId, attribute: &str) -> bool {
+        self.resolve(id, attribute).is_some()
     }
 
     pub fn resolve(&self, fixture: FixtureId, attribute: &str) -> Option<ResolvedAttribute> {

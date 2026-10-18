@@ -9,6 +9,7 @@
 //! * [`cuelist`] — ordered cue lists with playhead, standby, auto-continue /
 //!   auto-follow and panic handling.
 //! * [`cart`] — cue carts: soundboard pads (toggle / retrigger / hold).
+//! * [`lighting`] — palettes, submasters, effects and the stage plot.
 //! * [`routing`] — logical displays, audio stems/buses/patch crosspoints.
 //! * [`projection`] — serialisable projection-mapping data (Bezier warp grid,
 //!   edge blend, polygon masks) and the pure math to evaluate it.
@@ -29,6 +30,7 @@ pub mod cuelist;
 pub mod dmx_config;
 pub mod error;
 pub mod id;
+pub mod lighting;
 pub mod multiview;
 pub mod project;
 pub mod projection;

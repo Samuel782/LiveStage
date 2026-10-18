@@ -47,5 +47,11 @@ define_id!(/// Identifies an imported asset.
     AssetId);
 define_id!(/// Identifies a patched DMX fixture.
     FixtureId);
+define_id!(/// Identifies a lighting palette.
+    PaletteId);
+define_id!(/// Identifies a lighting submaster fader.
+    SubmasterId);
+define_id!(/// Identifies a lighting effect.
+    EffectId);
 define_id!(/// Identifies a project.
     ProjectId);

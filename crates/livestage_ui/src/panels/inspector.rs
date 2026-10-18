@@ -27,6 +27,9 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
     // Only timelines need project data while the cue is mutably borrowed.
     let is_timeline = rt.bundle.project.active_list().and_then(|l| l.find(id)).is_some_and(|c| matches!(c, AnyCue::Timeline(_)));
     let project_snapshot = is_timeline.then(|| rt.bundle.project.clone());
+    // DMX cues show palette / effect references by name.
+    let lighting = rt.bundle.project.lighting.clone();
+    let fixture_names: Vec<(livestage_core::id::FixtureId, String)> = rt.bundle.project.dmx.patch.iter().map(|f| (f.id, f.name.clone())).collect();
     // Timecode triggers apply to top-level cues of a list in timecode mode.
     let tc_rate = rt.bundle.project.timecode.rate;
     let (top_level, list_tc) = rt
@@ -119,7 +122,7 @@ pub fn show(ui: &mut Ui, rt: &mut ShowRuntime, st: &mut UiState) {
             AnyCue::Audio(a) => audio(ui, a, &stems, &assets),
             AnyCue::Video(v) => video(ui, v, &outputs, &assets),
             AnyCue::Timer(t) => timer(ui, t, &outputs),
-            AnyCue::Dmx(d) => dmx(ui, d),
+            AnyCue::Dmx(d) => dmx(ui, d, &lighting, &fixture_names),
             AnyCue::Control(c) => control(ui, c),
             AnyCue::Slides(sl) => slides(ui, sl, &outputs, &root, st, &mut slide_nav),
             AnyCue::Timeline(t) => match &project_snapshot {
@@ -503,7 +506,7 @@ fn timer(ui: &mut Ui, t: &mut TimerCue, outputs: &[(OutputId, String)]) -> bool 
     c
 }
 
-fn dmx(ui: &mut Ui, d: &mut DmxCue) -> bool {
+fn dmx(ui: &mut Ui, d: &mut DmxCue, lighting: &livestage_core::lighting::LightingConfig, fixtures: &[(livestage_core::id::FixtureId, String)]) -> bool {
     let mut c = false;
     ui.horizontal(|ui| {
         ui.label("Fade");
@@ -545,8 +548,54 @@ fn dmx(ui: &mut Ui, d: &mut DmxCue) -> bool {
         c = true;
     }
     if !d.attributes.is_empty() {
-        ui.label(RichText::new(format!("{} fixture attribute values", d.attributes.len())).color(theme::TEXT_DIM));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{} fixture attribute values", d.attributes.len())).color(theme::TEXT_DIM));
+            if ui.small_button("Clear").clicked() {
+                d.attributes.clear();
+                c = true;
+            }
+        });
     }
+    // Palette references: resolved when the cue runs, so palette edits apply.
+    if !d.palettes.is_empty() || !lighting.palettes.is_empty() {
+        ui.label(RichText::new("Palettes").strong());
+        let mut remove = None;
+        for (i, r) in d.palettes.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let name = lighting.palette(r.palette).map_or("(deleted palette)".to_string(), |p| format!("{} · {}", p.kind.label(), p.name));
+                let who = match r.fixtures.as_slice() {
+                    [one] => fixtures.iter().find(|f| f.0 == *one).map_or("1 fixture".into(), |f| f.1.clone()),
+                    many => format!("{} fixtures", many.len()),
+                };
+                ui.label(name);
+                ui.weak(format!("on {who}"));
+                if ui.small_button("✖").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            d.palettes.remove(i);
+            c = true;
+        }
+    }
+    if !d.effects.is_empty() || !lighting.effects.is_empty() {
+        ui.label(RichText::new("Effects started with this look").strong());
+        ui.horizontal_wrapped(|ui| {
+            for e in &lighting.effects {
+                let mut on = d.effects.contains(&e.id);
+                if ui.checkbox(&mut on, &e.name).changed() {
+                    if on {
+                        d.effects.push(e.id);
+                    } else {
+                        d.effects.retain(|x| *x != e.id);
+                    }
+                    c = true;
+                }
+            }
+        });
+    }
+    ui.label(RichText::new("Record looks from the Lighting tab (Record cue / Update cue).").size(12.0).color(theme::TEXT_DIM));
     c
 }
 

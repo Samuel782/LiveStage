@@ -38,6 +38,7 @@ cargo run --release                        # opens ./shows/Demo Show.livestage (
 | **Multiview / control booth** | Configurable monitor wall (presets, custom rows × columns, a featured 2 × 2 cell). Any cell shows an output's live canvas, the program cue with clocks and a scrub bar, the next cue with a content preview (poster frame, image, first slide, text), the running presentation's current and next slide with notes, or a clock. |
 | **NDI streaming** | Receive any NDI source as a layer; publish any output's program feed at its own resolution (GPU-scaled, triple-buffered async readback). The NDI runtime is loaded at run time, never linked. |
 | **DMX** | Bit-exact Art-Net 4 and sACN (E1.31) output, fixture library with a validated patch (16-bit attributes), timed crossfades, LED pixel mapper fed from output canvases. |
+| **Lighting console** | A live **programmer** (encoder wheels, pan/tilt XY pad, colour mixer) over cue playback. **Palettes** (colour, position, beam, intensity) are referenced by cues, so editing one updates every look that uses it, live. **Submaster** faders (additive looks such as blinders, software strobe, group inhibit) with flash buttons, plus a **grand master** and desk blackout. An **FX engine** runs pan/tilt sines and circles, colour chases and dimmer chases with phase spread. A **2D stage plot** shows live colour and beam direction, with lasso selection. |
 | **Control** | MIDI notes/CC/program change, MIDI Show Control, OSC in/out, WebSocket JSON API with live status push, two-stage panic (soft fade, then a hard cut on the second press). |
 | **Soundboard (cue carts)** | Pages of pads (4 × 4, 8 × 8 or any grid up to 16 × 16) for live busking: audio stingers, one-shot videos, DMX flash looks. Each pad is **Toggle**, **Retrigger** or **Hold / Gate**, has its own colour, and can be played from the mouse, a **keyboard key** or a **MIDI note** (with learn), or over OSC. Pads show a progress ring with the remaining time. |
 | **Timecode (SMPTE / MTC / Art-Net)** | 24, 25, 29.97 drop-frame, 29.97 and 30 fps with exact frame ↔ time math. Chase incoming **MIDI Time Code** or **Art-Net timecode** through a lock with drift compensation, freewheel and jump detection, or run the **internal generator** on the audio sample clock. Timeline cues can be **timecode slaves**, and whole cue lists can fire cues on timecode triggers, chasing jumps and pausing when timecode stops. |
@@ -329,6 +330,44 @@ the playhead never touch them; Stop All, Pause / Resume and Panic do).
 - **Right-click** a pad to change its mode, use the selected cue, create a new DMX / video / timer
   pad, or clear it.
 
+### Lighting console
+
+The **Lighting** tab is a busking and programming desk on top of the DMX patch. On an empty patch,
+**Patch a demo rig** adds 16 fixtures with palettes, faders and effects to try it.
+
+- **Selection**:
+  - Click fixtures on the **stage plot** or the **fixture tiles** to toggle them, or drag a lasso on
+    the plot.
+  - **All / None / Invert** and the per-type buttons select groups.
+  - **Move fixtures** lets you drag fixtures to build the plot. The plot shows each fixture's live
+    output colour, with a beam line for pan and tilt.
+- **Programmer**:
+  - The Intensity / Colour / Position / Beam tabs show an **encoder wheel** per attribute of the
+    selection. Drag or scroll to change a value; Shift is fine control; double-click releases it.
+  - Position adds a **pan / tilt pad**, and Colour adds a mixer and quick colours.
+  - Programmer values override cues until **Clear**. A value from a palette stays linked to it.
+- **Palettes**:
+  - Click a palette to apply it to the selection.
+  - **+ Record** stores the programmer's values of that kind. Positions are stored per fixture;
+    colours and beams for any fixture that has the attribute.
+  - Right-click a palette to **Update from programmer** or delete it.
+- **Record cue / Update cue**: turn the programmer into a DMX cue, or replace the selected DMX cue's
+  look. The cue stores palette **references**, so editing a palette changes every cue that uses it,
+  including a look already on stage. Effects running from the console are started by the cue and
+  stopped when it is released. The Inspector lists a DMX cue's palettes and effects.
+- **Effects**: **+ FX** adds an effect for the selection: pan/tilt circle, pan or tilt sine, colour
+  chase or dimmer chase. Each effect has a rate, size and spread (phase offset across fixtures,
+  which turns a pulse into a chase). Effects run on top of the current look.
+- **Submasters**:
+  - **Look** faders add a look (intensity highest-takes-precedence, other attributes crossfade).
+    Blinders are a Look fader.
+  - **Strobe** faders set a strobe rate.
+  - **Inhibit** faders scale a group.
+  - Every fader has a **FLASH** button (full while held).
+  - The **grand master** scales every dimmer. **DBO** blacks out intensities while positions and
+    colours hold.
+  - Moving faders is never undone by Undo.
+
 ### Timecode
 
 The **TIMECODE** box in the transport shows the show timecode, its source (INT / MTC / ART) and the
@@ -410,6 +449,12 @@ My Show.livestage/
 | `/livestage/outputs` | `[1 / 0]` | Open / close program outputs |
 | `/livestage/cart/{c}/pad/{p}` | `[1 / 0]` | Press (default) / release pad *p* of cart *c* (1-based, row by row) |
 | `/livestage/cart/stop` | | Stop every playing pad |
+| `/livestage/sub/{n}` | `level 0..1` | Submaster fader *n* |
+| `/livestage/sub/{n}/flash` | `[1 / 0]` | Hold / release a submaster's flash |
+| `/livestage/gm` | `level 0..1` | Grand master |
+| `/livestage/blackout` | `[1 / 0]` | Desk blackout |
+| `/livestage/fx/{n}` | `[1 / 0]` | Start / stop effect *n* |
+| `/livestage/programmer/clear` | | Clear the lighting programmer |
 | `/livestage/timecode/start` · `stop` | | Internal timecode generator transport |
 | `/livestage/timecode/locate` | `"HH:MM:SS:FF"` | Move the internal generator |
 
@@ -449,6 +494,18 @@ release on note-off; a pad takes precedence over a default note. MIDI Time Code 
   output thread.
 - **Presentations.** Slides decode on a worker thread with the current slide's neighbours
   prefetched; a slide change cross-fades from a snapshot of the previous slide.
+- **Lighting render order** (every DMX tick):
+  1. Home values for every patched attribute
+  2. Cue playback (LTP crossfades)
+  3. Programmer
+  4. Effects
+  5. Submaster looks
+  6. Strobes
+  7. Inhibits, then the grand master and blackout
+
+  Intensity scaling acts on each fixture's *dimmer*: its intensity channel, or, for fixtures
+  without one (3-channel RGB pars), its colour emitters. A hard panic also clears the programmer
+  and stops effects.
 - **Timecode lock.** Samples are stamped on arrival (in the MIDI / UDP thread) and fed to a
   phase + frequency loop on the show thread. Small errors are absorbed gradually (no audible or
   visible steps) while the loop measures the sender's real speed, so positions between samples stay
@@ -467,9 +524,9 @@ release on note-off; a pad takes precedence over a default note. MIDI Time Code 
 ## Testing
 
 ```bash
-cargo test --workspace                                                     # 120 tests
+cargo test --workspace                                                     # 130 tests
 PKG_CONFIG_PATH=$HOME/.local/ffmpeg-9/lib/pkgconfig \
-  cargo test --workspace --features livestage_ui/ffmpeg,livestage_video/ffmpeg  # 123 tests
+  cargo test --workspace --features livestage_ui/ffmpeg,livestage_video/ffmpeg  # 133 tests
 cargo clippy --workspace --all-targets
 ```
 
@@ -481,8 +538,11 @@ test documents), background slide decoding, multiview layouts, and timecode: dro
 whole day, exact frame ↔ time round trips at every rate, MTC / Art-Net encode-decode, lock-in,
 drift compensation against a jittery sender running off-speed, freewheel / stop / jump / locate,
 midnight wrap, and slave behaviour (roll-in, chase, pause / stop / continue, re-sync with hold-off),
-and cart pads (toggle / retrigger / hold, DMX looks latched until release, grid resizing, MIDI
-note-off release).
+cart pads (toggle / retrigger / hold, DMX looks latched until release, grid resizing, MIDI
+note-off release), and the lighting console. The console tests cover: render layering and home
+values; programmer LTP and recording with palette references; live palette edits; the grand
+master on RGB-only fixtures; HTP looks, strobe timing and inhibits; circles, colour chases with
+spread and dimmer chases; cue-owned effects; and panic.
 
 Live timecode check with a virtual MIDI source (macOS / Linux):
 
@@ -498,6 +558,8 @@ cargo run --release -- --ui-snapshot ui.png --import talk.pdf --go 8 --next-slid
 cargo run --release -- --ui-snapshot ui.png --settings audio
 cargo run --release -- --ui-snapshot ui.png --tab soundboard --pad 1/2 --pad 1/6   # press pads
 cargo run --release -- --ui-snapshot ui.png --edit-pad 1/3                          # pad editor
+cargo run --release -- --ui-snapshot ui.png --tab lighting --demo-rig --select-all-fixtures \
+  --apply-palette Full --apply-palette Audience --fx 1 --fx 3 --sub 1=1               # lighting desk
 ```
 
 This renders the real UI offscreen (with live output canvases) to a PNG. `--go` may repeat; note
@@ -506,6 +568,12 @@ that GO on audio cues plays through the default audio device.
 ---
 
 ## Known gaps
+
+- **Lighting**:
+  - Fixtures come from the built-in generic library (no GDTF / Open Fixture Library import yet).
+  - Faders have no MIDI CC mapping (use OSC).
+  - Colour palettes act on RGB(W) emitters; colour-wheel fixtures get beam / intensity palettes
+    but not colour mixing.
 
 - **Timecode** is input-only: LiveStage chases MTC and Art-Net timecode and generates timecode
   internally, but does not yet transmit MTC / Art-Net timecode or read LTC from an audio input
