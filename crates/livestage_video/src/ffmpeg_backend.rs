@@ -419,7 +419,7 @@ impl Decoder {
         let mut ctx = ff::codec::context::Context::from_parameters(stream.parameters()).map_err(|e| e.to_string())?;
         // count 0 = one thread per core.
         ctx.set_threading(ff::codec::threading::Config { kind: ff::codec::threading::Type::Frame, count: 0 });
-        let hw = if hwdec_enabled() { HwDevice::create() } else { None };
+        let hw = if hwdec_enabled() { HwDevice::create().ok() } else { None };
         if let Some(hw) = &hw {
             // Must be set before the codec is opened. FFmpeg's default
             // get_format then picks the hardware pixel format when the codec
@@ -569,16 +569,52 @@ impl HwDevice {
         }
     }
 
-    fn create() -> Option<Self> {
-        let kind = Self::device_type()?;
+    fn create() -> Result<Self, String> {
+        let kind = Self::device_type().ok_or("no hardware decode API on this platform")?;
         let mut ctx: *mut ff::ffi::AVBufferRef = std::ptr::null_mut();
         let ret = unsafe { ff::ffi::av_hwdevice_ctx_create(&mut ctx, kind, std::ptr::null(), std::ptr::null_mut(), 0) };
         if ret < 0 || ctx.is_null() {
-            tracing::info!(?kind, error = %ff::Error::from(ret), "hardware video decode unavailable; using software");
-            return None;
+            let error = ff::Error::from(ret).to_string();
+            tracing::info!(?kind, %error, "hardware video decode unavailable; using software");
+            return Err(error);
         }
-        Some(Self(ctx))
+        Ok(Self(ctx))
     }
+}
+
+/// Display name of the platform hardware decode API.
+fn hw_api_name() -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        Some("VideoToolbox")
+    } else if cfg!(target_os = "windows") {
+        Some("D3D11VA")
+    } else if cfg!(target_os = "linux") {
+        Some("VAAPI")
+    } else {
+        None
+    }
+}
+
+/// Startup capability probe behind [`crate::capabilities::movie_support`].
+pub(crate) fn probe() -> crate::capabilities::MovieSupport {
+    use crate::capabilities::{HwDecode, MovieSupport, ESSENTIAL_DECODERS, OPTIONAL_DECODERS};
+    if let Err(e) = FfmpegBackend::new() {
+        return MovieSupport::InitFailed(e.to_string());
+    }
+    let version = unsafe { std::ffi::CStr::from_ptr(ff::ffi::av_version_info()) }.to_string_lossy().into_owned();
+    let hardware = match hw_api_name() {
+        None => HwDecode::Unsupported,
+        Some(_) if !hwdec_enabled() => HwDecode::Disabled,
+        // Opening (and dropping) a device proves the driver path works.
+        Some(api) => match HwDevice::create() {
+            Ok(_) => HwDecode::Available { api },
+            Err(reason) => HwDecode::Unavailable { api, reason },
+        },
+    };
+    let missing_from = |list: &[(&str, &'static str)]| -> Vec<&'static str> {
+        list.iter().filter(|(name, _)| ff::codec::decoder::find_by_name(name).is_none()).map(|(_, label)| *label).collect()
+    };
+    MovieSupport::Ready { version, hardware, missing: missing_from(ESSENTIAL_DECODERS), missing_optional: missing_from(OPTIONAL_DECODERS) }
 }
 
 impl Drop for HwDevice {

@@ -133,11 +133,42 @@ cargo build --release
 cargo run --release --features ffmpeg
 # FFmpeg installed in a custom prefix:
 PKG_CONFIG_PATH=$HOME/.local/ffmpeg-9/lib/pkgconfig cargo run --release --features ffmpeg
+
+# What can this build play? (exit 1 if movies are unavailable or H.264/HEVC/ProRes is missing)
+./target/release/livestage --check-media
 ```
+
+### Release builds
+
+```bash
+FFMPEG_PREFIX=$HOME/.local/ffmpeg-9 scripts/build-release.sh   # → dist/livestage-<ver>-<os>-<arch>.tar.gz
+scripts/build-release.sh --allow-no-ffmpeg                       # → …-nomovies, stills/sequences only
+```
+
+The script (macOS, Linux) builds with `--features ffmpeg`, and **fails if FFmpeg can't be found**
+unless `--allow-no-ffmpeg` is given, so a release never loses movie playback by accident. FFmpeg
+is linked **dynamically**: its libraries and their non-system dependencies are copied into
+`dist/<name>/lib` and the binary loads them from there (`@executable_path/../lib` with ad-hoc
+re-signing on macOS — set `CODESIGN_IDENTITY` for a Developer ID; `$ORIGIN/../lib` via `patchelf`
+on Linux). The staged binary must then pass `--check-media` in an empty environment.
+
+- **Windows** isn't scripted: build with `--features ffmpeg` (`FFMPEG_DIR` pointing at a shared
+  FFmpeg 9 build, see `ffmpeg-sys-next`) and copy its `av*.dll` / `sw*.dll` next to `livestage.exe`.
+- **Static linking** (`ffmpeg-next`'s `static` feature with static FFmpeg libraries) avoids
+  bundling but isn't set up or tested here.
+- **Licensing:** shipping FFmpeg means following its licence. Dynamic linking against an LGPL
+  build (configured without `--enable-gpl` / `--enable-nonfree`) is the simple case; include
+  FFmpeg's licence and source offer with the release.
+
+**At startup** LiveStage probes movie playback once (FFmpeg present, hardware decoder opens,
+H.264 / HEVC / ProRes decoders exist). Problems show as a dismissible banner under the transport
+bar, a log warning, and a red *Movies off* in the status bar when movies can't play at all;
+details are in Settings → Outputs & Video → Movie playback. Hardware decode switched off in
+Settings isn't treated as a problem.
 
 | Feature / env | Effect |
 |---|---|
-| `--features ffmpeg` | Adds the FFmpeg backend for `.mov .mp4 .m4v .mkv .webm .avi .mxf .mpg .ts .m2ts .wmv .flv .ogv .dv .nut`. Without it, video cues play stills and PNG/JPEG image sequences, and movie files show an on-screen notice. Requires FFmpeg **9.x** headers and libraries (`ffmpeg-next` 9). |
+| `--features ffmpeg` | Adds the FFmpeg backend for `.mov .mp4 .m4v .mkv .webm .avi .mxf .mpg .ts .m2ts .wmv .flv .ogv .dv .nut`. Without it, video cues play stills and PNG/JPEG image sequences, movie files show an on-screen notice, and a startup banner says movie playback is unavailable. Requires FFmpeg **9.x** headers and libraries (`ffmpeg-next` 9). |
 | `LIVESTAGE_HWDEC=0` | Forces software video decode (hardware decode is otherwise used when available; also a Settings switch). |
 | `LIVESTAGE_SOFFICE=/path/soffice` | LibreOffice binary for presentation import (also a Settings field; otherwise `PATH` and standard install locations are searched). |
 | `RUST_LOG=info` | Logging (`tracing`); e.g. `RUST_LOG=info,livestage_core=debug` to log every cue start. |
@@ -524,9 +555,9 @@ release on note-off; a pad takes precedence over a default note. MIDI Time Code 
 ## Testing
 
 ```bash
-cargo test --workspace                                                     # 130 tests
+cargo test --workspace                                                     # 132 tests
 PKG_CONFIG_PATH=$HOME/.local/ffmpeg-9/lib/pkgconfig \
-  cargo test --workspace --features livestage_ui/ffmpeg,livestage_video/ffmpeg  # 133 tests
+  cargo test --workspace --features livestage_ui/ffmpeg,livestage_video/ffmpeg  # 135 tests
 cargo clippy --workspace --all-targets
 ```
 

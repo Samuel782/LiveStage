@@ -124,6 +124,8 @@ pub struct UiState {
     pub light_move: bool,
     pub light_drag: Option<lighting::StageDrag>,
     pub light_flash: Option<livestage_core::id::SubmasterId>,
+    /// The operator closed the movie-playback warning banner.
+    pub media_banner_dismissed: bool,
 }
 
 impl Default for UiState {
@@ -162,6 +164,7 @@ impl Default for UiState {
             light_move: false,
             light_drag: None,
             light_flash: None,
+            media_banner_dismissed: false,
         }
     }
 }
@@ -326,6 +329,32 @@ fn recovery_modal(ctx: &egui::Context, rt: &mut ShowRuntime, st: &mut UiState) {
     });
 }
 
+/// Non-blocking strip under the transport when movie playback is missing or
+/// degraded (see [`livestage_video::capabilities`]).
+fn media_banner(ctx: &egui::Context, st: &mut UiState) {
+    if st.media_banner_dismissed {
+        return;
+    }
+    let Some(warning) = livestage_video::capabilities::movie_support().warning() else { return };
+    egui::TopBottomPanel::top("media-warning")
+        .frame(egui::Frame::default().fill(crate::theme::PANEL_RECESSED).inner_margin(egui::Margin::symmetric(10, 4)))
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(crate::theme::standby(), "⚠");
+                ui.add(egui::Label::new(egui::RichText::new(warning).color(crate::theme::standby())).wrap());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Dismiss").clicked() {
+                        st.media_banner_dismissed = true;
+                    }
+                    if ui.button("Details").clicked() {
+                        st.settings_open = true;
+                        st.settings_section = settings::Section::Outputs;
+                    }
+                });
+            });
+        });
+}
+
 pub fn draw(
     ctx: &egui::Context,
     rt: &mut ShowRuntime,
@@ -372,6 +401,7 @@ pub fn draw(
         .exact_height(transport::HEIGHT + 20.0)
         .frame(egui::Frame::default().fill(crate::theme::PANEL_RECESSED).inner_margin(10.0))
         .show(ctx, |ui| transport::show(ui, rt, st));
+    media_banner(ctx, st);
     egui::TopBottomPanel::bottom("status")
         .exact_height(26.0)
         .frame(egui::Frame::default().fill(crate::theme::PANEL_RECESSED).inner_margin(egui::Margin::symmetric(10, 2)))

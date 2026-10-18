@@ -22,6 +22,7 @@
 //! other codec backends (AVFoundation, Media Foundation, GStreamer) would
 //! implement the same trait.
 
+pub mod capabilities;
 pub mod compositor;
 #[cfg(feature = "ffmpeg")]
 pub mod ffmpeg_backend;

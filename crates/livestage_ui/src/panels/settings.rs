@@ -475,6 +475,28 @@ fn outputs(ui: &mut Ui, st: &mut UiState) {
             ui.checkbox(&mut p.hide_cursor_on_outputs, "Hide the mouse pointer on kiosk outputs");
         });
         ui.end_row();
+        ui.label("Movie playback");
+        ui.vertical(|ui| {
+            use livestage_video::capabilities::{movie_support, MovieSupport};
+            let media = movie_support();
+            match media.warning() {
+                Some(w) => {
+                    ui.colored_label(theme::standby(), w);
+                }
+                None => {
+                    ui.label(media.summary());
+                }
+            }
+            if let MovieSupport::Ready { missing_optional, .. } = media {
+                if !missing_optional.is_empty() {
+                    hint(ui, &format!("Not in this FFmpeg build: {}", missing_optional.join(", ")));
+                }
+            }
+            if !media.movies_available() {
+                hint(ui, "Release builds include FFmpeg (scripts/build-release.sh); see README → Building.");
+            }
+        });
+        ui.end_row();
         ui.label("Video decoding");
         ui.vertical(|ui| {
             ui.checkbox(&mut p.hardware_decode, "Hardware decoding (VideoToolbox / D3D11VA / VAAPI)");

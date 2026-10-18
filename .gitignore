@@ -47,3 +47,4 @@ ui*.png
 *.dll
 *.a
 *.lib
+/dist

@@ -4,6 +4,7 @@
 //! livestage                      open ./shows/Demo Show.livestage (created on first run)
 //! livestage <Show.livestage>     open a bundle
 //! livestage --new <dir> <name>   create an empty bundle and open it
+//! livestage --check-media        report movie playback support and exit
 //! ```
 
 mod demo;
@@ -124,6 +125,11 @@ impl App {
         }
         let mut rt = ShowRuntime::new(bundle);
         rt.office_path = self.ui.prefs.office_path.clone();
+        let media = livestage_video::capabilities::movie_support();
+        match media.warning() {
+            Some(w) => rt.log(runtime::LogLevel::Warn, w),
+            None => rt.log(runtime::LogLevel::Info, media.summary()),
+        }
         if self.ui.prefs.outputs_on_launch {
             rt.outputs_live_request = Some(true);
         }
@@ -386,6 +392,27 @@ impl ApplicationHandler for App {
     }
 }
 
+/// `--check-media`: prints what movie playback can do and exits non-zero
+/// when movies cannot play or an essential codec is missing (for release
+/// smoke tests and support).
+fn check_media() -> i32 {
+    use livestage_video::capabilities::{movie_support, MovieSupport};
+    let s = movie_support();
+    println!("{}", s.summary());
+    if let MovieSupport::Ready { missing_optional, .. } = s {
+        if !missing_optional.is_empty() {
+            println!("optional codecs not available: {}", missing_optional.join(", "));
+        }
+    }
+    if let Some(w) = s.warning() {
+        println!("warning: {w}");
+    }
+    match s {
+        MovieSupport::Ready { missing, .. } if missing.is_empty() => 0,
+        _ => 1,
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -399,6 +426,9 @@ fn main() -> anyhow::Result<()> {
     }
     let prefs = prefs::Preferences::load();
     prefs.export_env();
+    if args.iter().any(|a| a == "--check-media") {
+        std::process::exit(check_media());
+    }
     let event_loop = EventLoop::new()?;
     let mut app = App {
         launch: parse_args(),

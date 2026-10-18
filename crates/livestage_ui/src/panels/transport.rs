@@ -402,6 +402,10 @@ pub fn status_bar(ui: &mut Ui, rt: &ShowRuntime, st: &mut UiState) {
         let sched = rt.show_stats.scheduling.lock().clone();
         ui.label(RichText::new(&st.health.2).color(dim)).on_hover_text(format!("Scheduling: {sched}\nWorst values over the last second"));
         ui.separator();
+        if !livestage_video::capabilities::movie_support().movies_available() {
+            ui.colored_label(theme::stop(), "Movies off").on_hover_text(livestage_video::capabilities::movie_support().summary());
+            ui.separator();
+        }
         ui.label(RichText::new(format!("Outputs {:.0} fps", st.output_fps)).color(dim))
             .on_hover_text("Output render thread (independent of this window): canvases, program windows, NDI");
         ui.separator();
