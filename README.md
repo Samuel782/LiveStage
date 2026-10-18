@@ -494,7 +494,16 @@ release on note-off; a pad takes precedence over a default note. MIDI Time Code 
   output thread.
 - **Presentations.** Slides decode on a worker thread with the current slide's neighbours
   prefetched; a slide change cross-fades from a snapshot of the previous slide.
-- **Lighting render order** (every DMX tick):
+- **DMX render rate.** Cue lists and fades run on every 1 kHz show tick, but the lighting layers
+  are rendered at a bounded rate: `render_hz` in the DMX config (default 100 Hz, clamped between
+  the transmit rate `refresh_hz` and 200 Hz). A cue action renders on the very next show tick,
+  so GO latency stays at about 1 ms. Pixel maps fed from output canvases and the stage view's
+  readback follow the latest render. Fixture attribute and dimmer slots are resolved once, when
+  the patch is built. The render reuses one dense buffer per universe and hands the sender only
+  the universes that changed, so it does not allocate in steady state. A 512-moving-head rig
+  with effects, submasters and a running crossfade renders in about 60 µs
+  (`cargo test -p livestage_dmx --release -- --ignored render_budget`).
+- **Lighting render order** (every DMX render):
   1. Home values for every patched attribute
   2. Cue playback (LTP crossfades)
   3. Programmer

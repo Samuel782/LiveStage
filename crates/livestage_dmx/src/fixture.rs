@@ -1,5 +1,6 @@
 //! Fixture definitions, the built-in library, and the patch.
 
+use crate::playback::Slot;
 use livestage_core::dmx_config::PatchedFixture;
 use livestage_core::id::FixtureId;
 use livestage_core::lighting::PaletteKind;
@@ -198,18 +199,80 @@ pub struct ResolvedAttribute {
     pub default: f32,
 }
 
+impl ResolvedAttribute {
+    /// The coarse byte's slot (the key layers and playback use).
+    pub fn slot(&self) -> Slot {
+        Slot { universe: self.universe, channel: self.coarse }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PatchEntry {
     fixture: PatchedFixture,
     mode: FixtureMode,
+    /// Every attribute, resolved once when the patch is built.
+    attributes: Vec<(&'static str, ResolvedAttribute)>,
+    /// The fixture's dimmer: intensity slots, or its colour emitters.
+    dimmer: Vec<Slot>,
+    has_intensity: bool,
 }
+
+impl PatchEntry {
+    fn new(fixture: PatchedFixture, mode: FixtureMode) -> Self {
+        let base = fixture.address - 1;
+        let attributes: Vec<_> = mode
+            .attributes
+            .iter()
+            .map(|a| {
+                let r = ResolvedAttribute {
+                    universe: fixture.universe,
+                    coarse: base + a.coarse + 1,
+                    fine: a.fine.map(|f| base + f + 1),
+                    kind: a.kind,
+                    default: a.default,
+                };
+                (a.name, r)
+            })
+            .collect();
+        let has_intensity = attributes.iter().any(|(_, r)| r.kind.is_intensity());
+        let dimmer = attributes
+            .iter()
+            .filter(|(_, r)| if has_intensity { r.kind.is_intensity() } else { r.kind.is_emitter() })
+            .map(|(_, r)| r.slot())
+            .collect();
+        Self { fixture, mode, attributes, dimmer, has_intensity }
+    }
+}
+
+/// Hasher for UUID keys: they are already random, so folding the bytes is
+/// enough, and it is far cheaper than SipHash on the render path.
+#[derive(Default)]
+pub(crate) struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut b = [0u8; 8];
+            b[..chunk.len()].copy_from_slice(chunk);
+            self.0 = (self.0.rotate_left(5) ^ u64::from_le_bytes(b)).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+        }
+    }
+}
+
+pub(crate) type IdMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<IdHasher>>;
 
 /// Validated patch: fixture → address resolution.
 #[derive(Debug, Clone, Default)]
 pub struct Patch {
-    entries: HashMap<FixtureId, PatchEntry>,
     /// Fixtures in patch order.
-    order: Vec<FixtureId>,
+    entries: Vec<PatchEntry>,
+    index: IdMap<FixtureId, usize>,
+    /// Emitter slots of fixtures without an intensity channel (sorted,
+    /// deduplicated): the grand master scales these as well as intensities.
+    virtual_dimmers: Vec<Slot>,
 }
 
 impl Patch {
@@ -217,8 +280,8 @@ impl Patch {
     /// addresses and overlapping footprints (all problems, not just the first).
     pub fn build(fixtures: &[PatchedFixture], library: &FixtureLibrary) -> (Self, Vec<String>) {
         let mut errors = Vec::new();
-        let mut entries = HashMap::new();
-        let mut order = Vec::new();
+        let mut entries: Vec<PatchEntry> = Vec::new();
+        let mut index = IdMap::default();
         let mut occupied: HashMap<(u16, u16), &str> = HashMap::new();
         for f in fixtures {
             let Some(def) = library.get(&f.definition) else {
@@ -243,42 +306,53 @@ impl Patch {
             if let Some((ch, other)) = clash {
                 errors.push(format!("{}: overlaps {other} at {}.{ch}", f.name, f.universe + 1));
             }
-            if entries.insert(f.id, PatchEntry { fixture: f.clone(), mode: mode.clone() }).is_none() {
-                order.push(f.id);
+            let entry = PatchEntry::new(f.clone(), mode.clone());
+            match index.get(&f.id) {
+                Some(&i) => entries[i] = entry, // duplicate id: the last one wins, in the first one's place
+                None => {
+                    index.insert(f.id, entries.len());
+                    entries.push(entry);
+                }
             }
         }
-        (Self { entries, order }, errors)
+        let mut virtual_dimmers: Vec<Slot> =
+            entries.iter().filter(|e| !e.has_intensity).flat_map(|e| e.dimmer.iter().copied()).collect();
+        virtual_dimmers.sort_unstable();
+        virtual_dimmers.dedup();
+        (Self { entries, index, virtual_dimmers }, errors)
+    }
+
+    fn entry(&self, id: FixtureId) -> Option<&PatchEntry> {
+        self.index.get(&id).map(|&i| &self.entries[i])
     }
 
     /// Patched fixtures in patch order.
     pub fn fixtures(&self) -> impl Iterator<Item = (&PatchedFixture, &FixtureMode)> + '_ {
-        self.order.iter().filter_map(|id| self.entries.get(id)).map(|e| (&e.fixture, &e.mode))
+        self.entries.iter().map(|e| (&e.fixture, &e.mode))
     }
 
     pub fn fixture(&self, id: FixtureId) -> Option<(&PatchedFixture, &FixtureMode)> {
-        self.entries.get(&id).map(|e| (&e.fixture, &e.mode))
+        self.entry(id).map(|e| (&e.fixture, &e.mode))
     }
 
-    /// Every attribute of one fixture, resolved.
-    pub fn attributes_of(&self, id: FixtureId) -> Vec<(&'static str, ResolvedAttribute)> {
-        let Some(e) = self.entries.get(&id) else { return vec![] };
-        let base = e.fixture.address - 1;
-        e.mode
-            .attributes
-            .iter()
-            .map(|a| {
-                (
-                    a.name,
-                    ResolvedAttribute {
-                        universe: e.fixture.universe,
-                        coarse: base + a.coarse + 1,
-                        fine: a.fine.map(|f| base + f + 1),
-                        kind: a.kind,
-                        default: a.default,
-                    },
-                )
-            })
-            .collect()
+    /// Every attribute of one fixture, resolved (precomputed; no allocation).
+    pub fn attributes_of(&self, id: FixtureId) -> &[(&'static str, ResolvedAttribute)] {
+        self.entry(id).map_or(&[], |e| &e.attributes)
+    }
+
+    /// A fixture's dimmer: its intensity channel(s), or — for fixtures
+    /// without one — its colour emitters.
+    pub fn dimmer_slots(&self, id: FixtureId) -> &[Slot] {
+        self.entry(id).map_or(&[], |e| &e.dimmer)
+    }
+
+    pub fn has_intensity(&self, id: FixtureId) -> bool {
+        self.entry(id).is_some_and(|e| e.has_intensity)
+    }
+
+    /// Emitter slots acting as dimmers (fixtures without an intensity channel).
+    pub fn virtual_dimmers(&self) -> &[Slot] {
+        &self.virtual_dimmers
     }
 
     pub fn has_attribute(&self, id: FixtureId, attribute: &str) -> bool {
@@ -286,30 +360,13 @@ impl Patch {
     }
 
     pub fn resolve(&self, fixture: FixtureId, attribute: &str) -> Option<ResolvedAttribute> {
-        let e = self.entries.get(&fixture)?;
-        let a = e.mode.attributes.iter().find(|a| a.name.eq_ignore_ascii_case(attribute))?;
-        let base = e.fixture.address - 1;
-        Some(ResolvedAttribute {
-            universe: e.fixture.universe,
-            coarse: base + a.coarse + 1,
-            fine: a.fine.map(|f| base + f + 1),
-            kind: a.kind,
-            default: a.default,
-        })
+        let e = self.entry(fixture)?;
+        e.attributes.iter().find(|(n, _)| n.eq_ignore_ascii_case(attribute)).map(|(_, r)| *r)
     }
 
     /// All attributes of all fixtures (for homing / blackout classification).
     pub fn all_attributes(&self) -> impl Iterator<Item = ResolvedAttribute> + '_ {
-        self.entries.values().flat_map(|e| {
-            let base = e.fixture.address - 1;
-            e.mode.attributes.iter().map(move |a| ResolvedAttribute {
-                universe: e.fixture.universe,
-                coarse: base + a.coarse + 1,
-                fine: a.fine.map(|f| base + f + 1),
-                kind: a.kind,
-                default: a.default,
-            })
-        })
+        self.entries.iter().flat_map(|e| e.attributes.iter().map(|(_, r)| *r))
     }
 
     pub fn len(&self) -> usize {

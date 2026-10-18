@@ -88,6 +88,14 @@ pub struct DmxConfig {
     pub pixel_maps: Vec<PixelMapConfig>,
     /// Transmit rate in Hz (Art-Net / sACN typically 30–44).
     pub refresh_hz: f32,
+    /// How often the lighting layers are rendered on the show thread, in Hz.
+    /// Clamped to `refresh_hz..=200`; cues still run at the show-thread rate.
+    #[serde(default = "default_render_hz")]
+    pub render_hz: f32,
+}
+
+fn default_render_hz() -> f32 {
+    100.0
 }
 
 impl Default for DmxConfig {
@@ -101,6 +109,7 @@ impl Default for DmxConfig {
             patch: vec![],
             pixel_maps: vec![],
             refresh_hz: 40.0,
+            render_hz: default_render_hz(),
         }
     }
 }

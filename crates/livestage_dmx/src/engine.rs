@@ -1,7 +1,7 @@
 //! DMX engine: executes core `DmxAction`s, renders playback through the
 //! lighting console layers, and pixel maps.
 
-use crate::console::{resolve_palettes, Console, SlotValue};
+use crate::console::{resolve_palettes, Console, Layer, SlotValue};
 use crate::fixture::{FixtureLibrary, Patch};
 use crate::output::{DmxOutput, SharedFrame};
 use crate::pixelmap::{self, RgbaView};
@@ -26,8 +26,16 @@ pub struct DmxEngine {
     pixel_enabled: Vec<bool>,
     /// Programmer, effects, flashes and blackout.
     pub console: Console,
-    /// Final value of every slot written by the last tick (for the UI).
-    last: BTreeMap<crate::playback::Slot, f32>,
+    /// Home value of every patched attribute, built with the patch.
+    home: Layer,
+    /// Render buffer, reused; after a render it holds the final value of
+    /// every slot (read back by the UI through [`DmxEngine::output`]).
+    layer: Layer,
+    render_period: ShowTime,
+    last_render: Option<ShowTime>,
+    /// Render on the next tick regardless of the rate (a cue just fired).
+    force_render: bool,
+    renders: u64,
 }
 
 impl DmxEngine {
@@ -39,6 +47,11 @@ impl DmxEngine {
         }
         let universes = config.universes.iter().map(|u| (u.index, Universe::default())).collect();
         let pixel_enabled = config.pixel_maps.iter().map(|m| m.enabled).collect();
+        let mut home = Layer::default();
+        for (_, r) in patch.fixtures().flat_map(|(f, _)| patch.attributes_of(f.id)) {
+            home.insert(r.slot(), SlotValue { value: r.default, fine: r.fine, kind: r.kind });
+        }
+        let render_hz = config.render_hz.clamp(config.refresh_hz.clamp(1.0, 44.0), 200.0);
         Self {
             config,
             library,
@@ -50,7 +63,12 @@ impl DmxEngine {
             output: None,
             pixel_enabled,
             console: Console::default(),
-            last: BTreeMap::new(),
+            layer: home.clone(),
+            home,
+            render_period: ShowTime::from_secs_f64(1.0 / render_hz as f64),
+            last_render: None,
+            force_render: false,
+            renders: 0,
         }
     }
 
@@ -71,6 +89,7 @@ impl DmxEngine {
     }
 
     pub fn handle(&mut self, now: ShowTime, action: &DmxAction, lighting: &LightingConfig) {
+        self.force_render = true;
         match action {
             DmxAction::ApplyScene { cue, channels, attributes, palettes, effects, fade } => {
                 // Palette values first; the cue's own attributes override them.
@@ -109,6 +128,7 @@ impl DmxEngine {
 
     /// Re-resolves looks on stage that use palettes, after a palette edit.
     pub fn palettes_changed(&mut self, now: ShowTime, lighting: &LightingConfig) {
+        self.force_render = true;
         let scenes: Vec<_> = self.console.palette_scenes().map(|(c, (a, p))| (*c, a.clone(), p.clone())).collect();
         for (cue, attributes, palettes) in scenes {
             let mut values = resolve_palettes(&palettes, lighting, &self.patch);
@@ -117,32 +137,68 @@ impl DmxEngine {
         }
     }
 
+    /// Called every show-thread tick. Renders at most at `render_hz`
+    /// (default 100 Hz; never below the transmit rate), plus right after a
+    /// cue action so GO latency is one show tick. Returns whether it rendered.
+    pub fn tick(&mut self, now: ShowTime, lighting: &LightingConfig) -> bool {
+        let due = match self.last_render {
+            None => true,
+            // `now < t`: show time jumped back (a new epoch); render at once.
+            Some(t) => self.force_render || now < t || now >= t + self.render_period,
+        };
+        if due {
+            self.render(now, lighting);
+        }
+        due
+    }
+
     /// Renders home values, playback and the console layers into the
-    /// universes and publishes the frame to the sender.
-    pub fn tick(&mut self, now: ShowTime, lighting: &LightingConfig) {
-        let mut layer: BTreeMap<crate::playback::Slot, SlotValue> = BTreeMap::new();
-        for r in self.patch.fixtures().flat_map(|(f, _)| self.patch.attributes_of(f.id)).map(|(_, r)| r) {
-            layer.insert(crate::playback::Slot { universe: r.universe, channel: r.coarse }, SlotValue { value: r.default, fine: r.fine, kind: r.kind });
-        }
+    /// universes and publishes changed universes to the sender.
+    /// Allocation-free once the layer planes and frame exist.
+    pub fn render(&mut self, now: ShowTime, lighting: &LightingConfig) {
+        self.last_render = Some(now);
+        self.force_render = false;
+        self.renders += 1;
+        self.layer.reset_from(&self.home);
         for (slot, value, fine, kind) in self.playback.values(now) {
-            layer.insert(slot, SlotValue { value, fine, kind });
+            self.layer.insert(slot, SlotValue { value, fine, kind });
         }
-        self.console.apply(&mut layer, now, lighting, &self.patch);
-        self.last.clear();
-        for (slot, v) in &layer {
-            self.last.insert(*slot, v.value);
-            let Some(u) = self.universes.get_mut(&slot.universe) else { continue };
-            match v.fine {
-                Some(fine) => {
-                    let v16 = (v.value.clamp(0.0, 1.0) * 65_535.0).round() as u16;
-                    u.set(slot.channel, (v16 >> 8) as u8);
-                    u.set(fine, (v16 & 0xFF) as u8);
+        self.console.apply(&mut self.layer, now, lighting, &self.patch);
+        for (index, plane) in self.layer.planes() {
+            let Some(u) = self.universes.get_mut(&index) else { continue };
+            for (i, v) in plane.iter().enumerate() {
+                let Some(v) = v else { continue };
+                let channel = i as u16 + 1;
+                match v.fine {
+                    Some(fine) => {
+                        let v16 = (v.value.clamp(0.0, 1.0) * 65_535.0).round() as u16;
+                        u.set(channel, (v16 >> 8) as u8);
+                        u.set(fine, (v16 & 0xFF) as u8);
+                    }
+                    None => u.set(channel, (v.value.clamp(0.0, 1.0) * 255.0).round() as u8),
                 }
-                None => u.set(slot.channel, (v.value.clamp(0.0, 1.0) * 255.0).round() as u8),
             }
         }
         let mut f = self.frame.lock();
-        f.clone_from(&self.universes);
+        for (index, u) in &self.universes {
+            match f.get_mut(index) {
+                Some(sent) if sent.data == u.data => {}
+                Some(sent) => sent.data = u.data,
+                None => {
+                    f.insert(*index, u.clone());
+                }
+            }
+        }
+    }
+
+    /// Number of renders so far (diagnostics and tests).
+    pub fn renders(&self) -> u64 {
+        self.renders
+    }
+
+    /// Interval between renders.
+    pub fn render_period(&self) -> ShowTime {
+        self.render_period
     }
 
     /// Programmer: set `attribute` on the selected fixtures that have it.
@@ -167,10 +223,10 @@ impl DmxEngine {
         self.console.programmer.palette_values(kind, &self.patch)
     }
 
-    /// Output value (0..=1) of a fixture attribute after the last tick.
+    /// Output value (0..=1) of a fixture attribute after the last render.
     pub fn output(&self, fixture: FixtureId, attribute: &str) -> Option<f32> {
         let r = self.patch.resolve(fixture, attribute)?;
-        self.last.get(&crate::playback::Slot { universe: r.universe, channel: r.coarse }).copied()
+        self.layer.get(r.slot()).map(|v| v.value)
     }
 
     /// Approximate emitted colour (0..=1 RGB, intensity applied) for the stage view.
@@ -202,5 +258,139 @@ impl DmxEngine {
     }
     pub fn packets_sent(&self) -> u64 {
         self.output.as_ref().map_or(0, |o| o.packets_sent.load(std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use livestage_core::action::FixtureAttributeValue;
+    use livestage_core::dmx_config::{PatchedFixture, PixelMapConfig, PixelOrder, PixelWiring, UniverseConfig};
+    use livestage_core::id::{CueId, OutputId};
+    use livestage_core::lighting::{Effect, EffectKind, LightValue, Submaster, SubmasterKind};
+
+    /// `n` 12-channel moving heads, 42 per universe.
+    fn heads(n: usize) -> (DmxConfig, Vec<FixtureId>) {
+        let patch: Vec<PatchedFixture> = (0..n)
+            .map(|i| PatchedFixture {
+                id: FixtureId::new(),
+                name: format!("Spot {}", i + 1),
+                definition: "generic/moving-head".into(),
+                mode: "12ch".into(),
+                universe: (i / 42) as u16,
+                address: (i % 42) as u16 * 12 + 1,
+            })
+            .collect();
+        let ids = patch.iter().map(|f| f.id).collect();
+        let universes = (0..n.div_ceil(42) as u16)
+            .map(|index| UniverseConfig { index, name: format!("U{index}"), transport: livestage_core::dmx_config::DmxTransport::Disabled })
+            .collect();
+        (DmxConfig { universes, patch, ..DmxConfig::default() }, ids)
+    }
+
+    #[test]
+    fn renders_at_bounded_rate_but_cues_render_at_once() {
+        let (cfg, ids) = heads(2);
+        let lighting = LightingConfig::default();
+        let mut dmx = DmxEngine::new(cfg);
+        // One second of 1 kHz show ticks: 100 renders at the default 100 Hz.
+        for ms in 0..1_000 {
+            dmx.tick(ShowTime::from_millis(ms), &lighting);
+        }
+        assert_eq!(dmx.renders(), 100);
+        // A cue fired between renders reaches the output on the next show tick.
+        let attributes = vec![FixtureAttributeValue { fixture: ids[0], attribute: "intensity".into(), value: 1.0 }];
+        let go = DmxAction::ApplyScene { cue: CueId::new(), channels: vec![], attributes, palettes: vec![], effects: vec![], fade: ShowTime::ZERO };
+        dmx.handle(ShowTime::from_millis(1_001), &go, &lighting);
+        assert!(dmx.tick(ShowTime::from_millis(1_001), &lighting));
+        assert_eq!(dmx.output(ids[0], "intensity"), Some(1.0));
+        assert_eq!(dmx.frame.lock()[&0].get(5), 255, "published to the sender");
+        assert!(!dmx.tick(ShowTime::from_millis(1_002), &lighting));
+        assert_eq!(dmx.output(ids[0], "intensity"), Some(1.0), "readback holds between renders");
+    }
+
+    #[test]
+    fn render_rate_never_below_transmit_rate() {
+        let cfg = DmxConfig { render_hz: 5.0, refresh_hz: 40.0, ..DmxConfig::default() };
+        assert_eq!(DmxEngine::new(cfg).render_period(), ShowTime::from_micros(25_000));
+        let cfg = DmxConfig { render_hz: 10_000.0, ..DmxConfig::default() };
+        assert_eq!(DmxEngine::new(cfg).render_period(), ShowTime::from_micros(5_000));
+    }
+
+    #[test]
+    fn pixel_maps_are_published_on_the_next_render() {
+        let source = OutputId::new();
+        let map = PixelMapConfig {
+            name: "Strip".into(),
+            source,
+            region: [0.0, 0.0, 1.0, 1.0],
+            width: 2,
+            height: 1,
+            order: PixelOrder::Rgb,
+            wiring: PixelWiring::RowsLeftToRight,
+            start_universe: 0,
+            start_address: 100,
+            enabled: true,
+        };
+        let lighting = LightingConfig::default();
+        let mut dmx = DmxEngine::new(DmxConfig { pixel_maps: vec![map], ..DmxConfig::default() });
+        dmx.tick(ShowTime::ZERO, &lighting);
+        dmx.feed_canvas(source, 2, 1, &[255, 0, 0, 255, 0, 0, 255, 255]);
+        dmx.tick(ShowTime::from_millis(10), &lighting);
+        let f = dmx.frame.lock();
+        assert_eq!((f[&0].get(100), f[&0].get(105)), (255, 255));
+    }
+
+    /// The layered render for a large rig. Run in release:
+    /// `cargo test -p livestage_dmx --release -- --ignored --nocapture render_budget`
+    /// Two effects over every head, a look and an inhibit submaster, the
+    /// programmer, the grand master and a 5 s crossfade on 2 048 slots:
+    /// ≈ 60 µs per render on an M-series Mac (was ≈ 960 µs, on every
+    /// 1 kHz tick), i.e. ≈ 6 µs per show tick on average at 100 Hz.
+    #[test]
+    #[ignore = "benchmark; run in release"]
+    fn render_budget_512_moving_heads() {
+        let (cfg, ids) = heads(512);
+        let mut lighting = LightingConfig::default();
+        let mut circle = Effect::new("Circle", EffectKind::Circle, ids.iter().step_by(2).copied().collect());
+        circle.size = 0.3;
+        let wave = Effect::new("Wave", EffectKind::DimmerChase, ids.iter().skip(1).step_by(2).copied().collect());
+        let (circle_id, wave_id) = (circle.id, wave.id);
+        lighting.effects = vec![circle, wave];
+        let mut sub = Submaster::new("Inhibit", SubmasterKind::Inhibit, ids[..256].to_vec());
+        sub.level = 0.8;
+        let mut look = Submaster::new("Blinders", SubmasterKind::Additive { values: vec![LightValue::any("intensity", 1.0)] }, ids[256..].to_vec());
+        look.level = 0.5;
+        lighting.submasters = vec![sub, look];
+        lighting.grand_master = 0.9;
+
+        let mut dmx = DmxEngine::new(cfg);
+        let attributes = ids
+            .iter()
+            .flat_map(|f| ["intensity", "pan", "tilt", "zoom"].map(|a| FixtureAttributeValue { fixture: *f, attribute: a.into(), value: 0.6 }))
+            .collect();
+        let go = DmxAction::ApplyScene { cue: CueId::new(), channels: vec![], attributes, palettes: vec![], effects: vec![], fade: ShowTime::from_secs(5) };
+        dmx.handle(ShowTime::ZERO, &go, &lighting);
+        dmx.console.set_effect(circle_id, true, ShowTime::ZERO);
+        dmx.console.set_effect(wave_id, true, ShowTime::ZERO);
+        dmx.console.programmer.selection = ids[..64].to_vec();
+        dmx.programmer_set("color", 0.3);
+
+        let n = 2_000u64;
+        for i in 0..50 {
+            dmx.render(ShowTime::from_millis(i), &lighting); // warm-up: planes and frame allocated
+        }
+        let start = std::time::Instant::now();
+        for i in 0..n {
+            dmx.render(ShowTime::from_millis(50 + i), &lighting);
+        }
+        let per_render = start.elapsed() / n as u32;
+        // Amortised over the 1 kHz show thread at the render rate.
+        let renders_per_tick = 1_000.0 / dmx.render_period().as_micros() as f64; // period in µs, ticks every 1 000 µs
+        let per_tick = per_render.as_secs_f64() * 1e6 * renders_per_tick;
+        println!("512 heads: {per_render:?} per render, ≈ {per_tick:.1} µs per 1 kHz show tick on average");
+        if !cfg!(debug_assertions) {
+            assert!(per_render < std::time::Duration::from_micros(100), "render took {per_render:?}");
+        }
     }
 }
