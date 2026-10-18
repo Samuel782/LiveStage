@@ -31,7 +31,7 @@ use livestage_core::lighting::{LightValue, Palette, PaletteKind};
 use livestage_core::project::{AssetRecord, AssetRef};
 use livestage_core::timecode::{TcTransport, TimecodeConfig};
 use livestage_core::{Project, ShowCommand, ShowTime};
-use livestage_dmx::console::{Programmer, Slot};
+use livestage_dmx::console::{Layer, Programmer};
 use livestage_dmx::fixture::{FixtureLibrary, Patch};
 use livestage_dmx::Universe;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -212,7 +212,7 @@ pub struct DmxView {
     pub library: Arc<FixtureLibrary>,
     pub patch_errors: Vec<String>,
     patch: Arc<Patch>,
-    last: BTreeMap<Slot, f32>,
+    last: Layer,
     universes: BTreeMap<u16, Universe>,
     packets_sent: u64,
     /// `ShowRuntime::dmx_generation` the patch and library were copied at.
@@ -231,7 +231,7 @@ impl DmxView {
     }
     pub fn output(&self, fixture: FixtureId, attribute: &str) -> Option<f32> {
         let r = self.patch.resolve(fixture, attribute)?;
-        self.last.get(&Slot { universe: r.universe, channel: r.coarse }).copied()
+        self.last.get(r.slot()).map(|v| v.value)
     }
     pub fn fixture_color(&self, fixture: FixtureId) -> Option<[f32; 3]> {
         livestage_dmx::engine::fixture_color(&self.patch, fixture, |a| self.output(fixture, a))
@@ -298,7 +298,7 @@ impl UiRuntime {
                 library: Arc::new(rt.dmx.library.clone()),
                 patch_errors: Vec::new(),
                 patch: Arc::new(Patch::default()),
-                last: BTreeMap::new(),
+                last: Layer::default(),
                 universes: BTreeMap::new(),
                 packets_sent: 0,
                 generation: u64::MAX,
@@ -357,7 +357,7 @@ impl UiRuntime {
         d.console.base = (c.programmer.clone(), c.flashes.clone(), c.blackout);
         d.console.running = rt.bundle.project.lighting.effects.iter().map(|e| e.id).filter(|id| c.effect_running(*id)).collect();
         d.console.console_fx = c.console_effects();
-        d.last.clone_from(rt.dmx.last_values());
+        d.last.reset_from(rt.dmx.last_values());
         d.universes.clear();
         for u in &rt.dmx.config().universes {
             if let Some(x) = rt.dmx.universe(u.index) {

@@ -2,7 +2,7 @@
 //! submaster flash buttons and the layered render that turns playback into
 //! output.
 //!
-//! ## Render order (every DMX tick)
+//! ## Render order (every DMX render, see [`crate::DmxEngine::tick`])
 //!
 //! 1. **Home** values for every patched attribute (pan centred, shutter open…)
 //! 2. **Playback** — DMX cues (LTP crossfades)
@@ -19,7 +19,7 @@
 use crate::fixture::{AttributeKind, Patch};
 use livestage_core::action::FixtureAttributeValue;
 use livestage_core::id::{CueId, EffectId, FixtureId, PaletteId, SubmasterId};
-use livestage_core::lighting::{EffectKind, LightingConfig, Palette, PaletteKind, PaletteRef, SubmasterKind};
+use livestage_core::lighting::{EffectKind, LightingConfig, Palette, PaletteKind, PaletteRef, Submaster, SubmasterKind};
 use livestage_core::time::ShowTime;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::f64::consts::TAU;
@@ -162,6 +162,91 @@ pub struct SlotValue {
 
 pub type Slot = crate::playback::Slot;
 
+/// Dense per-universe slot values for one render. Planes are created the
+/// first time a universe is touched and kept, so a render after the first
+/// allocates nothing; [`Layer::reset_from`] copies a prebuilt base layer
+/// (home values) in place.
+#[derive(Debug, Clone, Default)]
+pub struct Layer {
+    /// Sorted by universe; index `channel - 1`.
+    planes: Vec<(u16, Box<[Option<SlotValue>; 512]>)>,
+}
+
+impl Layer {
+    fn plane_index(&self, universe: u16) -> Result<usize, usize> {
+        self.planes.binary_search_by_key(&universe, |(u, _)| *u)
+    }
+
+    fn index(channel: u16) -> Option<usize> {
+        (1..=512).contains(&channel).then(|| channel as usize - 1)
+    }
+
+    pub fn get(&self, slot: Slot) -> Option<&SlotValue> {
+        let i = Self::index(slot.channel)?;
+        self.planes.get(self.plane_index(slot.universe).ok()?)?.1[i].as_ref()
+    }
+
+    pub fn get_mut(&mut self, slot: Slot) -> Option<&mut SlotValue> {
+        let i = Self::index(slot.channel)?;
+        let p = self.plane_index(slot.universe).ok()?;
+        self.planes[p].1[i].as_mut()
+    }
+
+    /// The value at `slot`, inserting `default` if empty. `None` for an
+    /// out-of-range channel.
+    pub fn entry(&mut self, slot: Slot, default: SlotValue) -> Option<&mut SlotValue> {
+        let i = Self::index(slot.channel)?;
+        let p = match self.plane_index(slot.universe) {
+            Ok(p) => p,
+            Err(p) => {
+                self.planes.insert(p, (slot.universe, Box::new([None; 512])));
+                p
+            }
+        };
+        Some(self.planes[p].1[i].get_or_insert(default))
+    }
+
+    pub fn insert(&mut self, slot: Slot, value: SlotValue) {
+        if let Some(e) = self.entry(slot, value) {
+            *e = value;
+        }
+    }
+
+    /// Makes this layer equal to `base` without reallocating planes it has.
+    pub fn reset_from(&mut self, base: &Layer) {
+        for (u, plane) in &mut self.planes {
+            match base.plane_index(*u) {
+                Ok(b) => **plane = *base.planes[b].1,
+                Err(_) => plane.fill(None),
+            }
+        }
+        for (u, plane) in &base.planes {
+            if let Err(p) = self.plane_index(*u) {
+                self.planes.insert(p, (*u, plane.clone()));
+            }
+        }
+    }
+
+    /// Each universe plane (index `channel - 1`), in universe order.
+    pub fn planes(&self) -> impl Iterator<Item = (u16, &[Option<SlotValue>; 512])> + '_ {
+        self.planes.iter().map(|(u, p)| (*u, &**p))
+    }
+
+    /// Every set slot, in (universe, channel) order.
+    pub fn iter(&self) -> impl Iterator<Item = (Slot, &SlotValue)> + '_ {
+        self.planes.iter().flat_map(|(u, plane)| {
+            plane.iter().enumerate().filter_map(move |(i, v)| v.as_ref().map(|v| (Slot { universe: *u, channel: i as u16 + 1 }, v)))
+        })
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (Slot, &mut SlotValue)> + '_ {
+        self.planes.iter_mut().flat_map(|(u, plane)| {
+            let u = *u;
+            plane.iter_mut().enumerate().filter_map(move |(i, v)| v.as_mut().map(|v| (Slot { universe: u, channel: i as u16 + 1 }, v)))
+        })
+    }
+}
+
 /// Console state owned by the DMX engine.
 #[derive(Debug, Default)]
 pub struct Console {
@@ -233,12 +318,13 @@ impl Console {
 
     /// Applies programmer, effects, submasters and masters on top of `layer`
     /// (home + playback values).
-    pub fn apply(&self, layer: &mut BTreeMap<Slot, SlotValue>, now: ShowTime, lighting: &LightingConfig, patch: &Patch) {
-        let resolve = |f: FixtureId, a: &str| patch.resolve(f, a).map(|r| (Slot { universe: r.universe, channel: r.coarse }, r));
-        let set = |layer: &mut BTreeMap<Slot, SlotValue>, f: FixtureId, a: &str, op: &dyn Fn(f32) -> f32| {
+    pub fn apply(&self, layer: &mut Layer, now: ShowTime, lighting: &LightingConfig, patch: &Patch) {
+        let resolve = |f: FixtureId, a: &str| patch.resolve(f, a).map(|r| (r.slot(), r));
+        let set = |layer: &mut Layer, f: FixtureId, a: &str, op: &dyn Fn(f32) -> f32| {
             if let Some((slot, r)) = resolve(f, a) {
-                let e = layer.entry(slot).or_insert(SlotValue { value: r.default, fine: r.fine, kind: r.kind });
-                e.value = op(e.value).clamp(0.0, 1.0);
+                if let Some(e) = layer.entry(slot, SlotValue { value: r.default, fine: r.fine, kind: r.kind }) {
+                    e.value = op(e.value).clamp(0.0, 1.0);
+                }
             }
         };
 
@@ -248,15 +334,16 @@ impl Console {
         }
 
         // Effects.
-        let mut running: Vec<(&EffectId, &FxRun)> = self.fx.iter().collect();
-        running.sort_by_key(|(id, _)| **id);
-        for (id, run) in running {
+        // Stable order (no allocation when nothing runs).
+        let mut running: Vec<(EffectId, &FxRun)> = self.fx.iter().map(|(id, r)| (*id, r)).collect();
+        running.sort_by_key(|(id, _)| *id);
+        for (id, run) in &running {
             let Some(fx) = lighting.effect(*id) else { continue };
             let t = (now - run.started).as_secs_f64();
-            let fixtures: Vec<FixtureId> = fx.fixtures.iter().copied().filter(|f| patch.fixture(*f).is_some()).collect();
-            let n = fixtures.len();
+            let patched = || fx.fixtures.iter().copied().filter(|f| patch.fixture(*f).is_some());
+            let n = patched().count();
             let size = fx.size.clamp(0.0, 1.0);
-            for (i, f) in fixtures.into_iter().enumerate() {
+            for (i, f) in patched().enumerate() {
                 let phase = fx.phase(t, i, n);
                 let s = (TAU * phase).sin() as f32;
                 let c = (TAU * phase).cos() as f32;
@@ -281,8 +368,8 @@ impl Console {
                         // Pulses between (1 - size) and full of the current level…
                         // or, on a dark fixture, between 0 and `size`.
                         let wave = 0.5 + 0.5 * s;
-                        for slot in dimmer_slots(patch, f) {
-                            if let Some(e) = layer.get_mut(&slot) {
+                        for slot in patch.dimmer_slots(f) {
+                            if let Some(e) = layer.get_mut(*slot) {
                                 e.value = if e.value > 0.0 { e.value * (1.0 - size + size * wave) } else { size * wave };
                             }
                         }
@@ -293,19 +380,28 @@ impl Console {
 
         // Submasters.
         let secs = now.as_secs_f64();
-        let mut inhibit: HashMap<FixtureId, f32> = HashMap::new();
+        let sub_fixtures = |sub| submaster_fixtures(sub, patch);
         for sub in &lighting.submasters {
             let level = if self.flashes.contains(&sub.id) { 1.0 } else { sub.level.clamp(0.0, 1.0) };
-            let fixtures = || patch.fixtures().map(|(pf, _)| pf.id).filter(|f| sub.applies_to(*f));
             match &sub.kind {
                 SubmasterKind::Additive { values } if level > 0.0 => {
-                    for f in fixtures() {
-                        for (a, target) in livestage_core::lighting::values_for(values, f) {
-                            let intensity = resolve(f, &a).is_some_and(|(_, r)| r.kind.is_intensity());
-                            if intensity {
-                                set(layer, f, &a, &|v| v.max(target * level));
-                            } else {
-                                set(layer, f, &a, &|v| v + (target - v) * level);
+                    // Looks without per-fixture values resolve once, not per fixture.
+                    let shared = values.iter().all(|v| v.fixture.is_none());
+                    let mut cached = None;
+                    for f in sub_fixtures(sub) {
+                        let owned;
+                        let look = if shared {
+                            cached.get_or_insert_with(|| livestage_core::lighting::values_for(values, f))
+                        } else {
+                            owned = livestage_core::lighting::values_for(values, f);
+                            &owned
+                        };
+                        for (a, target) in look {
+                            let Some((slot, r)) = resolve(f, a) else { continue };
+                            if let Some(e) = layer.entry(slot, SlotValue { value: r.default, fine: r.fine, kind: r.kind }) {
+                                let v = e.value;
+                                // Intensities HTP, everything else crossfades towards the look.
+                                e.value = if r.kind.is_intensity() { v.max(target * level) } else { v + (target - v) * level }.clamp(0.0, 1.0);
                             }
                         }
                     }
@@ -314,26 +410,28 @@ impl Console {
                     let hz = (*min_hz + (*max_hz - *min_hz) * level).max(0.1) as f64;
                     // 30 % duty: a bright, short flash.
                     let on = (secs * hz).rem_euclid(1.0) < 0.3;
-                    for f in fixtures() {
-                        for slot in dimmer_slots(patch, f) {
-                            if let Some(e) = layer.get_mut(&slot) {
+                    for f in sub_fixtures(sub) {
+                        for slot in patch.dimmer_slots(f) {
+                            if let Some(e) = layer.get_mut(*slot) {
                                 e.value = if on { 1.0 } else { 0.0 };
                             }
                         }
                     }
                 }
-                SubmasterKind::Inhibit if level < 1.0 => {
-                    for f in fixtures() {
-                        *inhibit.entry(f).or_insert(1.0) *= level;
-                    }
-                }
                 _ => {}
             }
         }
-        for (f, scale) in inhibit {
-            for slot in dimmer_slots(patch, f) {
-                if let Some(e) = layer.get_mut(&slot) {
-                    e.value *= scale;
+        // Inhibits scale after every look and strobe (they multiply, so order among them is free).
+        for sub in lighting.submasters.iter().filter(|s| matches!(s.kind, SubmasterKind::Inhibit)) {
+            let level = if self.flashes.contains(&sub.id) { 1.0 } else { sub.level.clamp(0.0, 1.0) };
+            if level >= 1.0 {
+                continue;
+            }
+            for f in sub_fixtures(sub) {
+                for slot in patch.dimmer_slots(f) {
+                    if let Some(e) = layer.get_mut(*slot) {
+                        e.value *= level;
+                    }
                 }
             }
         }
@@ -341,9 +439,15 @@ impl Console {
         // Grand master and blackout: every dimmer, including raw channels.
         let gm = if self.blackout { 0.0 } else { lighting.grand_master.clamp(0.0, 1.0) };
         if gm < 1.0 {
-            let emitters: HashSet<Slot> = patch.fixtures().filter(|(pf, _)| !has_intensity(patch, pf.id)).flat_map(|(pf, _)| dimmer_slots(patch, pf.id)).collect();
-            for (slot, e) in layer.iter_mut() {
-                if e.kind.is_intensity() || emitters.contains(slot) {
+            for (_, e) in layer.iter_mut() {
+                if e.kind.is_intensity() {
+                    e.value *= gm;
+                }
+            }
+            // Emitters acting as dimmers (deduplicated in the patch); skip
+            // any a raw channel already turned into an intensity above.
+            for slot in patch.virtual_dimmers() {
+                if let Some(e) = layer.get_mut(*slot).filter(|e| !e.kind.is_intensity()) {
                     e.value *= gm;
                 }
             }
@@ -351,19 +455,17 @@ impl Console {
     }
 }
 
-fn has_intensity(patch: &Patch, f: FixtureId) -> bool {
-    patch.attributes_of(f).iter().any(|(_, r)| r.kind.is_intensity())
+/// A submaster's fixtures: its own list (patched ones only), or every
+/// patched fixture when the list is empty. Avoids `Submaster::applies_to`
+/// per patched fixture, which is O(n²) on big rigs.
+fn submaster_fixtures<'a>(sub: &'a Submaster, patch: &'a Patch) -> impl Iterator<Item = FixtureId> + 'a {
+    let all = if sub.fixtures.is_empty() { usize::MAX } else { 0 };
+    patch.fixtures().take(all).map(|(pf, _)| pf.id).chain(sub.fixtures.iter().copied().filter(|f| patch.fixture(*f).is_some()))
 }
 
 /// A fixture's dimmer: its intensity channel(s), or its colour emitters.
-pub fn dimmer_slots(patch: &Patch, f: FixtureId) -> Vec<Slot> {
-    let attrs = patch.attributes_of(f);
-    let intensity: Vec<Slot> =
-        attrs.iter().filter(|(_, r)| r.kind.is_intensity()).map(|(_, r)| Slot { universe: r.universe, channel: r.coarse }).collect();
-    if !intensity.is_empty() {
-        return intensity;
-    }
-    attrs.iter().filter(|(_, r)| r.kind.is_emitter()).map(|(_, r)| Slot { universe: r.universe, channel: r.coarse }).collect()
+pub fn dimmer_slots(patch: &Patch, f: FixtureId) -> &[Slot] {
+    patch.dimmer_slots(f)
 }
 
 /// Expands palette references into attribute values (only attributes the
@@ -392,7 +494,7 @@ mod tests {
     use crate::DmxEngine;
     use livestage_core::action::DmxAction;
     use livestage_core::dmx_config::{DmxConfig, PatchedFixture};
-    use livestage_core::lighting::{Effect, LightValue, Palette, Submaster};
+    use livestage_core::lighting::{Effect, LightValue, Palette};
     use livestage_core::state::Rgb;
 
     struct Rig {
