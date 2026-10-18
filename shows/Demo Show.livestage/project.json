@@ -3,7 +3,7 @@
   "id": "a7a04dc0-d262-411e-bacd-85c1723c8fd0",
   "name": "Demo Show",
   "created_at": 1792255988,
-  "modified_at": 1792319879,
+  "modified_at": 1792337854,
   "cue_lists": [
     {
       "id": "37fdc501-5ec5-46a5-ab8e-959b75753a7e",
@@ -384,6 +384,31 @@
           "end_at": null,
           "looped": false,
           "media_length": 213838367
+        },
+        {
+          "type": "video",
+          "id": "015b9aa8-8fc8-4cb2-9d75-ead50044aa93",
+          "number": "8",
+          "name": "file_example_MP4_640_3MG",
+          "notes": "",
+          "pre_wait": 0,
+          "post_wait": 0,
+          "follow": "None",
+          "armed": true,
+          "color": null,
+          "output": "1212afeb-6b84-42dc-b1e1-bcdce1fe820e",
+          "content": {
+            "type": "video",
+            "asset": "assets/video/file_example_MP4_640_3MG.mp4",
+            "looped": false
+          },
+          "layer": 0,
+          "opacity": 1.0,
+          "fade_in": 500000,
+          "fade_out": 500000,
+          "hold": null,
+          "media_length": null,
+          "end_behavior": "Hide"
         }
       ]
     },
@@ -839,8 +864,8 @@
   "audio": {
     "device_name": null,
     "sample_rate": null,
-    "buffer_frames": 256,
-    "output_channels": 8,
+    "buffer_frames": 128,
+    "output_channels": 2,
     "output_labels": [
       "Out 1",
       "Out 2",
@@ -960,10 +985,9 @@
         "index": 0,
         "name": "Universe 1",
         "transport": {
-          "protocol": "sacn",
-          "universe": 1,
-          "priority": 100,
-          "destination": null
+          "protocol": "art_net",
+          "port_address": 0,
+          "destination": "2.255.255.255"
         }
       }
     ],
@@ -972,9 +996,9 @@
     "refresh_hz": 40.0
   },
   "control": {
-    "osc_enabled": true,
+    "osc_enabled": false,
     "osc_listen_port": 53100,
-    "websocket_enabled": true,
+    "websocket_enabled": false,
     "websocket_port": 8765,
     "midi_input": null,
     "msc_device_id": 127
@@ -995,6 +1019,88 @@
       "original_name": "Are You Gonna Be My Girl.mp3",
       "size_bytes": 8704111,
       "imported_at": 1792305773
+    },
+    {
+      "id": "0cf9a48b-e423-4ca7-bfcd-59b0fbe3d9cd",
+      "path": "assets/video/file_example_MP4_640_3MG.mp4",
+      "kind": "video",
+      "original_name": "file_example_MP4_640_3MG.mp4",
+      "size_bytes": 3114374,
+      "imported_at": 1792337591
     }
-  ]
+  ],
+  "multiview": {
+    "rows": 1,
+    "cols": 2,
+    "feature_first": false,
+    "cells": [
+      {
+        "type": "output",
+        "id": "1212afeb-6b84-42dc-b1e1-bcdce1fe820e"
+      },
+      {
+        "type": "output",
+        "id": "2f6e02b5-bd68-40d4-89aa-6a02195af45c"
+      }
+    ]
+  },
+  "timecode": {
+    "source": "internal",
+    "rate": "fps25",
+    "internal_base": "audio",
+    "internal_start": "01:00:00:00@25",
+    "mtc_input": null,
+    "artnet_port": 6454,
+    "lock": {
+      "dropout": 100000,
+      "freewheel": 200000,
+      "jump_frames": 4,
+      "lock_samples": 3
+    }
+  },
+  "carts": [
+    {
+      "id": "d51c3d34-0b56-4e35-a700-9aa22fa70130",
+      "name": "Cart 1",
+      "rows": 2,
+      "cols": 4,
+      "pads": [
+        {
+          "cue": {
+            "type": "control",
+            "id": "d74a04c8-7e3f-4f5d-8338-d735328fef01",
+            "number": "C1.1",
+            "name": "Stop everything (2 s)",
+            "notes": "",
+            "pre_wait": 0,
+            "post_wait": 0,
+            "follow": "None",
+            "armed": true,
+            "color": null,
+            "action": {
+              "type": "command",
+              "cmd": "stop_all",
+              "fade": 2000000
+            }
+          },
+          "mode": "toggle",
+          "color": null
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    }
+  ],
+  "lighting": {
+    "palettes": [],
+    "submasters": [],
+    "effects": [],
+    "grand_master": 1.0,
+    "stage": {}
+  }
 }

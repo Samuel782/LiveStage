@@ -48,3 +48,6 @@ ui*.png
 *.a
 *.lib
 /dist
+
+
+/shows/*
