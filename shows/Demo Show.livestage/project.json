@@ -3,150 +3,32 @@
   "id": "a7a04dc0-d262-411e-bacd-85c1723c8fd0",
   "name": "Demo Show",
   "created_at": 1792255988,
-  "modified_at": 1792337854,
+  "modified_at": 1792344904,
   "cue_lists": [
     {
       "id": "37fdc501-5ec5-46a5-ab8e-959b75753a7e",
       "name": "Main Cue List",
       "cues": [
         {
-          "type": "timer",
-          "id": "1d537b50-e3b6-482f-8582-803479660814",
-          "number": "1",
-          "name": "Doors",
-          "notes": "",
-          "pre_wait": 0,
-          "post_wait": 0,
-          "follow": "None",
-          "armed": true,
-          "color": null,
-          "output": "2f6e02b5-bd68-40d4-89aa-6a02195af45c",
-          "timer": {
-            "mode": {
-              "mode": "time_of_day"
-            },
-            "label": "DOORS",
-            "font_size": 220.0,
-            "color": [
-              0.9499999,
-              0.9499999,
-              0.9499999,
-              1.0
-            ],
-            "warn_color": [
-              0.898,
-              0.224,
-              0.208,
-              1.0
-            ],
-            "warn_below": 30000000
-          },
-          "layer": 10,
-          "hold_at_zero": true
-        },
-        {
-          "type": "video",
-          "id": "e192b44b-f347-401d-9caf-3d05f697b5f3",
-          "number": "2",
-          "name": "Line-up test pattern",
-          "notes": "",
-          "pre_wait": 0,
-          "post_wait": 0,
-          "follow": "None",
-          "armed": true,
-          "color": null,
-          "output": "1212afeb-6b84-42dc-b1e1-bcdce1fe820e",
-          "content": {
-            "type": "test_pattern"
-          },
-          "layer": 0,
-          "opacity": 1.0,
-          "fade_in": 500000,
-          "fade_out": 500000,
-          "hold": null,
-          "media_length": null,
-          "end_behavior": "Hide"
-        },
-        {
-          "type": "dmx",
-          "id": "60858e6b-059f-4546-bea8-fe03e1f6207f",
-          "number": "3",
-          "name": "Preset: house half",
-          "notes": "",
-          "pre_wait": 0,
-          "post_wait": 0,
-          "follow": "None",
-          "armed": true,
-          "color": null,
-          "channels": [
-            {
-              "universe": 0,
-              "channel": 1,
-              "value": 128
-            },
-            {
-              "universe": 0,
-              "channel": 2,
-              "value": 128
-            }
-          ],
-          "attributes": [],
-          "fade": 3000000,
-          "release_on_stop": true
-        },
-        {
           "type": "timeline",
-          "id": "e54150e2-66ab-4c16-afac-c8cfb9fe4d40",
-          "number": "4",
-          "name": "Song 1 — Timeline",
+          "id": "75dae78e-0269-4d17-b9d5-3a379faaf56a",
+          "number": "6",
+          "name": "New Timeline cue",
           "notes": "",
           "pre_wait": 0,
           "post_wait": 0,
           "follow": "None",
           "armed": true,
           "color": null,
-          "master": {
-            "type": "audio",
-            "id": "23733e53-9646-43bc-8ba7-205799848e1f",
-            "number": "4.0",
-            "name": "Backing track",
-            "notes": "",
-            "pre_wait": 0,
-            "post_wait": 0,
-            "follow": "None",
-            "armed": true,
-            "color": null,
-            "tracks": [
-              {
-                "asset": "assets/audio/LiveStage Demo Backing.wav",
-                "stem": "7ababf50-0a47-4d26-b3f1-c12872209b80",
-                "gain_db": -3.0,
-                "mute": false
-              }
-            ],
-            "click": {
-              "bpm": 120.0,
-              "beats_per_bar": 4,
-              "stem": "94d8ac99-cf09-431a-ade3-cfe32b31dfdc",
-              "gain_db": -10.0,
-              "count_in_bars": 0
-            },
-            "gain_db": 0.0,
-            "fade_in": 0,
-            "fade_out": 1500000,
-            "start_at": 0,
-            "end_at": null,
-            "looped": false,
-            "media_length": 24000000
-          },
+          "master": null,
           "items": [
             {
               "offset": 0,
               "cue": {
                 "type": "dmx",
-                "id": "32ee84ab-1412-434d-b992-038d690904fe",
-                "number": "4.1",
-                "name": "Verse look",
+                "id": "b1dbafa3-db61-4b8a-b8bd-8358587a6561",
+                "number": "6.1",
+                "name": "New DMX cue",
                 "notes": "",
                 "pre_wait": 0,
                 "post_wait": 0,
@@ -158,30 +40,20 @@
                     "universe": 0,
                     "channel": 1,
                     "value": 255
-                  },
-                  {
-                    "universe": 0,
-                    "channel": 2,
-                    "value": 60
-                  },
-                  {
-                    "universe": 0,
-                    "channel": 3,
-                    "value": 0
                   }
                 ],
                 "attributes": [],
-                "fade": 1000000,
+                "fade": 2000000,
                 "release_on_stop": true
               }
             },
             {
-              "offset": 4000000,
+              "offset": 0,
               "cue": {
-                "type": "video",
-                "id": "f0a62c9b-fd99-4070-9853-c323b5882767",
-                "number": "4.2",
-                "name": "Lyric: verse 1",
+                "type": "timer",
+                "id": "9b2ca76f-255a-4db2-b6a0-5dbbda925b56",
+                "number": "6.3",
+                "name": "Countdown",
                 "notes": "",
                 "pre_wait": 0,
                 "post_wait": 0,
@@ -189,83 +61,12 @@
                 "armed": true,
                 "color": null,
                 "output": "1212afeb-6b84-42dc-b1e1-bcdce1fe820e",
-                "content": {
-                  "type": "text",
-                  "text": "Every light in the house is ours tonight",
-                  "font_size": 72.0,
-                  "color": [
-                    1.0,
-                    1.0,
-                    1.0,
-                    1.0
-                  ],
-                  "scroll_speed": 0.0,
-                  "mirror_horizontal": false
-                },
-                "layer": 5,
-                "opacity": 1.0,
-                "fade_in": 300000,
-                "fade_out": 300000,
-                "hold": 6000000,
-                "media_length": null,
-                "end_behavior": "Hide"
-              }
-            },
-            {
-              "offset": 8000000,
-              "cue": {
-                "type": "dmx",
-                "id": "4730da27-c643-42d7-942c-9f201e6a9381",
-                "number": "4.3",
-                "name": "Chorus hit",
-                "notes": "",
-                "pre_wait": 0,
-                "post_wait": 0,
-                "follow": "None",
-                "armed": true,
-                "color": null,
-                "channels": [
-                  {
-                    "universe": 0,
-                    "channel": 1,
-                    "value": 255
-                  },
-                  {
-                    "universe": 0,
-                    "channel": 2,
-                    "value": 255
-                  },
-                  {
-                    "universe": 0,
-                    "channel": 3,
-                    "value": 255
-                  }
-                ],
-                "attributes": [],
-                "fade": 200000,
-                "release_on_stop": true
-              }
-            },
-            {
-              "offset": 14000000,
-              "cue": {
-                "type": "timer",
-                "id": "54c18b4b-6dfb-4695-aeab-8409c3c9037a",
-                "number": "4.4",
-                "name": "Song ends in",
-                "notes": "",
-                "pre_wait": 0,
-                "post_wait": 0,
-                "follow": "None",
-                "armed": true,
-                "color": null,
-                "output": "2f6e02b5-bd68-40d4-89aa-6a02195af45c",
                 "timer": {
                   "mode": {
                     "mode": "count_down",
-                    "from": 10000000
+                    "from": 300000000
                   },
-                  "label": "SONG ENDS IN",
+                  "label": "COUNTDOWN",
                   "font_size": 220.0,
                   "color": [
                     0.95,
@@ -286,65 +87,76 @@
               }
             },
             {
-              "offset": 16000000,
+              "offset": 1800000,
               "cue": {
-                "type": "control",
-                "id": "defdd96d-acb2-4a1a-b82d-0a46252b5b1b",
-                "number": "4.5",
-                "name": "Marker: bridge",
+                "type": "video",
+                "id": "8f62fd27-18ef-4e3c-9594-59821f03a179",
+                "number": "6.2",
+                "name": "New Video cue",
                 "notes": "",
                 "pre_wait": 0,
                 "post_wait": 0,
                 "follow": "None",
                 "armed": true,
                 "color": null,
-                "action": {
-                  "type": "marker",
-                  "text": "Bridge reached"
-                }
+                "output": "1212afeb-6b84-42dc-b1e1-bcdce1fe820e",
+                "content": {
+                  "type": "test_pattern"
+                },
+                "layer": 0,
+                "opacity": 1.0,
+                "fade_in": 500000,
+                "fade_out": 500000,
+                "hold": null,
+                "media_length": null,
+                "end_behavior": "Hide"
               }
             }
           ],
           "length": null
         },
         {
-          "type": "video",
-          "id": "0cd1a453-260b-485f-84dc-9df16c3ac3d7",
-          "number": "5",
-          "name": "Teleprompter: speech",
-          "notes": "Scrolls at 40 pt/s on the confidence monitor",
+          "type": "timeline",
+          "id": "d3bfdf5b-1e13-4685-863f-76c2cddef1bc",
+          "number": "7",
+          "name": "New Timeline cue",
+          "notes": "",
           "pre_wait": 0,
           "post_wait": 0,
           "follow": "None",
           "armed": true,
           "color": null,
-          "output": "2f6e02b5-bd68-40d4-89aa-6a02195af45c",
-          "content": {
-            "type": "text",
-            "text": "Good evening and welcome.\n\nPlease silence your phones.\n\nOur first act needs no introduction…",
-            "font_size": 64.0,
-            "color": [
-              1.0,
-              1.0,
-              1.0,
-              1.0
-            ],
-            "scroll_speed": 40.0,
-            "mirror_horizontal": false
-          },
-          "layer": 1,
-          "opacity": 1.0,
-          "fade_in": 500000,
-          "fade_out": 500000,
-          "hold": null,
-          "media_length": null,
-          "end_behavior": "Hide"
+          "master": null,
+          "items": [],
+          "length": null
+        },
+        {
+          "type": "dmx",
+          "id": "4fe2e433-eac6-45ca-adc6-ed4a2981479c",
+          "number": "1",
+          "name": "New DMX cue",
+          "notes": "",
+          "pre_wait": 0,
+          "post_wait": 0,
+          "follow": "None",
+          "armed": true,
+          "color": null,
+          "channels": [
+            {
+              "universe": 0,
+              "channel": 1,
+              "value": 255
+            }
+          ],
+          "attributes": [],
+          "fade": 2000000,
+          "release_on_stop": true
         },
         {
           "type": "control",
-          "id": "18a6305a-47af-4611-9bf2-d63376bf219e",
-          "number": "6",
-          "name": "Stop everything (2 s)",
+          "id": "b73c5d0c-e1d7-43ac-8fbe-c713bde956d4",
+          "number": "5",
+          "name": "New Control cue",
           "notes": "",
           "pre_wait": 0,
           "post_wait": 0,
@@ -352,44 +164,40 @@
           "armed": true,
           "color": null,
           "action": {
-            "type": "command",
-            "cmd": "stop_all",
-            "fade": 2000000
+            "type": "send_osc",
+            "host": "127.0.0.1",
+            "port": 53000,
+            "address": "/go",
+            "args": []
           }
         },
         {
-          "type": "audio",
-          "id": "5bc74105-edc1-46fd-8906-2a6b923edc84",
-          "number": "7",
-          "name": "Are You Gonna Be My Girl",
+          "type": "dmx",
+          "id": "97accfa9-f278-4228-a20e-89733a63a443",
+          "number": "3",
+          "name": "New DMX cue",
           "notes": "",
           "pre_wait": 0,
           "post_wait": 0,
           "follow": "None",
           "armed": true,
           "color": null,
-          "tracks": [
+          "channels": [
             {
-              "asset": "assets/audio/Are You Gonna Be My Girl.mp3",
-              "stem": "7ababf50-0a47-4d26-b3f1-c12872209b80",
-              "gain_db": 0.0,
-              "mute": false
+              "universe": 0,
+              "channel": 1,
+              "value": 255
             }
           ],
-          "click": null,
-          "gain_db": 0.0,
-          "fade_in": 0,
-          "fade_out": 1000000,
-          "start_at": 0,
-          "end_at": null,
-          "looped": false,
-          "media_length": 213838367
+          "attributes": [],
+          "fade": 2000000,
+          "release_on_stop": true
         },
         {
-          "type": "video",
-          "id": "015b9aa8-8fc8-4cb2-9d75-ead50044aa93",
-          "number": "8",
-          "name": "file_example_MP4_640_3MG",
+          "type": "timer",
+          "id": "3216d5d5-7cf9-4a79-9845-84c5971a1d2e",
+          "number": "4",
+          "name": "Countdown",
           "notes": "",
           "pre_wait": 0,
           "post_wait": 0,
@@ -397,18 +205,29 @@
           "armed": true,
           "color": null,
           "output": "1212afeb-6b84-42dc-b1e1-bcdce1fe820e",
-          "content": {
-            "type": "video",
-            "asset": "assets/video/file_example_MP4_640_3MG.mp4",
-            "looped": false
+          "timer": {
+            "mode": {
+              "mode": "count_down",
+              "from": 300000000
+            },
+            "label": "COUNTDOWN",
+            "font_size": 220.0,
+            "color": [
+              0.95,
+              0.95,
+              0.95,
+              1.0
+            ],
+            "warn_color": [
+              0.898,
+              0.224,
+              0.208,
+              1.0
+            ],
+            "warn_below": 30000000
           },
-          "layer": 0,
-          "opacity": 1.0,
-          "fade_in": 500000,
-          "fade_out": 500000,
-          "hold": null,
-          "media_length": null,
-          "end_behavior": "Hide"
+          "layer": 10,
+          "hold_at_zero": true
         }
       ]
     },
@@ -993,7 +812,8 @@
     ],
     "patch": [],
     "pixel_maps": [],
-    "refresh_hz": 40.0
+    "refresh_hz": 40.0,
+    "render_hz": 100.0
   },
   "control": {
     "osc_enabled": false,
