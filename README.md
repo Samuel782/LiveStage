@@ -533,6 +533,19 @@ release on note-off; a pad takes precedence over a default note. MIDI Time Code 
   Finished objects travel back through a second ring buffer and are freed off the audio thread. The
   sample clock is interpolated between device callbacks, so timeline children are not quantised to the
   buffer size.
+- **Disk streaming.** Files longer than 15 s are streamed from disk instead of being decoded into
+  RAM. Only their first 3 s stay resident (the pre-roll), plus a 4 s ring buffer per playing track
+  that a streamer thread keeps topped up. A 3.5-minute stereo song therefore takes about 2.7 MB while
+  playing instead of 82 MB. Short files (cart pads, stingers) are still decoded whole.
+  - A cue starting inside the pre-roll plays at once.
+  - Starts and seeks further in wait a few milliseconds, off the show thread, for their ring to
+    prime. Meanwhile the old audio keeps playing and the clock holds at the target, so timelines and
+    video chase the new position. The new stream is spliced in at the usual 2 ms de-click.
+  - Loops are decoded in play order.
+  - Seeks decode a little ahead of the target, so lapped codecs (MP3, AAC) are sample-identical to
+    a full decode.
+  - A drive too slow to keep up plays silence but keeps the track sample-aligned. The status bar
+    reports it as **Disk underrun**.
 - **Timelines.** A master cue (usually audio) acts as the clock. Starting mid-way *chases*: media
   starts part-way through, past DMX looks are re-applied, and past triggers are not re-fired.
 - **A/V lock.** Video and text layers started by a timeline with an audio master are frame-locked to

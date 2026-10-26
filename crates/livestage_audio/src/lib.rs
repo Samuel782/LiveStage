@@ -24,6 +24,7 @@ pub mod engine;
 pub mod metronome;
 pub mod renderer;
 pub mod routing;
+pub mod stream;
 
 pub use clip::AudioClip;
 pub use device::{list_output_devices, OutputDeviceInfo};

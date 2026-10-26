@@ -886,6 +886,11 @@ impl ShowRuntime {
         for ev in events {
             self.execute(ev);
         }
+        // Hand the engines what commands (and UI work queued since the last
+        // tick) produced before the lists tick: a seek must reach the audio
+        // engine before a timeline reads its master's clock, or the timeline
+        // would chase the stale position.
+        self.flush_actions();
         // Timecode: feed received samples (stamped at arrival), advance the
         // lock / generator, then let slaved timelines and lists chase it.
         for input in self.tc_rx.try_iter() {

@@ -6,6 +6,7 @@ use crate::device::{build_stream, select_device};
 use crate::metronome::Metronome;
 use crate::renderer::*;
 use crate::routing::RoutingTable;
+use crate::stream::{open_stream, StreamReader, StreamedClip, Streamer};
 use crate::{db_to_gain, AudioResult};
 use cpal::traits::StreamTrait;
 use livestage_core::action::AudioAction;
@@ -58,17 +59,25 @@ impl EngineConfig {
     }
 }
 
+/// A loaded file: decoded whole (short files) or streamed from disk with a
+/// resident pre-roll (long files, see [`crate::stream`]).
+#[derive(Debug, Clone)]
+enum Clip {
+    Resident(Arc<AudioClip>),
+    Streamed(Arc<StreamedClip>),
+}
+
 #[derive(Debug, Clone)]
 enum ClipSlot {
     Loading,
-    Ready(Arc<AudioClip>),
+    Ready(Clip),
     Failed(String),
 }
 
-/// Decoded-clip cache with a background loader thread.
+/// Clip cache with a background loader thread.
 ///
 /// The mutex here is only ever touched by control/loader threads — never by
-/// the audio thread, which receives `Arc<AudioClip>`s inside commands.
+/// the audio thread, which receives clips and stream readers inside commands.
 #[derive(Clone)]
 struct ClipCache {
     slots: Arc<Mutex<HashMap<PathBuf, ClipSlot>>>,
@@ -103,7 +112,7 @@ impl ClipCache {
     /// The clip once decoded, its error if decoding failed, or `None` while
     /// the loader thread works on it (queued now if nobody asked before).
     /// Never decodes on the calling thread.
-    fn poll(&self, path: &Path) -> Option<Result<Arc<AudioClip>, String>> {
+    fn poll(&self, path: &Path) -> Option<Result<Clip, String>> {
         let mut slots = self.slots.lock();
         match slots.get(path) {
             Some(ClipSlot::Ready(c)) => Some(Ok(c.clone())),
@@ -118,16 +127,30 @@ impl ClipCache {
     }
 
     fn insert(&self, path: PathBuf, clip: Arc<AudioClip>) {
-        self.slots.lock().insert(path, ClipSlot::Ready(clip));
+        self.slots.lock().insert(path, ClipSlot::Ready(Clip::Resident(clip)));
     }
 }
 
 fn load(path: &Path, sample_rate: u32) -> ClipSlot {
+    // Long files: probe, keep only the pre-roll, stream the rest.
+    match StreamedClip::open(path, sample_rate) {
+        Ok(Some(clip)) => {
+            tracing::info!(
+                file = %path.display(),
+                secs = clip.duration_secs(),
+                resident_mb = clip.resident_bytes() as f64 / 1e6,
+                "audio streamed from disk"
+            );
+            return ClipSlot::Ready(Clip::Streamed(Arc::new(clip)));
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(file = %path.display(), "streaming probe failed, decoding whole: {e}"),
+    }
     match decode_file(path) {
         Ok(clip) => {
             let clip = clip.resampled(sample_rate);
             tracing::info!(file = %path.display(), secs = clip.duration_secs(), "audio loaded");
-            ClipSlot::Ready(Arc::new(clip))
+            ClipSlot::Ready(Clip::Resident(Arc::new(clip)))
         }
         Err(e) => {
             tracing::error!("{e}");
@@ -159,6 +182,10 @@ pub struct VoiceClock {
 impl VoiceClock {
     pub fn read(&self) -> ClockReading {
         let v = &self.voice;
+        if v.seek_pending.load(Ordering::Acquire) {
+            let position = v.seek_target.load(Ordering::Relaxed);
+            return ClockReading { position: ShowTime::from_frames(position, self.sample_rate), running: false, ended: false };
+        }
         if !v.started.load(Ordering::Acquire) {
             return ClockReading { position: ShowTime::ZERO, running: false, ended: false };
         }
@@ -182,6 +209,51 @@ struct WaitingPlay {
     /// Pause / resume / seek / gain changes received meanwhile, replayed in
     /// order once the voice starts.
     deferred: Vec<AudioAction>,
+    /// Tracks, once every clip is loaded; streams in it prime before the start.
+    voices: Option<Vec<TrackVoice>>,
+}
+
+/// A playing cue with streamed tracks: what a seek needs to open new streams.
+struct StreamedPlay {
+    shared: Arc<VoiceShared>,
+    /// Per group track: its streamed clip (`None` for resident tracks).
+    tracks: Vec<Option<Arc<StreamedClip>>>,
+    start_frame: u64,
+    end_frame: Option<u64>,
+    looped: bool,
+    play_len: u64,
+}
+
+impl StreamedPlay {
+    /// Opens streams at `position` frames into the cue's audio.
+    fn open_at(&self, position: u64, engine: &Arc<EngineShared>, streamer: &Streamer) -> Vec<Option<StreamReader>> {
+        let rel = if self.looped && self.play_len > 0 { position % self.play_len } else { position };
+        let src = self.start_frame + rel;
+        let region = (self.start_frame, self.end_frame.unwrap_or(u64::MAX));
+        self.tracks
+            .iter()
+            .map(|clip| {
+                let clip = clip.as_ref()?;
+                match open_stream(clip, src, region, self.looped, engine) {
+                    Ok((reader, job)) => {
+                        streamer.submit(job);
+                        Some(reader)
+                    }
+                    Err(e) => {
+                        tracing::error!(file = %clip.path.display(), "cannot reopen stream: {e}");
+                        None
+                    }
+                }
+            })
+            .collect()
+    }
+}
+
+/// A seek on a cue with streamed tracks, waiting for its new streams to prime.
+struct WaitingSeek {
+    cue: CueId,
+    position: u64,
+    streams: Vec<Option<StreamReader>>,
 }
 
 /// Owner of the audio pipeline. Lives on the control thread.
@@ -191,6 +263,11 @@ pub struct AudioEngine {
     shared: Arc<EngineShared>,
     voices: HashMap<CueId, Arc<VoiceShared>>,
     waiting: Vec<WaitingPlay>,
+    streamed: HashMap<CueId, StreamedPlay>,
+    seeks: Vec<WaitingSeek>,
+    streamer: Streamer,
+    /// Underruns already reported in the log.
+    underruns_logged: u64,
     cache: ClipCache,
     sample_rate: u32,
     channels: u16,
@@ -215,6 +292,10 @@ impl AudioEngine {
             shared,
             voices: HashMap::new(),
             waiting: Vec::new(),
+            streamed: HashMap::new(),
+            seeks: Vec::new(),
+            streamer: Streamer::spawn(),
+            underruns_logged: 0,
             cache: ClipCache::new(sample_rate),
             sample_rate,
             channels,
@@ -350,15 +431,25 @@ impl AudioEngine {
                     })
                     .collect();
                 self.waiting.retain(|w| w.cue != *cue);
+                self.seeks.retain(|s| s.cue != *cue);
+                self.streamed.remove(cue);
                 let shared = Arc::new(VoiceShared::default());
                 self.voices.insert(*cue, shared.clone());
-                let w = WaitingPlay { cue: *cue, play: action.clone(), paths, shared, deferred: Vec::new() };
-                if !self.try_start(&w) {
-                    tracing::warn!(cue = %cue, "audio not preloaded; starting once decoded");
+                let mut w = WaitingPlay { cue: *cue, play: action.clone(), paths, shared, deferred: Vec::new(), voices: None };
+                if !self.try_start(&mut w) {
+                    if w.voices.is_some() {
+                        tracing::debug!(cue = %cue, "priming disk stream before start");
+                    } else {
+                        tracing::warn!(cue = %cue, "audio not preloaded; starting once decoded");
+                    }
                     self.waiting.push(w);
                 }
             }
             AudioAction::Stop { cue, fade } => {
+                self.seeks.retain(|s| s.cue != *cue);
+                if let Some(p) = self.streamed.remove(cue) {
+                    p.shared.seek_pending.store(false, Ordering::Release);
+                }
                 let fade_frames = self.frames(*fade);
                 self.send(RtCommand::Stop { cue: *cue, fade_frames });
             }
@@ -366,6 +457,17 @@ impl AudioEngine {
             AudioAction::Resume { cue } => self.send(RtCommand::Resume { cue: *cue }),
             AudioAction::Seek { cue, position } => {
                 let position = position.to_frames(self.sample_rate);
+                if let Some(play) = self.streamed.get(cue) {
+                    // New streams prime at the target while the old ones keep
+                    // playing; the clock holds at the target until the splice.
+                    play.shared.seek_target.store(position, Ordering::Relaxed);
+                    play.shared.seek_pending.store(true, Ordering::Release);
+                    let streams = play.open_at(position, &self.shared, &self.streamer);
+                    self.seeks.retain(|s| s.cue != *cue);
+                    self.seeks.push(WaitingSeek { cue: *cue, position, streams });
+                    self.poll_seeks();
+                    return;
+                }
                 if let Some(v) = self.voices.get(cue) {
                     v.position_frames.store(position, Ordering::Relaxed);
                 }
@@ -386,6 +488,8 @@ impl AudioEngine {
                 for w in self.waiting.drain(..) {
                     self.voices.remove(&w.cue);
                 }
+                self.seeks.clear();
+                self.streamed.clear();
                 let fade_frames = self.frames(*fade);
                 self.send(RtCommand::StopAll { fade_frames });
             }
@@ -395,29 +499,67 @@ impl AudioEngine {
         }
     }
 
-    /// Starts a play whose clips are all decoded (failed ones are skipped);
-    /// returns false, starting nothing, while any is still loading.
-    fn try_start(&mut self, w: &WaitingPlay) -> bool {
-        let mut clips = Vec::with_capacity(w.paths.len());
-        for p in &w.paths {
-            clips.push(match p {
-                Some(p) => match self.cache.poll(p) {
-                    Some(c) => Some(c),
-                    None => return false,
-                },
-                None => None,
-            });
-        }
+    /// Starts a play once its clips are loaded (failed ones are skipped) and
+    /// its disk streams are primed; returns false, starting nothing, before.
+    fn try_start(&mut self, w: &mut WaitingPlay) -> bool {
         let AudioAction::Play { cue, tracks, click, gain_db, fade_in, start_at, end_at, looped } = &w.play else {
             unreachable!("waiting plays hold Play actions")
         };
-        let mut voices = Vec::with_capacity(tracks.len());
-        for (t, clip) in tracks.iter().zip(clips) {
-            match clip {
-                Some(Ok(clip)) => voices.push(TrackVoice { clip, stem: t.stem, gain: db_to_gain(t.gain_db) }),
-                Some(Err(e)) => tracing::error!(asset = %t.asset, "audio unavailable: {e}"),
-                None => {}
+        let start_frame = start_at.to_frames(self.sample_rate);
+        let end_frame = end_at.map(|e| e.to_frames(self.sample_rate));
+        if w.voices.is_none() {
+            let mut clips = Vec::with_capacity(w.paths.len());
+            for p in &w.paths {
+                clips.push(match p {
+                    Some(p) => match self.cache.poll(p) {
+                        Some(c) => Some(c),
+                        None => return false,
+                    },
+                    None => None,
+                });
             }
+            let region = (start_frame, end_frame.unwrap_or(u64::MAX));
+            let mut voices = Vec::with_capacity(tracks.len());
+            for (t, clip) in tracks.iter().zip(clips) {
+                let source = match clip {
+                    Some(Ok(Clip::Resident(c))) => TrackSource::Resident(c),
+                    Some(Ok(Clip::Streamed(c))) => match open_stream(&c, start_frame, region, *looped, &self.shared) {
+                        Ok((reader, job)) => {
+                            self.streamer.submit(job);
+                            TrackSource::Streamed(reader)
+                        }
+                        Err(e) => {
+                            tracing::error!(asset = %t.asset, "cannot stream audio: {e}");
+                            continue;
+                        }
+                    },
+                    Some(Err(e)) => {
+                        tracing::error!(asset = %t.asset, "audio unavailable: {e}");
+                        continue;
+                    }
+                    None => continue,
+                };
+                voices.push(TrackVoice { source, stem: t.stem, gain: db_to_gain(t.gain_db) });
+            }
+            w.voices = Some(voices);
+        }
+        let primed = |v: &TrackVoice| !matches!(&v.source, TrackSource::Streamed(r) if !r.primed());
+        if !w.voices.as_ref().is_some_and(|v| v.iter().all(primed)) {
+            return false;
+        }
+        let voices = w.voices.take().unwrap_or_default();
+        let streams: Vec<Option<Arc<StreamedClip>>> = voices
+            .iter()
+            .map(|v| match &v.source {
+                TrackSource::Streamed(r) => Some(r.clip().clone()),
+                TrackSource::Resident(_) => None,
+            })
+            .collect();
+        if streams.iter().any(Option::is_some) {
+            let longest = voices.iter().map(|v| v.source.frames()).max().unwrap_or(0);
+            let play_len = end_frame.map_or(longest, |e| e.min(longest)).saturating_sub(start_frame);
+            let play = StreamedPlay { shared: w.shared.clone(), tracks: streams, start_frame, end_frame, looped: *looped, play_len };
+            self.streamed.insert(*cue, play);
         }
         let click = click.as_ref().map(|c| (Metronome::new(c, self.sample_rate), c.stem));
         let count_in = match (click.as_ref(), &w.play) {
@@ -429,7 +571,6 @@ impl AudioEngine {
         if !fade_in.is_zero() {
             gain.to(level, self.frames(*fade_in));
         }
-        let start_frame = start_at.to_frames(self.sample_rate);
         let mut group = Box::new(VoiceGroup {
             cue: *cue,
             tracks: voices,
@@ -437,13 +578,15 @@ impl AudioEngine {
             count_in,
             frame: 0,
             start_frame,
-            end_frame: end_at.map(|e| e.to_frames(self.sample_rate)),
+            end_frame,
             looped: *looped,
             gain,
             level,
             state: GroupState::Playing,
             shared: w.shared.clone(),
             pending_seek: None,
+            pending_streams: None,
+            retired: None,
         });
         // Keep the click phase-aligned with the song position when starting mid-way.
         if let Some((m, _)) = group.click.as_mut() {
@@ -472,10 +615,29 @@ impl AudioEngine {
         if matches!(action, AudioAction::Stop { .. }) {
             self.waiting.remove(i);
             self.voices.remove(&cue);
+            self.streamed.remove(&cue);
         } else {
             self.waiting[i].deferred.push(action.clone());
         }
         true
+    }
+
+    /// Sends seeks whose new streams have primed.
+    fn poll_seeks(&mut self) {
+        let mut i = 0;
+        while i < self.seeks.len() {
+            if self.seeks[i].streams.iter().flatten().all(StreamReader::primed) {
+                let WaitingSeek { cue, position, streams } = self.seeks.remove(i);
+                self.send(RtCommand::SeekStreams { cue, position, streams: Box::new(streams) });
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Times a disk stream ran dry during playback (heard as a dropout).
+    pub fn underruns(&self) -> u64 {
+        self.shared.underruns.load(Ordering::Relaxed)
     }
 
     /// Sample-clock position of a cue (drives timeline children).
@@ -505,16 +667,27 @@ impl AudioEngine {
     /// Drops objects returned by the audio thread. Call every UI frame.
     pub fn maintenance(&mut self) {
         if !self.waiting.is_empty() {
-            for w in std::mem::take(&mut self.waiting) {
-                if !self.try_start(&w) {
+            for mut w in std::mem::take(&mut self.waiting) {
+                if !self.try_start(&mut w) {
                     self.waiting.push(w);
                 }
             }
+        }
+        if !self.seeks.is_empty() {
+            self.poll_seeks();
+        }
+        let underruns = self.underruns();
+        if underruns > self.underruns_logged {
+            tracing::warn!(total = underruns, "disk stream underrun: a long file played silence (drive too slow?)");
+            self.underruns_logged = underruns;
         }
         let mut n = 0;
         while let Some(g) = self.garbage.try_pop() {
             if let Garbage::Group(g) = &g {
                 // Forget status of groups nobody will query any more.
+                if self.streamed.get(&g.cue).is_some_and(|p| Arc::ptr_eq(&p.shared, &g.shared)) {
+                    self.streamed.remove(&g.cue);
+                }
                 if let Some(v) = self.voices.get(&g.cue) {
                     if Arc::ptr_eq(v, &g.shared) && !g.shared.finished.load(Ordering::Acquire) {
                         // Stopped by the operator (not natural end): forget it.
@@ -690,6 +863,84 @@ mod tests {
         assert!((last - 0.25).abs() < 0.01, "not playing from the new position: {last}");
         let pos = engine.media_position(cue).unwrap();
         assert!(pos > ShowTime::from_secs(1) && pos < ShowTime::from_millis(1_020), "{pos:?}");
+    }
+
+    /// Streamed playback is sample-identical to resident playback: through
+    /// the pre-roll hand-over, a seek past the pre-roll and a loop.
+    #[test]
+    fn streamed_playback_matches_resident() {
+        let dir = std::env::temp_dir().join(format!("ls-streamplay-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let n = 48_000 * 20;
+        let samples: Vec<i16> = (0..n).flat_map(|i| [((i % 30_000) as i16), -((i % 17_000) as i16)]).collect();
+        let path = dir.join("song.wav");
+        crate::decode::tests::write_wav(&path, 48_000, 2, &samples);
+        let routing = AudioRouting::default();
+        let (mut streamed, mut s_rt) = AudioEngine::offline(48_000, 2, &routing);
+        let (mut resident, mut r_rt) = AudioEngine::offline(48_000, 2, &routing);
+        resident.insert_clip(path.clone(), crate::decode::decode_file(&path).unwrap());
+        let wait = |e: &mut AudioEngine, done: &dyn Fn(&AudioEngine) -> bool| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !done(e) {
+                assert!(std::time::Instant::now() < deadline, "timed out");
+                e.maintenance();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        };
+        let resolve = |a: &AssetRef| Some(dir.join(a.as_str()));
+        streamed.handle(&AudioAction::Preload { assets: vec![AssetRef::new("song.wav")] }, &resolve);
+        wait(&mut streamed, &|e| matches!(e.cache.poll(&path), Some(Ok(Clip::Streamed(_)))));
+
+        for (looped, end_at) in [(false, None), (true, Some(ShowTime::from_secs(9)))] {
+            let cue = CueId::new();
+            let play = AudioAction::Play {
+                cue,
+                tracks: vec![AudioTrack { asset: AssetRef::new("song.wav"), stem: routing.stems[0].id, gain_db: 0.0, mute: false }],
+                click: None,
+                gain_db: 0.0,
+                fade_in: ShowTime::ZERO,
+                start_at: ShowTime::from_millis(500),
+                end_at,
+                looped,
+            };
+            streamed.handle(&play, &resolve);
+            resident.handle(&play, &resolve);
+            assert!(streamed.streamed.contains_key(&cue), "starts at once from the pre-roll");
+            let (mut a, mut b) = (vec![0.0f32; 256 * 2], vec![0.0f32; 256 * 2]);
+            let mut loudest = 0.0f32;
+            let mut compare = |s_rt: &mut Renderer, r_rt: &mut Renderer, buffers: usize, what: &str| {
+                for i in 0..buffers {
+                    s_rt.render(&mut a);
+                    r_rt.render(&mut b);
+                    assert_eq!(a, b, "{what}: buffer {i} differs");
+                    loudest = a.iter().fold(loudest, |m, s| m.max(s.abs()));
+                    // Pace the "device" at a few times real time so the streamer keeps up.
+                    if i % 4 == 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                }
+            };
+            // 6 s: pre-roll (3 s) then the ring.
+            compare(&mut s_rt, &mut r_rt, 1_125, "playback");
+            // Seek far past the pre-roll; the resident engine seeks when the streams are primed.
+            let target = ShowTime::from_secs(if looped { 7 } else { 12 });
+            let seek = AudioAction::Seek { cue, position: target };
+            streamed.handle(&seek, &resolve);
+            // While the streams prime, the clock already reports the target (held).
+            assert_eq!(streamed.voice_clock(cue).unwrap().read(), ClockReading { position: target, running: false, ended: false });
+            wait(&mut streamed, &|e| e.seeks.is_empty());
+            resident.handle(&seek, &resolve);
+            // 4 s more: across the loop point for the looped pass.
+            compare(&mut s_rt, &mut r_rt, 750, "after seek");
+            assert_eq!(streamed.media_position(cue), resident.media_position(cue));
+            for e in [&mut streamed, &mut resident] {
+                e.handle(&AudioAction::Stop { cue, fade: ShowTime::ZERO }, &resolve);
+            }
+            compare(&mut s_rt, &mut r_rt, 10, "stop");
+            assert!(loudest > 0.2, "silent comparison proves nothing ({loudest})");
+        }
+        assert_eq!(streamed.underruns(), 0);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

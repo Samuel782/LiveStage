@@ -87,6 +87,7 @@ pub struct AudioView {
     channels: u16,
     dsp_load: f32,
     leaked: u64,
+    underruns: u64,
     peaks: Vec<f32>,
 }
 
@@ -106,6 +107,10 @@ impl AudioView {
     /// Real-time command queue overflows since the engine started.
     pub fn leaked(&self) -> u64 {
         self.leaked
+    }
+    /// Disk streams that ran dry during playback since the engine started.
+    pub fn underruns(&self) -> u64 {
+        self.underruns
     }
     /// Peak per output since the previous frame.
     pub fn take_peaks(&mut self) -> Vec<f32> {
@@ -396,6 +401,7 @@ impl UiRuntime {
                 channels: a.channels(),
                 dsp_load: a.dsp_load(),
                 leaked: a.shared().leaked.load(std::sync::atomic::Ordering::Relaxed),
+                underruns: a.underruns(),
                 peaks,
             }
         });

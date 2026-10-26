@@ -6,6 +6,7 @@
 
 use crate::metronome::Metronome;
 use crate::routing::RoutingTable;
+use crate::stream::StreamReader;
 use crate::AudioClip;
 use livestage_core::id::{CueId, StemId};
 use ringbuf::traits::{Consumer, Producer};
@@ -33,6 +34,11 @@ pub struct VoiceShared {
     pub started: AtomicBool,
     /// True while audibly playing (not paused / pausing); gates clock interpolation.
     pub playing: AtomicBool,
+    /// A seek waiting for its disk streams to prime: until the audio thread
+    /// splices, the clock reports `seek_target` (held) instead of the old
+    /// position, so timelines chase the new position, not the stale one.
+    pub seek_pending: AtomicBool,
+    pub seek_target: AtomicU64,
 }
 
 /// Engine-wide status published by the audio thread.
@@ -47,6 +53,8 @@ pub struct EngineShared {
     /// Garbage that could not be returned and was leaked instead of freed on
     /// the RT thread.
     pub leaked: AtomicU64,
+    /// Times a disk stream ran dry during playback (played silence).
+    pub underruns: AtomicU64,
     pub active_groups: AtomicU32,
     /// DSP load of the last callback in 1/1000ths of the buffer period.
     pub load_permille: AtomicU32,
@@ -66,6 +74,7 @@ impl Default for EngineShared {
             frames_rendered: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
             leaked: AtomicU64::new(0),
+            underruns: AtomicU64::new(0),
             active_groups: AtomicU32::new(0),
             load_permille: AtomicU32::new(0),
             epoch: std::time::Instant::now(),
@@ -131,12 +140,63 @@ impl Ramp {
     }
 }
 
+/// Most channels read from one file (more are ignored).
+pub const MAX_CLIP_CHANNELS: usize = 64;
+
+/// Where a track's audio comes from.
+#[derive(Debug)]
+pub enum TrackSource {
+    /// Decoded whole into RAM (short files): random access.
+    Resident(Arc<AudioClip>),
+    /// Played from disk (long files): read sequentially, one frame per
+    /// rendered frame (see [`crate::stream`]).
+    Streamed(StreamReader),
+}
+
+impl TrackSource {
+    pub fn frames(&self) -> u64 {
+        match self {
+            Self::Resident(c) => c.frames(),
+            Self::Streamed(r) => r.clip().frames,
+        }
+    }
+
+    pub fn channels(&self) -> u16 {
+        match self {
+            Self::Resident(c) => c.channels,
+            Self::Streamed(r) => r.clip().channels,
+        }
+    }
+
+    /// Loads source frame `src` into `buf`. Streams ignore `src`: they are
+    /// positioned when opened and must be read once per played frame.
+    #[inline]
+    fn fetch(&mut self, src: u64, buf: &mut [f32]) {
+        match self {
+            Self::Resident(c) => {
+                let ch = c.channels as usize;
+                let n = ch.min(buf.len());
+                let i = src as usize * ch;
+                match c.data.get(i..i + n) {
+                    Some(s) => buf[..n].copy_from_slice(s),
+                    None => buf[..n].fill(0.0),
+                }
+            }
+            Self::Streamed(r) => r.next_frame(buf),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct TrackVoice {
-    pub clip: Arc<AudioClip>,
+    pub source: TrackSource,
     pub stem: StemId,
     pub gain: f32,
 }
+
+/// Replacement streams for a seek, one slot per track (`None` keeps the
+/// track's source: resident tracks seek by index).
+pub type SeekStreams = Box<Vec<Option<StreamReader>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GroupState {
@@ -170,11 +230,23 @@ pub struct VoiceGroup {
     pub shared: Arc<VoiceShared>,
     /// Seek target waiting for the de-click dip to reach silence.
     pub pending_seek: Option<u64>,
+    /// Streams opened at the pending seek target, swapped in at the splice.
+    pub pending_streams: Option<SeekStreams>,
+    /// Streams swapped out at a splice, returned to the control thread.
+    pub retired: Option<SeekStreams>,
 }
 
 impl VoiceGroup {
     /// Moves the playhead to `position` frames into the cue's audio.
     fn jump(&mut self, position: u64) {
+        if let Some(mut streams) = self.pending_streams.take() {
+            for (t, s) in self.tracks.iter_mut().zip(streams.iter_mut()) {
+                if let (TrackSource::Streamed(old), Some(new)) = (&mut t.source, s.as_mut()) {
+                    std::mem::swap(old, new);
+                }
+            }
+            self.retired = Some(streams);
+        }
         self.frame = self.count_in + position;
         // The click's beat grid is anchored to the file (and its count-in).
         let beat_frame = self.start_frame + self.frame;
@@ -182,10 +254,11 @@ impl VoiceGroup {
             m.seek(beat_frame);
         }
         self.shared.position_frames.store(position, Ordering::Relaxed);
+        self.shared.seek_pending.store(false, Ordering::Release);
     }
 
     fn source_len(&self) -> u64 {
-        let longest = self.tracks.iter().map(|t| t.clip.frames()).max().unwrap_or(0);
+        let longest = self.tracks.iter().map(|t| t.source.frames()).max().unwrap_or(0);
         self.end_frame.map_or(longest, |e| e.min(longest))
     }
 }
@@ -197,6 +270,9 @@ pub enum RtCommand {
     Resume { cue: CueId },
     /// Jump to `position` frames into the cue's audio (after count-in).
     Seek { cue: CueId, position: u64 },
+    /// A seek for a cue with streamed tracks: `streams` were opened (and
+    /// primed) at the target and replace the playing ones at the splice.
+    SeekStreams { cue: CueId, position: u64, streams: SeekStreams },
     SetGain { cue: CueId, gain: f32, fade_frames: u32 },
     StopAll { fade_frames: u32 },
     SetMasterGain { gain: f32, fade_frames: u32 },
@@ -207,6 +283,7 @@ pub enum RtCommand {
 pub enum Garbage {
     Group(Box<VoiceGroup>),
     Routing(Box<RoutingTable>),
+    Streams(SeekStreams),
 }
 
 pub struct Renderer {
@@ -302,6 +379,29 @@ impl Renderer {
                         }
                     }
                 }
+                RtCommand::SeekStreams { cue, position, streams } => {
+                    let mut streams = Some(streams);
+                    for g in self.groups.iter_mut().flatten().filter(|g| g.cue == cue) {
+                        let Some(s) = streams.take() else { break };
+                        if let Some(old) = g.pending_streams.replace(s) {
+                            // Superseded before its splice.
+                            if let Err(old) = self.garbage.try_push(Garbage::Streams(old)) {
+                                std::mem::forget(old);
+                                self.shared.leaked.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        if g.state == GroupState::Playing && g.gain.value > 0.0 {
+                            g.pending_seek = Some(position);
+                            g.gain.to(0.0, SEEK_DECLICK_FRAMES);
+                        } else {
+                            g.pending_seek = None;
+                            g.jump(position);
+                        }
+                    }
+                    if let Some(s) = streams {
+                        self.trash(Garbage::Streams(s));
+                    }
+                }
                 RtCommand::SetGain { cue, gain, fade_frames } => {
                     for g in self.group_mut(cue) {
                         g.level = gain;
@@ -338,6 +438,7 @@ impl Renderer {
         for slot_idx in 0..self.groups.len() {
             let Some(group) = self.groups[slot_idx].as_mut() else { continue };
             let outcome = mix_group(group, &self.routing, out, ch, frames);
+            let retired = group.retired.take();
             if outcome != MixOutcome::Continue {
                 if outcome == MixOutcome::Ended {
                     group.shared.finished.store(true, Ordering::Release);
@@ -345,6 +446,9 @@ impl Renderer {
                 if let Some(g) = self.groups[slot_idx].take() {
                     self.trash(Garbage::Group(g));
                 }
+            }
+            if let Some(r) = retired {
+                self.trash(Garbage::Streams(r));
             }
         }
 
@@ -431,17 +535,20 @@ fn mix_group(g: &mut VoiceGroup, routing: &RoutingTable, out: &mut [f32], ch: us
             }
             if rel < play_len || g.looped {
                 let src = g.start_frame + rel;
-                for t in &g.tracks {
-                    let clip = &t.clip;
-                    if src >= clip.frames() {
+                for t in &mut g.tracks {
+                    if src >= t.source.frames() {
                         continue;
                     }
+                    // Read before any early-out: a stream must advance once per
+                    // played frame, audible or not, to stay sample-aligned.
+                    let mut frame = [0.0f32; MAX_CLIP_CHANNELS];
+                    t.source.fetch(src, &mut frame);
                     let Some(stem) = routing.stem(t.stem) else { continue };
                     let level = gain * t.gain * stem.gain;
                     if level == 0.0 {
                         continue;
                     }
-                    let clip_ch = clip.channels.max(1);
+                    let clip_ch = t.source.channels().clamp(1, MAX_CLIP_CHANNELS as u16);
                     for &(s_ch, o, rg) in &stem.routes {
                         // Up/down-mix the clip onto the stem's channel layout.
                         let v = if clip_ch >= stem.channels {
@@ -449,13 +556,13 @@ fn mix_group(g: &mut VoiceGroup, routing: &RoutingTable, out: &mut [f32], ch: us
                             let mut n = 0u16;
                             let mut c = s_ch;
                             while c < clip_ch {
-                                acc += clip.sample(src, c);
+                                acc += frame[c as usize];
                                 n += 1;
                                 c += stem.channels;
                             }
                             if n > 0 { acc / n as f32 } else { 0.0 }
                         } else {
-                            clip.sample(src, s_ch % clip_ch)
+                            frame[(s_ch % clip_ch) as usize]
                         };
                         out[f * ch + o as usize] += v * level * rg;
                     }

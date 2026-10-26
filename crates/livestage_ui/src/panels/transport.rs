@@ -450,6 +450,11 @@ pub fn status_bar(ui: &mut Ui, rt: &UiRuntime, st: &mut UiState) {
                 if leaked > 0 {
                     ui.colored_label(theme::standby(), format!("RT queue overflow ×{leaked}"));
                 }
+                let underruns = a.underruns();
+                if underruns > 0 {
+                    ui.colored_label(theme::standby(), format!("Disk underrun ×{underruns}"))
+                        .on_hover_text("A long file streamed from disk ran dry and played silence. Check the drive (or move the show to a faster one).");
+                }
             }
             None => {
                 ui.colored_label(theme::stop(), "Audio offline");
