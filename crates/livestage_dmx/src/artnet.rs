@@ -5,6 +5,7 @@ const ID: &[u8; 8] = b"Art-Net\0";
 const PROTOCOL_VERSION: u16 = 14;
 pub const OP_POLL: u16 = 0x2000;
 pub const OP_DMX: u16 = 0x5000;
+pub const OP_SYNC: u16 = 0x5200;
 
 /// Encodes an ArtDmx packet. `port_address` is the 15-bit
 /// Net(7) : SubNet(4) : Universe(4) address. Data is padded to an even
@@ -23,6 +24,17 @@ pub fn encode_art_dmx(sequence: u8, physical: u8, port_address: u16, data: &[u8]
     p.extend_from_slice(&(len as u16).to_be_bytes());
     p.extend_from_slice(&data[..data.len().min(len)]);
     p.resize(18 + len, 0);
+    p
+}
+
+/// ArtSync: nodes that received ArtDmx from this controller output it now,
+/// all universes together.
+pub fn encode_art_sync() -> [u8; 14] {
+    let mut p = [0u8; 14];
+    p[..8].copy_from_slice(ID);
+    p[8..10].copy_from_slice(&OP_SYNC.to_le_bytes());
+    p[10..12].copy_from_slice(&PROTOCOL_VERSION.to_be_bytes());
+    // Aux1, Aux2: zero.
     p
 }
 
@@ -58,5 +70,10 @@ mod tests {
         assert_eq!(p[15], 0x01); // Net
         assert_eq!(&p[16..18], &[0, 4]); // padded to even
         assert_eq!(&p[18..], &[1, 2, 3, 0]);
+    }
+
+    #[test]
+    fn art_sync_layout() {
+        assert_eq!(encode_art_sync(), *b"Art-Net\0\x00\x52\x00\x0e\x00\x00");
     }
 }

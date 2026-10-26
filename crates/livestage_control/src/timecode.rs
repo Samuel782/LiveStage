@@ -1,4 +1,5 @@
-//! Timecode inputs (MIDI Time Code, Art-Net timecode) and MTC output.
+//! Timecode inputs (MIDI Time Code, Art-Net timecode) and outputs (MTC,
+//! Art-Net timecode).
 //!
 //! Decoders turn wire messages into [`TcSample`]s stamped with their
 //! arrival time; the show thread feeds them to the core
@@ -24,6 +25,13 @@
 //! thread: a full-frame message on every locate, start and stop, and while
 //! rolling the quarter frame due at each quarter-frame boundary (piece *p*
 //! of the cycle labelled *F* at *F + p/4*, cycles on even frames).
+//!
+//! ## Art-Net out
+//!
+//! [`ArtTimecodeGenerator`] runs beside the MTC generator on the show
+//! thread: one `OpTimeCode` per frame boundary while rolling, and while
+//! parked the position at once and then every [`ART_PARKED_REFRESH`], which
+//! a receiver (LiveStage's own decoder included) reads as a locate.
 
 use crate::ControlError;
 use crossbeam_channel::Sender;
@@ -308,6 +316,82 @@ pub fn encode_art_timecode(tc: &Timecode, stream: u8) -> [u8; 19] {
     p
 }
 
+/// How often a parked Art-Net timecode sender repeats its position.
+pub const ART_PARKED_REFRESH: ShowTime = ShowTime::from_millis(250);
+
+/// Schedules Art-Net `OpTimeCode` packets for a transport (no I/O; see
+/// [`ArtNetTimecodeOutput`]).
+#[derive(Clone, Debug, Default)]
+pub struct ArtTimecodeGenerator {
+    /// Frame (since `00:00:00:00`) of the last packet.
+    sent: Option<u64>,
+    running: bool,
+    generation: Option<u64>,
+    rate: Option<FrameRate>,
+    last_send: Option<ShowTime>,
+}
+
+impl ArtTimecodeGenerator {
+    /// Emits the packet due for `t` at show time `now` through `send`. Call
+    /// every show tick: at 1 kHz each frame leaves within a millisecond.
+    pub fn update(&mut self, t: &TcTransport, now: ShowTime, stream: u8, mut send: impl FnMut(&[u8; 19])) {
+        let frame = (t.rate.micros_to_frames(t.position.as_micros() as f64).max(0.0) as u64) % t.rate.frames_per_day();
+        let jumped = self.generation != Some(t.generation) || self.rate != Some(t.rate);
+        let due = if t.running {
+            jumped || !self.running || self.sent != Some(frame)
+        } else {
+            jumped || self.running || self.last_send.is_none_or(|last| now.saturating_sub(last) >= ART_PARKED_REFRESH)
+        };
+        self.generation = Some(t.generation);
+        self.rate = Some(t.rate);
+        self.running = t.running;
+        if due {
+            send(&encode_art_timecode(&Timecode::from_frames(frame, t.rate), stream));
+            self.sent = Some(frame);
+            self.last_send = Some(now);
+        }
+    }
+}
+
+/// Sends the show timecode as Art-Net `OpTimeCode` over UDP.
+pub struct ArtNetTimecodeOutput {
+    socket: UdpSocket,
+    dest: std::net::SocketAddr,
+    generator: ArtTimecodeGenerator,
+    errors: u64,
+    pub destination: String,
+}
+
+impl ArtNetTimecodeOutput {
+    /// Opens a sender to `destination` (`host[:port]`, default port 6454;
+    /// broadcast addresses allowed).
+    pub fn open(destination: &str) -> Result<Self, ControlError> {
+        use std::net::ToSocketAddrs;
+        let with_port = if destination.contains(':') { destination.to_string() } else { format!("{destination}:6454") };
+        let dest = with_port
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("no address for {destination}")))?;
+        let socket = UdpSocket::bind(("0.0.0.0", 0))?;
+        socket.set_broadcast(true)?;
+        tracing::info!(%dest, "Art-Net timecode output open");
+        Ok(Self { socket, dest, generator: ArtTimecodeGenerator::default(), errors: 0, destination: dest.to_string() })
+    }
+
+    /// Sends what is due for `t` (call every show tick).
+    pub fn update(&mut self, t: &TcTransport, now: ShowTime) {
+        let (socket, dest, errors) = (&self.socket, self.dest, &mut self.errors);
+        self.generator.update(t, now, 0, |packet| {
+            if let Err(e) = socket.send_to(packet, dest) {
+                *errors += 1;
+                if errors.is_power_of_two() {
+                    tracing::warn!(%dest, "Art-Net timecode output: {e} ({errors} failed sends)");
+                }
+            }
+        });
+    }
+}
+
 /// Turns Art-Net timecode packets into samples. A label repeated twice
 /// more (a stopped sender refreshing its position) becomes a locate; a
 /// single duplicate (network) is ignored.
@@ -517,6 +601,76 @@ mod tests {
         assert!((t.drift_ppm() + 500.0).abs() < 200.0, "measured drift {} ppm", t.drift_ppm());
         // 500 cycles = 1000 frames = 40 s after the start label.
         assert_eq!(lock.transport(now + ShowTime::from_millis(20)).timecode().to_string(), "10:00:38:00");
+    }
+
+    /// Art-Net timecode out read back by the Art-Net decoder: one packet per
+    /// frame while rolling, a locate when parked, refreshes while stopped.
+    #[test]
+    fn generated_art_timecode_decodes_to_the_transport() {
+        use livestage_core::timecode::TcTransport;
+        for rate in [FrameRate::Fps25, FrameRate::Fps2997Df, FrameRate::Fps30] {
+            let start = tc("00:59:59:00").with_rate(rate).to_time();
+            let mut gen = ArtTimecodeGenerator::default();
+            let mut dec = ArtNetTimecodeDecoder::default();
+            let mut t = TcTransport { position: start, rate, running: true, generation: 1, ..TcTransport::default() };
+            let mut packets = 0;
+            for ms in 0..2_000u64 {
+                t.position = start + ShowTime::from_millis(ms);
+                let now = ShowTime::from_millis(ms);
+                let mut sent = Vec::new();
+                gen.update(&t, now, 0, |p| sent.push(*p));
+                assert!(sent.len() <= 1, "{rate:?}: at most one packet per tick");
+                for p in sent {
+                    packets += 1;
+                    let (label, stream) = parse_art_timecode(&p).unwrap();
+                    assert_eq!(stream, 0);
+                    // The label is the frame in progress.
+                    let err = t.position.as_micros() as f64 - label.to_time().as_micros() as f64;
+                    assert!((0.0..rate.frame_duration().as_micros() as f64).contains(&err), "{rate:?} at {ms} ms: {err} µs");
+                    let s = dec.packet(&p).unwrap();
+                    assert_eq!(s.kind, SampleKind::Running);
+                }
+            }
+            let expected = (2.0 * rate.fps()).round() as i32;
+            assert!((packets - expected).abs() <= 1, "{rate:?}: {packets} packets in 2 s, expected ~{expected}");
+
+            // Parked: the position at once, then refreshes every 250 ms,
+            // which the decoder reads as a locate.
+            t.running = false;
+            let parked = t.position;
+            let base = ShowTime::from_millis(2_000);
+            let mut stopped = Vec::new();
+            for ms in 0..1_000u64 {
+                gen.update(&t, base + ShowTime::from_millis(ms), 0, |p| stopped.push((ms, *p)));
+            }
+            assert_eq!(stopped.iter().map(|(ms, _)| *ms).collect::<Vec<_>>(), [0, 250, 500, 750]);
+            let samples: Vec<_> = stopped.iter().filter_map(|(_, p)| dec.packet(p)).collect();
+            assert_eq!(samples.len(), 1, "{rate:?}: one locate from the repeats");
+            assert_eq!(samples[0].kind, SampleKind::Locate);
+            let (label, _) = parse_art_timecode(&stopped[0].1).unwrap();
+            assert!(parked.as_micros() - label.to_time().as_micros() < rate.frame_duration().as_micros());
+
+            // A locate while parked is sent at once.
+            t.generation = 2;
+            t.position = tc("02:00:00:00").with_rate(rate).to_time();
+            let mut sent = Vec::new();
+            gen.update(&t, base + ShowTime::from_millis(1_001), 0, |p| sent.push(*p));
+            assert_eq!(parse_art_timecode(&sent[0]).unwrap().0.hours, 2);
+        }
+    }
+
+    #[test]
+    fn art_timecode_output_sends_over_udp() {
+        use livestage_core::timecode::TcTransport;
+        let rx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        rx.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut out = ArtNetTimecodeOutput::open(&rx.local_addr().unwrap().to_string()).unwrap();
+        let t = TcTransport { position: tc("01:02:03:04").to_time(), rate: FrameRate::Fps25, running: false, generation: 1, ..TcTransport::default() };
+        out.update(&t, ShowTime::ZERO);
+        let mut buf = [0u8; 64];
+        let n = rx.recv(&mut buf).unwrap();
+        let (label, _) = parse_art_timecode(&buf[..n]).unwrap();
+        assert_eq!(label, tc("01:02:03:04"));
     }
 
     /// MTC out read back by the MTC decoder: positions agree within a

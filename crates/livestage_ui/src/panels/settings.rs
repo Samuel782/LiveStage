@@ -550,6 +550,26 @@ fn timecode(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             });
         });
         ui.end_row();
+        changed |= toggle(ui, &mut out.artnet, "Art-Net").changed();
+        ui.add_enabled_ui(out.artnet, |ui| {
+            ui.horizontal(|ui| {
+                let draft = st.artnet_tc_dest.get_or_insert_with(|| out.artnet_destination.clone());
+                let r = ui.add(egui::TextEdit::singleline(draft).desired_width(180.0).hint_text("255.255.255.255"));
+                if r.lost_focus() {
+                    let typed = draft.trim().to_string();
+                    let typed = if typed.is_empty() { "255.255.255.255".to_string() } else { typed };
+                    if typed != out.artnet_destination {
+                        out.artnet_destination = typed;
+                        changed = true;
+                    }
+                    st.artnet_tc_dest = None;
+                } else if !r.has_focus() {
+                    st.artnet_tc_dest = None;
+                }
+                hint(ui, "OpTimeCode to a broadcast or node address; paused while following Art-Net timecode");
+            });
+        });
+        ui.end_row();
     });
     if !rt.timecode_output.is_empty() && rt.timecode_output != "off" {
         hint(ui, &format!("Sending {}", rt.timecode_output));

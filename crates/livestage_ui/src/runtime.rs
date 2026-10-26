@@ -4,7 +4,7 @@
 use livestage_audio::{AudioEngine, EngineConfig};
 use livestage_control::midi::{MidiInputHandler, MidiOutputHandler};
 use livestage_control::osc::{OscSender, OscServer};
-use livestage_control::timecode::{ArtNetTimecodeListener, MtcInput, MtcOutput, TimecodeInput};
+use livestage_control::timecode::{ArtNetTimecodeListener, ArtNetTimecodeOutput, MtcInput, MtcOutput, TimecodeInput};
 use livestage_control::acl::IpAllowlist;
 use livestage_control::auth::RemoteAuth;
 use livestage_control::websocket::RemoteServer;
@@ -234,6 +234,7 @@ pub struct ShowRuntime {
     /// What the timecode input is doing (port name or error), for the UI.
     pub timecode_input: String,
     mtc_out: Option<MtcOutput>,
+    artnet_tc_out: Option<ArtNetTimecodeOutput>,
     /// When the LTC generator was last pointed at the transport, and at what.
     ltc_sent: Option<(Instant, livestage_audio::ltc::LtcAnchor, u64)>,
     /// What timecode generation is doing, for the UI.
@@ -308,6 +309,7 @@ impl ShowRuntime {
             ltc_in: None,
             timecode_input: String::new(),
             mtc_out: None,
+            artnet_tc_out: None,
             ltc_sent: None,
             timecode_output: String::new(),
             log_seq: 0,
@@ -517,7 +519,13 @@ impl ShowRuntime {
             || cfg.artnet_port != old.artnet_port
             || cfg.ltc_input != old.ltc_input
             || cfg.ltc_channel != old.ltc_channel;
-        let reopen_out = cfg.output.mtc != old.output.mtc || cfg.output.mtc_port != old.output.mtc_port || cfg.output.ltc != old.output.ltc;
+        let reopen_out = cfg.output.mtc != old.output.mtc
+            || cfg.output.mtc_port != old.output.mtc_port
+            || cfg.output.ltc != old.output.ltc
+            || cfg.output.artnet != old.output.artnet
+            || cfg.output.artnet_destination != old.output.artnet_destination
+            // Art-Net out pauses while following Art-Net.
+            || (cfg.source == TimecodeSource::ArtNet) != (old.source == TimecodeSource::ArtNet);
         self.timecode.set_config(cfg);
         if reopen {
             self.start_timecode_input();
@@ -532,6 +540,7 @@ impl ShowRuntime {
     pub fn start_timecode_output(&mut self) {
         let out = self.bundle.project.timecode.output.clone();
         self.mtc_out = None;
+        self.artnet_tc_out = None;
         let mut parts = Vec::new();
         if out.mtc {
             match MtcOutput::open(out.mtc_port.as_deref()) {
@@ -544,6 +553,20 @@ impl ShowRuntime {
         }
         if out.ltc {
             parts.push(format!("LTC on output {}", out.ltc_channel));
+        }
+        if out.artnet {
+            if self.bundle.project.timecode.source == TimecodeSource::ArtNet {
+                // Re-sending the timecode being followed would echo it back.
+                parts.push("Art-Net timecode paused (it is the source)".into());
+            } else {
+                match ArtNetTimecodeOutput::open(&out.artnet_destination) {
+                    Ok(a) => {
+                        parts.push(format!("Art-Net timecode to {}", a.destination));
+                        self.artnet_tc_out = Some(a);
+                    }
+                    Err(e) => parts.push(format!("Art-Net timecode out unavailable: {e}")),
+                }
+            }
         }
         self.ltc_sent = None;
         self.timecode_output = if parts.is_empty() { "off".into() } else { parts.join(", ") };
@@ -1059,10 +1082,14 @@ impl ShowRuntime {
             }
         }
         let audio_clock = self.audio.as_ref().and_then(|a| a.sample_clock());
-        let tc = self.timecode.update(self.now(), audio_clock);
-        // Timecode out: MTC from this thread, LTC from the audio engine.
+        let tc_now = self.now();
+        let tc = self.timecode.update(tc_now, audio_clock);
+        // Timecode out: MTC and Art-Net from this thread, LTC from the audio engine.
         if let Some(m) = &mut self.mtc_out {
             m.update(&tc);
+        }
+        if let Some(a) = &mut self.artnet_tc_out {
+            a.update(&tc, tc_now);
         }
         self.update_ltc_out(&tc, audio_clock);
         self.with_all_lists(|l, c| l.follow_timecode(c, &tc));

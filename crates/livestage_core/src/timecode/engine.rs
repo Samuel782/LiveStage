@@ -76,11 +76,25 @@ pub struct TimecodeOutput {
     pub ltc_channel: u16,
     /// LTC level in dBFS (−10 to −18 is usual for line inputs).
     pub ltc_level_db: f32,
+    /// Art-Net `OpTimeCode`. Not sent while following Art-Net timecode,
+    /// which would echo the source back onto the network.
+    pub artnet: bool,
+    /// Where Art-Net timecode goes: a broadcast or node address, with an
+    /// optional `:port` (default 6454).
+    pub artnet_destination: String,
 }
 
 impl Default for TimecodeOutput {
     fn default() -> Self {
-        Self { mtc: false, mtc_port: None, ltc: false, ltc_channel: 2, ltc_level_db: -12.0 }
+        Self {
+            mtc: false,
+            mtc_port: None,
+            ltc: false,
+            ltc_channel: 2,
+            ltc_level_db: -12.0,
+            artnet: false,
+            artnet_destination: "255.255.255.255".into(),
+        }
     }
 }
 

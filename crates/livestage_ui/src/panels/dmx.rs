@@ -188,6 +188,38 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         }
         ui.separator();
 
+        super::widgets::caption(ui, "Frame sync");
+        let next_free = rt
+            .bundle
+            .project
+            .dmx
+            .universes
+            .iter()
+            .filter_map(|u| match u.transport {
+                DmxTransport::Sacn { universe, .. } => Some(universe),
+                _ => None,
+            })
+            .max()
+            .map_or(1, |u| (u + 1).min(63_999));
+        let sync = &mut rt.bundle.project.dmx.sync;
+        ui.horizontal(|ui| {
+            let mut on = sync.sacn_sync_universe.is_some();
+            if super::widgets::toggle(ui, &mut on, "sACN sync").changed() {
+                sync.sacn_sync_universe = on.then_some(next_free);
+                apply = true;
+            }
+            if let Some(u) = &mut sync.sacn_sync_universe {
+                let r = ui.add(DragValue::new(u).range(1..=63_999).prefix("on universe "));
+                apply |= r.drag_stopped() || (r.changed() && !r.dragged());
+            }
+            ui.weak("E1.31-2018: nodes hold each frame's data until the sync packet, so all universes change together");
+        });
+        ui.horizontal(|ui| {
+            apply |= super::widgets::toggle(ui, &mut sync.artsync, "ArtSync").changed();
+            ui.weak("Art-Net 4: an ArtSync after each frame's ArtDmx");
+        });
+        ui.separator();
+
         super::widgets::caption(ui, "sACN input");
         let input = &mut rt.bundle.project.dmx.sacn_input;
         ui.horizontal(|ui| {

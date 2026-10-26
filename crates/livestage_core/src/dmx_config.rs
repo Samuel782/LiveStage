@@ -181,6 +181,19 @@ impl InputPatch {
     }
 }
 
+/// Frame synchronisation: makes nodes apply every universe of a frame at
+/// once, so a look spanning universes never shows half old, half new.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DmxSyncConfig {
+    /// E1.31-2018 synchronisation universe (1–63999). sACN data carries it
+    /// as its synchronisation address, and a sync packet on it follows each
+    /// frame. `None` sends unsynchronised data.
+    pub sacn_sync_universe: Option<u16>,
+    /// Send an ArtSync after each frame's ArtDmx packets (Art-Net 4).
+    pub artsync: bool,
+}
+
 /// sACN reception: merged per the E1.31 rules (priority, then HTP between
 /// sources of equal priority) and patched onto output universes.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -199,6 +212,8 @@ pub struct DmxConfig {
     pub profiles: Vec<FixtureProfile>,
     #[serde(default)]
     pub sacn_input: SacnInputConfig,
+    #[serde(default)]
+    pub sync: DmxSyncConfig,
     /// Transmit rate in Hz (Art-Net / sACN typically 30–44).
     pub refresh_hz: f32,
     /// How often the lighting layers are rendered on the show thread, in Hz.
@@ -223,6 +238,7 @@ impl Default for DmxConfig {
             pixel_maps: vec![],
             profiles: vec![],
             sacn_input: SacnInputConfig::default(),
+            sync: DmxSyncConfig::default(),
             refresh_hz: 40.0,
             render_hz: default_render_hz(),
         }

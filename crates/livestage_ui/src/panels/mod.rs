@@ -120,6 +120,8 @@ pub struct UiState {
     pub token_label: String,
     pub token_days: u32,
     pub issued_token: Option<String>,
+    /// Art-Net timecode destination being typed (applied on Enter / focus loss).
+    pub artnet_tc_dest: Option<String>,
     /// Audio inputs (name, channels), for LTC.
     pub audio_inputs: Vec<(String, u16)>,
     /// Fixture file to import (GDTF / OFL), and the last import's result.
@@ -187,6 +189,7 @@ impl Default for UiState {
             midi_inputs: Vec::new(),
             midi_outputs: Vec::new(),
             token_label: "remote".into(),
+            artnet_tc_dest: None,
             token_days: 30,
             issued_token: None,
             audio_inputs: Vec::new(),

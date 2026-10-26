@@ -244,7 +244,7 @@ mod tests {
     use livestage_core::dmx_config::{InputMerge, InputPatch};
 
     fn packet(cid: u8, universe: u16, priority: u8, seq: u8, data: &[u8]) -> Vec<u8> {
-        encode_data_packet(&SacnSource { cid: [cid; 16], name: format!("src {cid}") }, universe, priority, seq, data)
+        encode_data_packet(&SacnSource { cid: [cid; 16], name: format!("src {cid}") }, universe, priority, seq, 0, data)
     }
 
     fn feed(m: &mut Merger, bytes: &[u8], now: Instant) -> bool {
