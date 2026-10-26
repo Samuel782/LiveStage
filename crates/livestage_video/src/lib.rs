@@ -21,6 +21,9 @@
 //! [`ffmpeg_backend::FfmpegBackend`] when the `ffmpeg` feature is enabled;
 //! other codec backends (AVFoundation, Media Foundation, GStreamer) would
 //! implement the same trait.
+//!
+//! Timeline layers are frame-locked to their audio master's sample clock by
+//! [`sync`]: the compositor re-times them every frame to cancel drift.
 
 pub mod capabilities;
 pub mod compositor;
@@ -32,12 +35,14 @@ pub mod output;
 pub mod pipelines;
 pub mod slides;
 pub mod source;
+pub mod sync;
 pub mod thumbnail;
 
 pub use compositor::{Compositor, Overlay, OverlayKind};
 pub use gpu::GpuContext;
 pub use output::OutputRenderer;
 pub use pipelines::Pipelines;
+pub use sync::{Correction, MasterClock};
 
 /// Texture format used for canvases and window surfaces. Non-sRGB so that
 /// egui overlays and video (already gamma-encoded) blend identically.

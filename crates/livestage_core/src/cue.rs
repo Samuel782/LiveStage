@@ -578,6 +578,7 @@ impl Cue for VideoCue {
             opacity: self.opacity,
             fade_in: if offset.is_zero() { self.fade_in } else { ShowTime::ZERO },
             start_at: offset,
+            sync: None,
         }));
     }
     fn on_stop(&mut self, ctx: &mut dyn CueContext, fade: Option<ShowTime>) {
@@ -647,6 +648,7 @@ impl Cue for TimerCue {
             opacity: 1.0,
             fade_in: ShowTime::ZERO,
             start_at: offset,
+            sync: None,
         }));
     }
     fn on_stop(&mut self, ctx: &mut dyn CueContext, fade: Option<ShowTime>) {
@@ -869,6 +871,7 @@ impl Cue for SlideCue {
             opacity: self.opacity,
             fade_in: self.fade_in,
             start_at: ShowTime::ZERO,
+            sync: None,
         }));
     }
     fn on_stop(&mut self, ctx: &mut dyn CueContext, fade: Option<ShowTime>) {

@@ -191,6 +191,8 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
     }
     // A few frames so asynchronous sources (slides, video) deliver a picture.
     for _ in 0..10 {
+        let clocks = crate::display::master_clocks(&rt, &engine.compositor.sync_masters());
+        engine.compositor.follow_masters(rt.now(), |m| crate::display::master_reading(&clocks, m));
         engine.compositor.update(rt.now());
         engine.render(rt.now(), &project_displays, &[]);
         std::thread::sleep(Duration::from_millis(20));

@@ -126,6 +126,14 @@ pub struct TimerContent {
     pub elapsed_offset: ShowTime,
 }
 
+/// Locks a visual layer to another cue's media clock (a timeline's audio
+/// master): the layer's media time is `master clock - offset`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MediaSync {
+    pub master: CueId,
+    pub offset: ShowTime,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum VideoAction {
     Show {
@@ -136,6 +144,8 @@ pub enum VideoAction {
         opacity: f32,
         fade_in: ShowTime,
         start_at: ShowTime,
+        /// Clock the layer is frame-locked to; `None` free-runs on the show clock.
+        sync: Option<MediaSync>,
     },
     Hide { cue: CueId, fade: ShowTime },
     Pause { cue: CueId },

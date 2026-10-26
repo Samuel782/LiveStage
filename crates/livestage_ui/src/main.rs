@@ -217,6 +217,11 @@ impl App {
             Some(out) => {
                 use std::sync::atomic::Ordering;
                 self.ui.output_fps = out.shared.fps_milli.load(Ordering::Relaxed) as f32 / 1000.0;
+                self.ui.av_sync = panels::AvSync {
+                    layers: out.shared.sync_layers.load(Ordering::Relaxed),
+                    worst_ms: out.shared.sync_error_us.load(Ordering::Relaxed) as f32 / 1000.0,
+                    snaps: out.shared.sync_snaps.load(Ordering::Relaxed),
+                };
                 (out.shared.previews.lock().clone(), out.shared.ndi.lock().clone())
             }
             None => Default::default(),

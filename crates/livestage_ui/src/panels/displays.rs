@@ -167,6 +167,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState, physical: &[Physi
                 opacity: 1.0,
                 fade_in: ShowTime::ZERO,
                 start_at: ShowTime::ZERO,
+                sync: None,
             }
         } else {
             st.test_patterns.remove(&id);

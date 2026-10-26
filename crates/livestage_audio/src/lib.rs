@@ -27,7 +27,7 @@ pub mod routing;
 
 pub use clip::AudioClip;
 pub use device::{list_output_devices, OutputDeviceInfo};
-pub use engine::{AudioEngine, EngineConfig};
+pub use engine::{AudioEngine, ClockReading, EngineConfig, VoiceClock};
 pub use renderer::Renderer;
 
 #[derive(Debug, thiserror::Error)]

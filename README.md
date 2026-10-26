@@ -29,7 +29,7 @@ cargo run --release                        # opens ./shows/Demo Show.livestage (
 
 | Area | What it does |
 |---|---|
-| **1 kHz real-time show thread** | Cue lists tick on a dedicated thread at 1 kHz in a real-time scheduling class (Mach time-constraint on macOS, `SCHED_FIFO` on Linux, `TIME_CRITICAL` on Windows). The UI never blocks a cue; stacked timeline children start within ~0.5–1.6 ms of their mark. |
+| **1 kHz real-time show thread** | Cue lists tick on a dedicated thread at 1 kHz in a real-time scheduling class (Mach time-constraint on macOS, `SCHED_FIFO` on Linux, `TIME_CRITICAL` on Windows). The UI never blocks a cue; stacked timeline children start within ~0.5–1.6 ms of their mark, and their video is frame-locked to the audio sample clock. |
 | **Lock-free audio engine** | `cpal` output with a real-time callback that never allocates, frees or locks. Commands cross a single-producer/single-consumer ring buffer. Any format Symphonia decodes (WAV, AIFF, FLAC, MP3, AAC/M4A, OGG, ALAC). Stems patched to physical outputs, sample-synchronous multitrack, click track with count-in. |
 | **`wgpu` video pipeline** | Layer compositor → canvas → Bezier warp mesh with **edge blending**, **polygon masks** and brightness → each output. Movie files with hardware decode (VideoToolbox / D3D11VA / VAAPI) and YUV→RGB on the GPU, stills, image sequences, timers, text/teleprompter. |
 | **Multi-display kiosk outputs** | Name logical outputs ("Main LED Wall", "Confidence Monitor"), map them to physical screens, route any content anywhere. Program windows are borderless fullscreen, cursorless, always-on-top and ignore OS close requests. They are rendered and presented on their own **output thread**, so they keep running when the operator window is covered, minimised or dragged. |
@@ -535,6 +535,16 @@ release on note-off; a pad takes precedence over a default note. MIDI Time Code 
   buffer size.
 - **Timelines.** A master cue (usually audio) acts as the clock. Starting mid-way *chases*: media
   starts part-way through, past DMX looks are re-applied, and past triggers are not re-fired.
+- **A/V lock.** Video and text layers started by a timeline with an audio master are frame-locked to
+  that master's sample clock, so they cannot drift from the song (a free-running layer would slip by
+  the audio crystal's error, e.g. 0.36 s an hour at 100 ppm). The output thread compares each layer
+  with the audio clock every frame. Inside 1 ms the layer plays at 1×. Small errors are slewed out by
+  changing its speed by at most ±5 %, so the decoder only drops or repeats an occasional frame. A
+  layer more than 80 ms late jumps forward. A layer early by up to 0.5 s holds its frame until the
+  audio catches up instead of seeking back, and only jumps back beyond that. During a count-in or a
+  pause the layer waits on the master's frame. When the audio ends first, the layer runs on by
+  itself. The status bar shows the worst offset over the last second (**A/V lock ±x ms**), and the
+  System module tooltip shows the re-time count.
 - **Video.** Hardware-decoded frames arrive as NV12 and are converted by the layer shader (BT.601/709,
   limited/full range from the stream's tags). Streams the hardware can't decode fall back to software
   automatically.

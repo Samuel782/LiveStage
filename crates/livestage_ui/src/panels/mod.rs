@@ -67,6 +67,23 @@ fn default_dock() -> DockState<Tab> {
     DockState::new(vec![Tab::Timeline, Tab::Multiview, Tab::Carts, Tab::Lighting, Tab::Displays, Tab::AudioPatch, Tab::Dmx, Tab::Control])
 }
 
+/// A/V lock telemetry: timeline video layers following an audio master.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct AvSync {
+    pub layers: u64,
+    /// Worst audio/video offset over the last second, milliseconds.
+    pub worst_ms: f32,
+    /// Hard re-times since the outputs started.
+    pub snaps: u64,
+}
+
+impl AvSync {
+    /// Within a frame at 50 fps: invisible on stage.
+    pub fn tight(&self) -> bool {
+        self.worst_ms < 20.0
+    }
+}
+
 pub struct UiState {
     pub dock: DockState<Tab>,
     pub selected: Option<CueId>,
@@ -98,6 +115,8 @@ pub struct UiState {
     pub quit_requested: bool,
     /// Output render thread frame rate.
     pub output_fps: f32,
+    /// Video layers frame-locked to audio, as published by the output thread.
+    pub av_sync: AvSync,
     /// Soundboard: visible cart, edit mode, pad being edited, pad held by
     /// the pointer, and pending key / MIDI learn.
     pub cart_page: usize,
@@ -146,6 +165,7 @@ impl Default for UiState {
             confirm_quit: false,
             quit_requested: false,
             output_fps: 0.0,
+            av_sync: AvSync::default(),
             cart_page: 0,
             cart_edit: false,
             cart_slot: None,

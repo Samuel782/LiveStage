@@ -19,8 +19,9 @@
 use crate::gfx::OverlayPainter;
 use crate::show_thread::SharedRuntime;
 use livestage_core::routing::{LogicalDisplay, PhysicalDisplayInfo, PhysicalDisplayKey};
-use livestage_core::{OutputId, ShowTime};
-use livestage_video::{Compositor, GpuContext, OutputRenderer, Pipelines};
+use livestage_audio::VoiceClock;
+use livestage_core::{CueId, OutputId, ShowTime};
+use livestage_video::{Compositor, GpuContext, MasterClock, OutputRenderer, Pipelines};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -440,6 +441,32 @@ pub struct OutputShared {
     /// Output frame rate ×1000 and worst frame time (µs) since last read.
     pub fps_milli: AtomicU64,
     pub max_frame_us: AtomicU64,
+    /// Layers frame-locked to an audio master, on the last frame.
+    pub sync_layers: AtomicU64,
+    /// Worst |audio − video| of locked layers over the last second (µs).
+    pub sync_error_us: AtomicU64,
+    /// Hard re-times since the outputs started.
+    pub sync_snaps: AtomicU64,
+}
+
+/// Audio clocks of the compositor's sync masters, looked up under the runtime
+/// lock and read lock-free at the instant each frame is rendered.
+pub(crate) fn master_clocks(rt: &crate::runtime::ShowRuntime, masters: &[CueId]) -> Vec<(CueId, VoiceClock)> {
+    let Some(audio) = rt.audio.as_ref() else { return Vec::new() };
+    masters.iter().filter_map(|m| audio.voice_clock(*m).map(|c| (*m, c))).collect()
+}
+
+/// The master clock as the compositor sees it.
+pub fn master_reading(clocks: &[(CueId, VoiceClock)], cue: CueId) -> MasterClock {
+    let Some((_, clock)) = clocks.iter().find(|(c, _)| *c == cue) else { return MasterClock::Gone };
+    let r = clock.read();
+    if r.ended {
+        MasterClock::Gone
+    } else if r.running {
+        MasterClock::Running(r.position)
+    } else {
+        MasterClock::Held(r.position)
+    }
 }
 
 pub struct OutputThread {
@@ -473,14 +500,21 @@ impl OutputThread {
             let mut engine = OutputEngine::new(gpu, canvas_format);
             let mut published: HashMap<OutputId, u64> = HashMap::new();
             let (mut frames, mut window_start) = (0u64, Instant::now());
+            let mut sync_worst = 0.0f64;
             let mut next = Instant::now();
             while r.load(Ordering::Relaxed) {
                 let frame_start = Instant::now();
+                // Video actions, applied at the show time they were dispatched.
+                let resolve = |a: &livestage_core::project::AssetRef| livestage_core::bundle::resolve_asset(&bundle_root, a).ok();
+                for (at, action) in video_rx.try_iter() {
+                    engine.compositor.handle(at, &action, &resolve);
+                }
                 // Snapshot what the render pass needs (short lock).
-                let (displays, pixel_sources) = {
+                let masters = engine.compositor.sync_masters();
+                let (displays, pixel_sources, clocks) = {
                     let rt = rt.lock();
                     let pixel: Vec<_> = rt.bundle.project.dmx.pixel_maps.iter().filter(|m| m.enabled).map(|m| m.source).collect();
-                    (rt.bundle.project.displays.clone(), pixel)
+                    (rt.bundle.project.displays.clone(), pixel, master_clocks(&rt, &masters))
                 };
                 for w in engine.sync_slots(&displays) {
                     let _ = ret_tx.send(w);
@@ -498,12 +532,12 @@ impl OutputThread {
                         let _ = ret_tx.send(w);
                     }
                 }
-                // Video actions, applied at the show time they were dispatched.
-                let resolve = |a: &livestage_core::project::AssetRef| livestage_core::bundle::resolve_asset(&bundle_root, a).ok();
-                for (at, action) in video_rx.try_iter() {
-                    engine.compositor.handle(at, &action, &resolve);
-                }
                 let now: ShowTime = epoch.elapsed().into();
+                // Timeline layers follow their audio master's sample clock.
+                let report = engine.compositor.follow_masters(now, |m| master_reading(&clocks, m));
+                sync_worst = sync_worst.max(report.worst_error);
+                sh.sync_layers.store(report.layers as u64, Ordering::Relaxed);
+                sh.sync_snaps.fetch_add(report.snaps as u64, Ordering::Relaxed);
                 engine.compositor.update(now);
                 video_finished.lock().clone_from(engine.compositor.finished_cues());
 
@@ -528,6 +562,13 @@ impl OutputThread {
                 if window_start.elapsed() >= Duration::from_secs(1) {
                     let fps = frames as f64 / window_start.elapsed().as_secs_f64();
                     sh.fps_milli.store((fps * 1000.0) as u64, Ordering::Relaxed);
+                    sh.sync_error_us.store((sync_worst * 1e6) as u64, Ordering::Relaxed);
+                    let layers = sh.sync_layers.load(Ordering::Relaxed);
+                    if layers > 0 {
+                        let snaps = sh.sync_snaps.load(Ordering::Relaxed);
+                        tracing::debug!(layers, worst_ms = sync_worst * 1e3, snaps, "a/v lock");
+                    }
+                    sync_worst = 0.0;
                     (frames, window_start) = (0, Instant::now());
                 }
                 // Presenting windows are paced by their vsync; otherwise run at 60 Hz.
@@ -559,5 +600,88 @@ impl Drop for OutputThread {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod av_sync_tests {
+    use super::master_reading;
+    use livestage_audio::{AudioClip, AudioEngine};
+    use livestage_core::action::{AudioAction, AudioTrack, MediaSync, VideoAction, VisualContent};
+    use livestage_core::project::AssetRef;
+    use livestage_core::routing::AudioRouting;
+    use livestage_core::{CueId, OutputId, ShowTime};
+    use livestage_video::Compositor;
+    use std::path::PathBuf;
+
+    /// A timeline video layer stays on a drifting audio device clock: the real
+    /// engine is rendered offline as fast as a device 2000 ppm fast would pull
+    /// it, and the compositor follows its voice clock frame by frame.
+    #[test]
+    fn video_layer_follows_a_drifting_audio_device() {
+        const RATE: u32 = 48_000;
+        const PPM: f64 = 2_000.0;
+        let routing = AudioRouting::default();
+        let (mut engine, mut device) = AudioEngine::offline(RATE, 2, &routing);
+        engine.insert_clip("/song.wav", AudioClip { sample_rate: RATE, channels: 1, data: vec![0.0; RATE as usize * 40] });
+        let master = CueId::new();
+        let resolve = |a: &AssetRef| Some(PathBuf::from("/").join(a.as_str()));
+        engine.handle(
+            &AudioAction::Play {
+                cue: master,
+                tracks: vec![AudioTrack { asset: AssetRef::new("song.wav"), stem: routing.stems[0].id, gain_db: 0.0, mute: false }],
+                click: None,
+                gain_db: 0.0,
+                fade_in: ShowTime::ZERO,
+                start_at: ShowTime::ZERO,
+                end_at: None,
+                looped: false,
+            },
+            &resolve,
+        );
+        let mut comp = Compositor::default();
+        let (out, layer) = (OutputId::new(), CueId::new());
+        comp.handle(
+            ShowTime::ZERO,
+            &VideoAction::Show {
+                cue: layer,
+                output: out,
+                content: VisualContent::TestPattern,
+                layer: 0,
+                opacity: 1.0,
+                fade_in: ShowTime::ZERO,
+                start_at: ShowTime::ZERO,
+                sync: Some(MediaSync { master, offset: ShowTime::ZERO }),
+            },
+            &|_| None,
+        );
+        assert_eq!(comp.sync_masters(), vec![master]);
+
+        let mut buf = vec![0.0f32; 256 * 2];
+        let mut rendered = 0u64;
+        let (mut worst_locked, mut free_run_error) = (0.0f64, 0.0f64);
+        for frame in 1..=30 * 60u64 {
+            let now = ShowTime::from_micros(frame * 16_667);
+            // The device pulls buffers on its own (fast) crystal.
+            while (rendered as f64) < now.as_secs_f64() * RATE as f64 * (1.0 + PPM * 1e-6) {
+                device.render(&mut buf);
+                rendered += 256;
+            }
+            let clocks = vec![(master, engine.voice_clock(master).unwrap())];
+            let report = comp.follow_masters(now, |m| master_reading(&clocks, m));
+            assert_eq!(report.locked, 1);
+            let audio = engine.media_position(master).unwrap();
+            let video = comp.media_position(layer, now).unwrap();
+            let err = (audio.as_secs_f64() - video.as_secs_f64()).abs();
+            if frame > 120 {
+                worst_locked = worst_locked.max(err);
+            }
+            free_run_error = (audio.as_secs_f64() - now.as_secs_f64()).abs();
+            assert_eq!(report.snaps, 0, "hard re-time at frame {frame} (error {err})");
+        }
+        // Free-running, the picture would be 60 ms (1.5 frames) off by now.
+        assert!(free_run_error > 0.055, "free-run error {free_run_error}");
+        // Locked, it stays within one audio buffer (5.3 ms) of the sample clock.
+        assert!(worst_locked < 0.008, "locked error {worst_locked}");
     }
 }

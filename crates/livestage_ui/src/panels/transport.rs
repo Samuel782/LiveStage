@@ -241,7 +241,7 @@ fn system(ui: &mut Ui, rect: Rect, rt: &UiRuntime, st: &UiState) {
         ("SHOW", if measured { format!("{:.0} Hz", hlt.hz) } else { "—".into() }, hlt.hz > 900.0 || !measured),
         ("LATE", if measured { format!("{:.1} ms", hlt.late_ms) } else { "—".into() }, hlt.late_ms < 2.0),
         ("DSP", dsp.map_or("off".into(), |d| format!("{:.0} %", d * 100.0)), dsp.is_some_and(|d| d < 0.7)),
-        ("OUT", format!("{:.0} fps", st.output_fps), true),
+        ("OUT", format!("{:.0} fps", st.output_fps), st.av_sync.layers == 0 || st.av_sync.tight()),
     ];
     let p = ui.painter();
     let cw = inner.width() / 2.0;
@@ -251,8 +251,14 @@ fn system(ui: &mut Ui, rect: Rect, rt: &UiRuntime, st: &UiState) {
         let c = if *good { theme::TEXT } else { theme::standby() };
         p.text(o + egui::vec2(0.0, 12.0), egui::Align2::LEFT_TOP, value, theme::clock_font(15.0), c);
     }
+    let av = &st.av_sync;
+    let av_line = if av.layers == 0 {
+        "A/V lock: no timeline video playing".to_string()
+    } else {
+        format!("A/V lock: {} layer(s) on the audio clock, worst offset {:.1} ms, {} re-time(s)", av.layers, av.worst_ms, av.snaps)
+    };
     ui.allocate_rect(rect, egui::Sense::hover()).on_hover_text(format!(
-        "Show thread: {:.0} Hz, worst lateness {:.1} ms, lock wait {:.1} ms, tick {:.2} ms (last second)\nScheduling: {sched}",
+        "Show thread: {:.0} Hz, worst lateness {:.1} ms, lock wait {:.1} ms, tick {:.2} ms (last second)\nScheduling: {sched}\n{av_line}",
         hlt.hz, hlt.late_ms, hlt.lock_ms, hlt.tick_ms
     ));
 }
@@ -455,6 +461,16 @@ pub fn status_bar(ui: &mut Ui, rt: &UiRuntime, st: &mut UiState) {
             ui.label(RichText::new(format!("Show {:.0} Hz · late ≤{:.1} ms", h.hz, h.late_ms)).color(dim));
             ui.separator();
             ui.label(RichText::new(format!("Outputs {:.0} fps", st.output_fps)).color(dim));
+            ui.separator();
+        }
+        if st.av_sync.layers > 0 {
+            let av = st.av_sync;
+            let text = RichText::new(format!("A/V lock ±{:.1} ms", av.worst_ms));
+            let resp = if av.tight() { ui.label(text.color(dim)) } else { ui.colored_label(theme::standby(), text) };
+            resp.on_hover_text(format!(
+                "{} timeline video layer(s) frame-locked to their audio master.\nWorst offset over the last second; {} hard re-time(s) since outputs started.",
+                av.layers, av.snaps
+            ));
             ui.separator();
         }
         if !livestage_video::capabilities::movie_support().movies_available() {

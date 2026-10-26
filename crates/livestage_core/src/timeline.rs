@@ -6,8 +6,14 @@
 //! engine's sample counter, not the UI frame clock — passes their offset.
 //! Starting or seeking a timeline mid-way *chases*: children whose window
 //! covers the start point are started part-way through.
+//!
+//! Visual children of a timeline with a master are frame-locked to it: their
+//! `Show` carries a [`MediaSync`] so the compositor drives the layer from the
+//! audio sample clock instead of letting it free-run on the wall clock.
 
+use crate::action::{EngineAction, MediaSync, VideoAction, VisualContent};
 use crate::cue::*;
+use crate::id::CueId;
 use crate::time::ShowTime;
 use crate::timecode::slave::{follow_slave, Followed};
 use crate::timecode::{TcTransport, TimecodeSlave};
@@ -68,6 +74,10 @@ impl TimelineCue {
         r
     }
 
+    fn master_id(&self) -> Option<CueId> {
+        self.master.as_deref().map(|m| m.header().id)
+    }
+
     fn timeline_clock(&self, ctx: &dyn CueContext) -> Option<ShowTime> {
         let m = self.master.as_deref()?;
         if m.state().is_active() {
@@ -78,6 +88,8 @@ impl TimelineCue {
     }
 
     fn fire_due(&mut self, ctx: &mut dyn CueContext, position: ShowTime, chasing: bool) {
+        let master = self.master_id();
+        let ctx = &mut MasterSync::wrap(ctx, master, position);
         for item in self.items.iter_mut().filter(|i| !i.fired && i.offset <= position) {
             item.fired = true;
             let into = position - item.offset;
@@ -178,6 +190,9 @@ impl Cue for TimelineCue {
             m.tick(ctx);
         }
         self.fire_due(ctx, elapsed, false);
+        // Children leaving a pre-wait show their layers from here.
+        let master = self.master_id();
+        let ctx = &mut MasterSync::wrap(ctx, master, elapsed);
         for i in self.items.iter_mut().filter(|i| i.cue.state().is_active()) {
             i.cue.tick(ctx);
         }
@@ -235,6 +250,46 @@ impl Cue for TimelineCue {
             v.extend(i.cue.validate().into_iter().map(|e| format!("{} @ {}: {e}", i.cue.header().number, i.offset)));
         }
         v
+    }
+}
+
+/// Context handed to children: tags the visual layers they show with the
+/// timeline's master clock. `position` is the timeline time at dispatch, so
+/// a child started `into` deep (or late, after a pre-wait) is anchored at
+/// `position - into` on the master — exactly its offset when fired on time.
+struct MasterSync<'a> {
+    inner: &'a mut dyn CueContext,
+    master: Option<CueId>,
+    position: ShowTime,
+}
+
+impl<'a> MasterSync<'a> {
+    fn wrap(inner: &'a mut dyn CueContext, master: Option<CueId>, position: ShowTime) -> Self {
+        Self { inner, master, position }
+    }
+}
+
+impl CueContext for MasterSync<'_> {
+    fn now(&self) -> ShowTime {
+        self.inner.now()
+    }
+    fn dispatch(&mut self, mut action: EngineAction) {
+        if let (Some(master), EngineAction::Video(VideoAction::Show { content, start_at, sync, .. })) =
+            (self.master, &mut action)
+        {
+            // Only time-based content; a nested timeline's own master wins.
+            let timed = matches!(content, VisualContent::Video { .. } | VisualContent::Text(_));
+            if timed && sync.is_none() {
+                *sync = Some(MediaSync { master, offset: self.position - *start_at });
+            }
+        }
+        self.inner.dispatch(action);
+    }
+    fn media_position(&self, cue: CueId) -> Option<ShowTime> {
+        self.inner.media_position(cue)
+    }
+    fn media_finished(&self, cue: CueId) -> bool {
+        self.inner.media_finished(cue)
     }
 }
 
@@ -324,5 +379,64 @@ mod tests {
         assert!(!ctx.actions.iter().any(|a| matches!(a, EngineAction::Audio(crate::action::AudioAction::Stop { .. }))));
         assert_eq!(dmx_scene_count(&ctx), 2);
         assert_eq!(tl.state(), crate::state::CueState::Running);
+    }
+
+    fn movie(number: &str) -> AnyCue {
+        AnyCue::Video(VideoCue {
+            header: CueHeader::new(number, "Clip"),
+            output: crate::id::OutputId::new(),
+            content: VisualContent::Video { asset: AssetRef::new("assets/video/a.mov"), looped: false },
+            layer: 0,
+            opacity: 1.0,
+            fade_in: ShowTime::ZERO,
+            fade_out: ShowTime::ZERO,
+            hold: None,
+            media_length: Some(ShowTime::from_secs(60)),
+            end_behavior: EndBehavior::Hide,
+        })
+    }
+
+    fn shown_sync(ctx: &MockCtx) -> Vec<Option<MediaSync>> {
+        ctx.actions
+            .iter()
+            .filter_map(|a| match a {
+                EngineAction::Video(VideoAction::Show { sync, .. }) => Some(*sync),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn video_children_are_locked_to_the_audio_master() {
+        let mut ctx = MockCtx::default();
+        let master = audio_master();
+        let master_id = master.header().id;
+        let mut tl = TimelineCue::new(CueHeader::new("10", "Song + video"), Some(master));
+        tl.add(ShowTime::ZERO, movie("10.1"));
+        tl.add(ShowTime::from_secs(10), movie("10.2"));
+        let mut tl = AnyCue::Timeline(tl);
+
+        tl.go(&mut ctx);
+        assert_eq!(shown_sync(&ctx), vec![Some(MediaSync { master: master_id, offset: ShowTime::ZERO })]);
+
+        // Fired 5 ms late: the layer starts 5 ms deep but stays anchored at its offset.
+        ctx.positions.insert(master_id, ShowTime::from_millis(10_005));
+        tl.tick(&mut ctx);
+        assert_eq!(shown_sync(&ctx)[1], Some(MediaSync { master: master_id, offset: ShowTime::from_secs(10) }));
+
+        // Chasing on a seek re-anchors at the offset too.
+        ctx.actions.clear();
+        tl.seek(&mut ctx, ShowTime::from_secs(5));
+        tl.seek(&mut ctx, ShowTime::from_secs(20));
+        assert!(shown_sync(&ctx).iter().all(|s| s.is_some_and(|s| s.offset == ShowTime::from_secs(10) || s.offset.is_zero())));
+    }
+
+    #[test]
+    fn timelines_without_a_master_free_run() {
+        let mut ctx = MockCtx::default();
+        let mut tl = TimelineCue::new(CueHeader::new("1", "Loose"), None);
+        tl.add(ShowTime::ZERO, movie("1.1"));
+        AnyCue::Timeline(tl).go(&mut ctx);
+        assert_eq!(shown_sync(&ctx), vec![None]);
     }
 }

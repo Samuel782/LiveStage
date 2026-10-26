@@ -140,6 +140,53 @@ fn load(path: &Path, sample_rate: u32) -> ClipSlot {
     }
 }
 
+/// One reading of a cue's sample clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockReading {
+    /// Media time of the cue's audio (zero during a count-in).
+    pub position: ShowTime,
+    /// The clock is advancing: started, audibly playing and not finished.
+    pub running: bool,
+    /// The cue's audio reached its end (or was stopped and released).
+    pub ended: bool,
+}
+
+/// A cue's sample clock, readable from any thread without locks. Stays
+/// valid after the voice ends (frozen at its last position).
+#[derive(Clone)]
+pub struct VoiceClock {
+    voice: Arc<VoiceShared>,
+    engine: Arc<EngineShared>,
+    sample_rate: u32,
+}
+
+impl VoiceClock {
+    pub fn read(&self) -> ClockReading {
+        let v = &self.voice;
+        if !v.started.load(Ordering::Acquire) {
+            return ClockReading { position: ShowTime::ZERO, running: false, ended: false };
+        }
+        let ended = v.finished.load(Ordering::Acquire);
+        let running = v.playing.load(Ordering::Relaxed) && !ended;
+        let frames = v.position_frames.load(Ordering::Relaxed) + if running { self.interpolated_frames() } else { 0 };
+        ClockReading { position: ShowTime::from_frames(frames, self.sample_rate), running, ended }
+    }
+
+    /// Frames elapsed since the last device callback, capped at one buffer.
+    /// The sample clock only advances once per callback (e.g. every 5.3 ms at
+    /// 256 frames); interpolating removes that step from timeline scheduling
+    /// and from frame-locked video.
+    fn interpolated_frames(&self) -> u64 {
+        let at = self.engine.callback_at_ns.load(Ordering::Acquire);
+        if at == 0 {
+            return 0;
+        }
+        let since_ns = (self.engine.epoch.elapsed().as_nanos() as u64).saturating_sub(at);
+        let frames = since_ns * self.sample_rate as u64 / 1_000_000_000;
+        frames.min(self.engine.callback_frames.load(Ordering::Relaxed) as u64)
+    }
+}
+
 /// Owner of the audio pipeline. Lives on the control thread.
 pub struct AudioEngine {
     tx: HeapProd<RtCommand>,
@@ -382,25 +429,14 @@ impl AudioEngine {
 
     /// Sample-clock position of a cue (drives timeline children).
     pub fn media_position(&self, cue: CueId) -> Option<ShowTime> {
-        let v = self.voices.get(&cue)?;
-        if !v.started.load(Ordering::Acquire) {
-            return Some(ShowTime::ZERO);
-        }
-        let frames = v.position_frames.load(Ordering::Relaxed) + self.interpolated_frames(v);
-        Some(ShowTime::from_frames(frames, self.sample_rate))
+        self.voice_clock(cue).map(|c| c.read().position)
     }
 
-    /// Frames elapsed since the last device callback, capped at one buffer.
-    /// The sample clock only advances once per callback (e.g. every 5.3 ms at
-    /// 256 frames); interpolating removes that step from timeline scheduling.
-    fn interpolated_frames(&self, v: &VoiceShared) -> u64 {
-        let at = self.shared.callback_at_ns.load(Ordering::Acquire);
-        if at == 0 || !v.playing.load(Ordering::Relaxed) {
-            return 0;
-        }
-        let since_ns = (self.shared.epoch.elapsed().as_nanos() as u64).saturating_sub(at);
-        let frames = since_ns * self.sample_rate as u64 / 1_000_000_000;
-        frames.min(self.shared.callback_frames.load(Ordering::Relaxed) as u64)
+    /// Lock-free handle on a cue's sample clock for other threads (the video
+    /// output thread frame-locks timeline layers to it).
+    pub fn voice_clock(&self, cue: CueId) -> Option<VoiceClock> {
+        let voice = self.voices.get(&cue)?.clone();
+        Some(VoiceClock { voice, engine: self.shared.clone(), sample_rate: self.sample_rate })
     }
 
     /// The device sample clock: frames rendered since the engine started,

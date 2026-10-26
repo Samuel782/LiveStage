@@ -7,6 +7,7 @@
 
 use crate::pipelines::GpuLayer;
 use crate::source::{BackendRegistry, StillSource, VideoFrame, VideoSource};
+use crate::sync::{Correction, LayerClock, LayerSync, MasterClock};
 use livestage_core::action::{TextContent, TimerContent, TimerMode, VideoAction, VisualContent};
 use livestage_core::id::{CueId, OutputId};
 use livestage_core::project::AssetRef;
@@ -62,10 +63,9 @@ pub struct Layer {
     pub z: i32,
     pub opacity: Fade,
     pub content: LayerContent,
-    started_at: ShowTime,
-    start_offset: ShowTime,
-    paused_at: Option<ShowTime>,
-    paused_total: ShowTime,
+    clock: LayerClock,
+    /// Master clock this layer is frame-locked to.
+    pub sync: Option<LayerSync>,
     removing: bool,
     /// A fading copy of the previous picture during a slide cross-fade.
     ghost: bool,
@@ -75,8 +75,7 @@ pub struct Layer {
 
 impl Layer {
     pub fn elapsed(&self, now: ShowTime) -> ShowTime {
-        let now = self.paused_at.unwrap_or(now);
-        (now - self.started_at - self.paused_total) + self.start_offset
+        self.clock.at(now)
     }
 
     /// Current frame for texture layers.
@@ -185,7 +184,7 @@ impl Compositor {
 
     pub fn handle(&mut self, now: ShowTime, action: &VideoAction, resolve: &dyn Fn(&AssetRef) -> Option<PathBuf>) {
         match action {
-            VideoAction::Show { cue, output, content, layer, opacity, fade_in, start_at } => {
+            VideoAction::Show { cue, output, content, layer, opacity, fade_in, start_at, sync } => {
                 self.remove_cue(*cue);
                 self.finished.remove(cue);
                 let content = self.open_content(content, resolve);
@@ -199,10 +198,8 @@ impl Compositor {
                     z: *layer,
                     opacity: fade,
                     content,
-                    started_at: now,
-                    start_offset: *start_at,
-                    paused_at: None,
-                    paused_total: ShowTime::ZERO,
+                    clock: LayerClock::start(now, *start_at),
+                    sync: sync.map(|s| LayerSync::new(s.master, s.offset)),
                     removing: false,
                     ghost: false,
                     gpu: None,
@@ -219,23 +216,19 @@ impl Compositor {
             }
             VideoAction::Pause { cue } => {
                 if let Some(l) = self.layer_mut(*cue) {
-                    l.paused_at.get_or_insert(now);
+                    l.clock.pause(now);
                 }
             }
             VideoAction::Resume { cue } => {
                 if let Some(l) = self.layer_mut(*cue) {
-                    if let Some(p) = l.paused_at.take() {
-                        l.paused_total += now - p;
-                    }
+                    l.clock.resume(now);
                 }
             }
             VideoAction::Seek { cue, position } => {
                 self.finished.remove(cue);
                 if let Some(l) = self.layer_mut(*cue) {
-                    let at = l.paused_at.unwrap_or(now);
-                    l.started_at = at;
-                    l.paused_total = ShowTime::ZERO;
-                    l.start_offset = *position;
+                    let at = l.clock.paused_at().unwrap_or(now);
+                    l.clock.seek(now, *position);
                     // Timers display wall-clock time since their start: re-base it.
                     if let LayerContent::Overlay(OverlayKind::Timer(t)) = &mut l.content {
                         t.started_at = at;
@@ -261,10 +254,8 @@ impl Compositor {
                         z: layer.z,
                         opacity,
                         content: LayerContent::Source(Box::new(StillSource::new(frame))),
-                        started_at: now,
-                        start_offset: ShowTime::ZERO,
-                        paused_at: None,
-                        paused_total: ShowTime::ZERO,
+                        clock: LayerClock::start(now, ShowTime::ZERO),
+                        sync: None,
                         removing: true,
                         ghost: true,
                         gpu: None,
@@ -311,6 +302,35 @@ impl Compositor {
                 stack.retain(|l| l.cue != cue);
             }
         }
+    }
+
+    /// Masters that frame-locked layers follow (fetch their clocks for
+    /// [`follow_masters`](Self::follow_masters)).
+    pub fn sync_masters(&self) -> Vec<CueId> {
+        let mut v: Vec<CueId> = self.outputs.values().flatten().filter_map(|l| l.sync.map(|s| s.master)).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// Re-times frame-locked layers against their masters for the frame
+    /// shown at `now`. Call once per frame, before rendering.
+    pub fn follow_masters(&mut self, now: ShowTime, master: impl Fn(CueId) -> MasterClock) -> SyncReport {
+        let mut report = SyncReport::default();
+        for l in self.outputs.values_mut().flatten() {
+            let Some(sync) = &mut l.sync else { continue };
+            let c = sync.follow(&mut l.clock, now, master(sync.master));
+            if c == Correction::Snapped {
+                tracing::debug!(cue = %l.cue, error_ms = sync.last_error * 1e3, "video layer re-timed to its audio master");
+            }
+            report.layers += 1;
+            if c != Correction::FreeRun {
+                report.locked += 1;
+                report.worst_error = report.worst_error.max(sync.last_error.abs());
+            }
+            report.snaps += (c == Correction::Snapped) as u32;
+        }
+        report
     }
 
     /// Drops faded-out layers and flags finished media. Call once per frame.
@@ -400,6 +420,19 @@ impl Compositor {
     }
 }
 
+/// Per-frame summary of frame-locked layers.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SyncReport {
+    /// Layers bound to a master.
+    pub layers: u32,
+    /// Of those, layers whose master clock was available.
+    pub locked: u32,
+    /// Largest |master − layer| this frame, seconds.
+    pub worst_error: f64,
+    /// Layers hard re-timed this frame.
+    pub snaps: u32,
+}
+
 /// Formats a timer; returns `(text, in_warning_zone)`.
 pub fn timer_text(t: &TimerContent, now: ShowTime) -> (String, bool) {
     let elapsed = (now - t.started_at) + t.elapsed_offset;
@@ -457,6 +490,7 @@ mod tests {
                 opacity: 1.0,
                 fade_in: ShowTime::from_secs(2),
                 start_at: ShowTime::ZERO,
+                sync: None,
             },
             &none,
         );
@@ -482,6 +516,7 @@ mod tests {
                 opacity: 1.0,
                 fade_in: ShowTime::ZERO,
                 start_at: ShowTime::ZERO,
+                sync: None,
             },
             &|_| None,
         );

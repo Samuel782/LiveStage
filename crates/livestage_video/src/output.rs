@@ -503,6 +503,7 @@ mod gpu_tests {
                 opacity: 1.0,
                 fade_in: ShowTime::ZERO,
                 start_at: ShowTime::ZERO,
+                sync: None,
             },
             &|_| None,
         );
@@ -647,6 +648,7 @@ mod gpu_tests {
                 opacity: 1.0,
                 fade_in: ShowTime::ZERO,
                 start_at: ShowTime::ZERO,
+                sync: None,
             },
             &|_| None,
         );
@@ -705,6 +707,7 @@ mod gpu_tests {
                 opacity: 1.0,
                 fade_in: ShowTime::ZERO,
                 start_at: ShowTime::ZERO,
+                sync: None,
             },
             &|_| None,
         );
