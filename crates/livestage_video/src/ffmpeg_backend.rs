@@ -226,6 +226,9 @@ struct Decoder {
     scaler: Option<(ff::format::Pixel, u32, u32, ff::software::scaling::Context)>,
     /// Keeps the hardware device alive (the codec holds its own reference too).
     _hw: Option<HwDevice>,
+    /// Shared textures that carry D3D11VA frames to the renderer.
+    #[cfg(target_os = "windows")]
+    ring: crate::native::SharedRing,
     /// Logged once: which path the first frame took.
     reported_path: bool,
     duration_us: Option<i64>,
@@ -438,6 +441,8 @@ impl Decoder {
             decoder,
             scaler: None,
             _hw: hw,
+            #[cfg(target_os = "windows")]
+            ring: crate::native::SharedRing::new(),
             reported_path: false,
             duration_us,
             frame_us,
@@ -462,9 +467,16 @@ impl Decoder {
         Some(rescale_us(pts - self.start_pts, self.time_base))
     }
 
-    /// Hardware surface → NV12 transfer, NV12 passthrough, else RGBA via swscale.
+    /// Hardware surface → zero-copy handle or NV12 transfer, NV12
+    /// passthrough, else RGBA via swscale.
     fn convert(&mut self, src: &ff::frame::Video) -> Result<VideoFrame, ff::Error> {
         let is_hw = unsafe { !(*src.as_ptr()).hw_frames_ctx.is_null() };
+        if is_hw && crate::native::enabled() {
+            if let Some(frame) = self.native_frame(src) {
+                self.report_path(true, true, src);
+                return Ok(frame);
+            }
+        }
         let mut transferred;
         let frame = if is_hw {
             transferred = ff::frame::Video::empty();
@@ -477,19 +489,65 @@ impl Decoder {
         } else {
             src
         };
+        self.report_path(is_hw, false, frame);
+        if frame.format() == ff::format::Pixel::NV12 {
+            Ok(nv12_frame(frame, src))
+        } else {
+            self.convert_rgba(frame)
+        }
+    }
+
+    /// Logs which path the first frame took.
+    fn report_path(&mut self, hardware: bool, zero_copy: bool, frame: &ff::frame::Video) {
         if !self.reported_path {
             self.reported_path = true;
             tracing::info!(
-                hardware = is_hw,
+                hardware,
+                zero_copy,
                 format = ?frame.format(),
                 size = %format!("{}x{}", frame.width(), frame.height()),
                 "video decode path"
             );
         }
-        if frame.format() == ff::format::Pixel::NV12 {
-            Ok(nv12_frame(frame, src))
-        } else {
-            self.convert_rgba(frame)
+    }
+
+    /// Wraps a hardware frame for zero-copy import, or `None` to transfer it.
+    fn native_frame(&mut self, src: &ff::frame::Video) -> Option<VideoFrame> {
+        let (w, h) = (src.width(), src.height());
+        let (matrix, full_range) = color_tags(src, h);
+        let raw = unsafe { &*src.as_ptr() };
+        #[cfg(target_os = "macos")]
+        {
+            if raw.format != ff::ffi::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX as i32 {
+                return None;
+            }
+            // SAFETY: data[3] of a VideoToolbox frame is its CVPixelBufferRef,
+            // live while `src` is; the surface retains it.
+            let surface = unsafe { crate::native::NativeSurface::from_cv_pixel_buffer(raw.data[3].cast()) }?;
+            Some(VideoFrame::native_nv12(w, h, surface, matrix, full_range, next_serial()))
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let frames = raw.hw_frames_ctx;
+            // SAFETY: a hardware frame's hw_frames_ctx wraps an AVHWFramesContext.
+            let sw_format = unsafe { (*((*frames).data as *const ff::ffi::AVHWFramesContext)).sw_format };
+            if raw.format != ff::ffi::AVPixelFormat::AV_PIX_FMT_D3D11 as i32 || sw_format != ff::ffi::AVPixelFormat::AV_PIX_FMT_NV12 {
+                return None;
+            }
+            // SAFETY: data[0] of a D3D11 frame is its ID3D11Texture2D and
+            // data[1] the array slice, live while `src` is.
+            match unsafe { self.ring.copy_frame(raw.data[0].cast(), raw.data[1] as usize as u32, (w, h)) } {
+                Ok(surface) => Some(VideoFrame::native_nv12(w, h, surface, matrix, full_range, next_serial())),
+                Err(reason) => {
+                    tracing::debug!(%reason, "zero-copy hand-off skipped for a frame");
+                    None
+                }
+            }
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            let _ = (raw, w, matrix, full_range);
+            None
         }
     }
 
@@ -538,16 +596,21 @@ fn nv12_frame(frame: &ff::frame::Video, tags: &ff::frame::Video) -> VideoFrame {
     for row in 0..ch {
         data.extend_from_slice(&uv[row * uvs..row * uvs + cw * 2]);
     }
+    let (matrix, full_range) = color_tags(tags, h as u32);
+    VideoFrame::nv12(w as u32, h as u32, data, matrix, full_range, next_serial())
+}
+
+/// YUV matrix and range from a frame's colour tags.
+fn color_tags(tags: &ff::frame::Video, height: u32) -> (YuvMatrix, bool) {
     use ff::util::color::{Range, Space};
     let matrix = match tags.color_space() {
         Space::BT709 => YuvMatrix::Bt709,
         Space::BT470BG | Space::SMPTE170M => YuvMatrix::Bt601,
         // Untagged: the usual convention is HD = 709, SD = 601.
-        _ if h >= 720 => YuvMatrix::Bt709,
+        _ if height >= 720 => YuvMatrix::Bt709,
         _ => YuvMatrix::Bt601,
     };
-    let full_range = tags.color_range() == Range::JPEG;
-    VideoFrame::nv12(w as u32, h as u32, data, matrix, full_range, next_serial())
+    (matrix, tags.color_range() == Range::JPEG)
 }
 
 fn hwdec_enabled() -> bool {
@@ -701,6 +764,7 @@ mod tests {
 
     /// Expected frame index for a decoded grey level.
     fn index_of(frame: &VideoFrame) -> i64 {
+        let frame = &frame.to_cpu().expect("hardware frame readback");
         let (w, h) = (frame.width, frame.height);
         let y = match frame.format {
             // Hardware path: read luma straight from the Y plane.
@@ -776,25 +840,70 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn hardware_decode_yields_nv12() {
+        let Some((f, dir)) = hardware_frame("hwdec") else { return };
+        assert!(matches!(f.format, crate::source::PixelFormat::Nv12 { .. }), "expected hardware NV12, got {:?}", f.format);
+        if cfg!(target_os = "macos") && crate::native::enabled() {
+            assert!(f.native.is_some() && f.data.is_empty(), "VideoToolbox frames are handed over without a CPU copy");
+        }
+        assert_eq!(f.to_cpu().unwrap().data.len(), 320 * 240 + 160 * 120 * 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Frame 5 of a VideoToolbox-encoded 320x240 clip, decoded in hardware,
+    /// and the clip's directory (`None` where that is unavailable).
+    fn hardware_frame(tag: &str) -> Option<(VideoFrame, PathBuf)> {
         if !hwdec_enabled() || FfmpegBackend::new().is_err() {
-            return;
+            return None;
         }
         let Some(codec) = ff::encoder::find_by_name("h264_videotoolbox") else {
             eprintln!("skipping: no h264_videotoolbox encoder");
-            return;
+            return None;
         };
-        let dir = std::env::temp_dir().join(format!("livestage-hwdec-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("livestage-{tag}-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let clip = dir.join("clip.mp4");
         if generate_with(&clip, codec, 320, 240).is_none() {
             eprintln!("skipping: VideoToolbox encoder could not be opened");
-            return;
+            return None;
         }
         let mut src = FfmpegSource::open(&clip, false).unwrap();
-        let f = wait_for(&mut src, ShowTime::from_millis(550), 5);
-        assert!(matches!(f.format, crate::source::PixelFormat::Nv12 { .. }), "expected hardware NV12, got {:?}", f.format);
-        assert_eq!(f.data.len(), 320 * 240 + 160 * 120 * 2);
+        Some((wait_for(&mut src, ShowTime::from_millis(550), 5), dir))
+    }
+
+    /// Zero-copy, its GPU-copy variant and the failure fallback all draw what
+    /// the CPU upload path draws.
+    #[test]
+    fn zero_copy_matches_cpu_upload() {
+        use crate::native::test_hooks::{DISABLED_HERE, FAIL_IMPORT, FORCE_COPY};
+        use crate::output::gpu_tests::{gpu, render_frame};
+        let Some((frame, dir)) = hardware_frame("zerocopy") else { return };
         let _ = std::fs::remove_dir_all(&dir);
+        if frame.native.is_none() {
+            eprintln!("skipping: no native frame on this system");
+            return;
+        }
+        let Some(gpu) = gpu() else { return };
+        let pipes = crate::pipelines::Pipelines::new(&gpu.device);
+        let cpu = frame.to_cpu().unwrap();
+        assert!(cpu.native.is_none() && !cpu.data.is_empty());
+        let expected = render_frame(&gpu, &pipes, &cpu);
+        let same = |got: &[u8], what: &str| {
+            let worst = got.iter().zip(&expected).map(|(a, b)| a.abs_diff(*b)).max();
+            assert_eq!(got.len(), expected.len(), "{what}");
+            assert!(worst <= Some(1), "{what}: differs from the CPU upload by up to {worst:?}");
+        };
+
+        same(&render_frame(&gpu, &pipes, &frame), "bound planes");
+        FORCE_COPY.set(true);
+        same(&render_frame(&gpu, &pipes, &frame), "copied planes");
+        FORCE_COPY.set(false);
+
+        FAIL_IMPORT.set(true);
+        let fallback = render_frame(&gpu, &pipes, &frame);
+        let disabled = DISABLED_HERE.get();
+        FAIL_IMPORT.set(false);
+        same(&fallback, "CPU fallback after a failed import");
+        assert!(disabled, "a failed import switches zero-copy off");
     }
 
     #[test]

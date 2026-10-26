@@ -337,7 +337,7 @@ fn pad_menu(resp: &egui::Response, rt: &mut UiRuntime, st: &mut UiState, page: u
                 st.cart_edit = true;
                 st.cart_slot = Some(slot);
                 st.selected = Some(p.cue.header().id);
-                ui.close_menu();
+                ui.close();
             }
             menu_separator(ui);
             for m in PadMode::ALL {
@@ -347,7 +347,7 @@ fn pad_menu(resp: &egui::Response, rt: &mut UiRuntime, st: &mut UiState, page: u
                         pp.mode = m;
                     }
                     rt.mark_changed();
-                    ui.close_menu();
+                    ui.close();
                 }
             }
             menu_separator(ui);
@@ -360,13 +360,13 @@ fn pad_menu(resp: &egui::Response, rt: &mut UiRuntime, st: &mut UiState, page: u
             if let Some(c) = list_cue.clone() {
                 rt.set_pad_cue(page, slot, c);
             }
-            ui.close_menu();
+            ui.close();
         }
         if pad.is_none() {
             for kind in [CueKind::Dmx, CueKind::Video, CueKind::Timer] {
                 if menu_item(ui, &format!("New {} pad", kind.label()), None).clicked() {
                     new_pad(rt, st, page, slot, kind);
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         }
@@ -377,7 +377,7 @@ fn pad_menu(resp: &egui::Response, rt: &mut UiRuntime, st: &mut UiState, page: u
                     rt.bundle.project.carts[page].pads[slot] = None;
                     rt.mark_changed();
                 }
-                ui.close_menu();
+                ui.close();
             }
         }
     });

@@ -14,7 +14,7 @@ default-members = ["crates/livestage_ui"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-rust-version = "1.92"
+rust-version = "1.95"
 authors = ["LiveStage contributors"]
 
 [workspace.dependencies]
@@ -41,12 +41,12 @@ symphonia = { version = "0.5.5", features = ["all"] }
 ringbuf = "0.4.8"
 
 # GPU / windowing / UI (versions chosen as a mutually compatible set)
-wgpu = "24.0.5"
+wgpu = "30.0.1"
 winit = "0.30.13"
-egui = "0.31.1"
-egui-wgpu = { version = "0.31.1", features = ["winit"] }
-egui-winit = "0.31.1"
-egui_dock = "0.16.0"
+egui = "0.36.2"
+egui-wgpu = { version = "0.36.2", features = ["winit"] }
+egui-winit = "0.36.2"
+egui_dock = "0.21.1"
 pollster = "0.4"
 libloading = "0.8"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
@@ -57,7 +57,7 @@ zip = { version = "2.4", default-features = false, features = ["deflate"] }
 roxmltree = "0.21"
 kurbo = "0.13"
 ab_glyph = "0.2.32"
-epaint_default_fonts = "0.31.1"
+epaint_default_fonts = "0.36.2"
 # Optional movie decoding (links the system FFmpeg 9.x libraries)
 ffmpeg-next = { version = "9.0", default-features = false, features = ["codec", "format", "software-scaling"] }
 

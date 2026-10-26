@@ -249,7 +249,7 @@ impl OutputRenderer {
                 Some(g) if g.fits(&frame) => g,
                 entry => entry.insert(GpuLayer::new(&gpu.device, pipes, &frame)),
             };
-            g.upload(&gpu.queue, &frame);
+            g.upload(&gpu.device, &gpu.queue, pipes, &frame);
             let u = LayerUniform { rect: fit_rect(size, self.canvas_size), tint: [1.0, 1.0, 1.0, opacity], yuv: g.yuv_rows() };
             gpu.queue.write_buffer(&g.uniform, 0, bytemuck::bytes_of(&u));
         }
@@ -258,10 +258,12 @@ impl OutputRenderer {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &self.canvas_view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
+            multiview_mask: None,
             occlusion_query_set: None,
         });
         for layer in layers.iter() {
@@ -282,10 +284,12 @@ impl OutputRenderer {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
+            multiview_mask: None,
             occlusion_query_set: None,
         });
         pass.set_pipeline(&self.warp_pipeline);
@@ -378,10 +382,12 @@ impl OutputRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &rb.target_view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
+                multiview_mask: None,
                 occlusion_query_set: None,
             });
             pass.set_pipeline(&pipes.layer_pipeline);
@@ -433,7 +439,7 @@ impl OutputRenderer {
         if rb.ring.iter().all(|s| s.state != ReadbackState::Mapping) {
             return None;
         }
-        gpu.device.poll(wgpu::Maintain::Poll);
+        let _ = gpu.device.poll(wgpu::PollType::Poll);
         // Newest ready frame wins; any older ready ones are released unread.
         let ready: Vec<usize> = (0..rb.ring.len())
             .filter(|&i| rb.ring[i].state == ReadbackState::Mapping && rb.ring[i].ready.load(Ordering::Acquire))
@@ -442,38 +448,44 @@ impl OutputRenderer {
         let (w, h) = rb.size;
         let row = (w * 4) as usize;
         let mut out = Vec::with_capacity(row * h as usize);
-        {
-            let mapped = rb.ring[newest].buffer.slice(..).get_mapped_range();
-            if rb.padded_row as usize == row {
-                // Common case (e.g. 1920 px wide): no row padding, one copy.
-                out.extend_from_slice(&mapped[..row * h as usize]);
-            } else {
-                for y in 0..h as usize {
-                    let start = y * rb.padded_row as usize;
-                    out.extend_from_slice(&mapped[start..start + row]);
+        let mapped_ok = match rb.ring[newest].buffer.slice(..).get_mapped_range() {
+            Ok(mapped) => {
+                if rb.padded_row as usize == row {
+                    // Common case (e.g. 1920 px wide): no row padding, one copy.
+                    out.extend_from_slice(&mapped[..row * h as usize]);
+                } else {
+                    for y in 0..h as usize {
+                        let start = y * rb.padded_row as usize;
+                        out.extend_from_slice(&mapped[start..start + row]);
+                    }
                 }
+                true
             }
-        }
+            Err(e) => {
+                tracing::warn!("readback mapping failed: {e}");
+                false
+            }
+        };
         for &i in &ready {
             let s = &mut rb.ring[i];
             s.buffer.unmap();
             s.ready.store(false, Ordering::Release);
             s.state = ReadbackState::Idle;
         }
-        Some((w, h, out))
+        mapped_ok.then_some((w, h, out))
     }
 }
 
 #[cfg(test)]
-mod gpu_tests {
+pub(crate) mod gpu_tests {
     use super::*;
     use crate::compositor::Compositor;
     use livestage_core::action::{VideoAction, VisualContent};
     use livestage_core::id::CueId;
     use livestage_core::projection::{BlendEdge, PolygonMask};
 
-    fn gpu() -> Option<Arc<GpuContext>> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    pub(crate) fn gpu() -> Option<Arc<GpuContext>> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         pollster::block_on(GpuContext::new(instance, None)).ok()
     }
 
@@ -547,10 +559,10 @@ mod gpu_tests {
         gpu.queue.submit([enc.finish()]);
         r.after_submit();
         buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        gpu.device.poll(wgpu::Maintain::Wait);
+        let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
 
         let px = |x: u32, y: u32| -> [u8; 4] {
-            let m = buf.slice(..).get_mapped_range();
+            let m = buf.slice(..).get_mapped_range().unwrap();
             let i = (y * row + x * 4) as usize;
             [m[i], m[i + 1], m[i + 2], m[i + 3]]
         };
@@ -567,20 +579,12 @@ mod gpu_tests {
     }
 
     /// NV12 frames are converted to RGB on the GPU with the right matrix and range.
-    #[test]
-    fn nv12_layer_converts_on_gpu() {
-        use crate::source::{VideoFrame, YuvMatrix};
-        let Some(gpu) = gpu() else { return };
-        let pipes = Pipelines::new(&gpu.device);
-        let (w, h) = (8u32, 8u32);
-        // BT.709 limited-range pure red: Y=63, Cb=102, Cr=240.
-        let mut data = vec![63u8; (w * h) as usize];
-        for _ in 0..(w / 2) * (h / 2) {
-            data.extend_from_slice(&[102, 240]);
-        }
-        let frame = VideoFrame::nv12(w, h, data, YuvMatrix::Bt709, false, 7);
-        let mut layer = GpuLayer::new(&gpu.device, &pipes, &frame);
-        layer.upload(&gpu.queue, &frame);
+    /// Draws `frame` as a full-frame layer at its own size and reads it back
+    /// (tightly packed RGBA).
+    pub(crate) fn render_frame(gpu: &GpuContext, pipes: &Pipelines, frame: &crate::source::VideoFrame) -> Vec<u8> {
+        let (w, h) = (frame.width, frame.height);
+        let mut layer = GpuLayer::new(&gpu.device, pipes, frame);
+        layer.upload(&gpu.device, &gpu.queue, pipes, frame);
         let u = LayerUniform { rect: [0.0, 0.0, 1.0, 1.0], tint: [1.0; 4], yuv: layer.yuv_rows() };
         gpu.queue.write_buffer(&layer.uniform, 0, bytemuck::bytes_of(&u));
 
@@ -595,9 +599,10 @@ mod gpu_tests {
             view_formats: &[],
         });
         let view = target.create_view(&Default::default());
+        let stride = (w * 4).next_multiple_of(256);
         let buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: 256 * h as u64,
+            size: (stride * h) as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -608,13 +613,15 @@ mod gpu_tests {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
+                multiview_mask: None,
                 occlusion_query_set: None,
             });
-            pass.set_pipeline(layer.pipeline(&pipes));
+            pass.set_pipeline(layer.pipeline(pipes));
             pass.set_bind_group(0, &layer.bind_group, &[]);
             pass.draw(0..4, 0..1);
         }
@@ -622,15 +629,32 @@ mod gpu_tests {
             wgpu::TexelCopyTextureInfo { texture: &target, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             wgpu::TexelCopyBufferInfo {
                 buffer: &buf,
-                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256), rows_per_image: Some(h) },
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(h) },
             },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
         gpu.queue.submit([enc.finish()]);
         buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        gpu.device.poll(wgpu::Maintain::Wait);
-        let m = buf.slice(..).get_mapped_range();
-        let px = [m[4 * 4 + 4 * 256], m[4 * 4 + 4 * 256 + 1], m[4 * 4 + 4 * 256 + 2]];
+        let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
+        let m = buf.slice(..).get_mapped_range().unwrap();
+        m.chunks(stride as usize).flat_map(|r| &r[..w as usize * 4]).copied().collect()
+    }
+
+    #[test]
+    fn nv12_layer_converts_on_gpu() {
+        use crate::source::{VideoFrame, YuvMatrix};
+        let Some(gpu) = gpu() else { return };
+        let pipes = Pipelines::new(&gpu.device);
+        let (w, h) = (8u32, 8u32);
+        // BT.709 limited-range pure red: Y=63, Cb=102, Cr=240.
+        let mut data = vec![63u8; (w * h) as usize];
+        for _ in 0..(w / 2) * (h / 2) {
+            data.extend_from_slice(&[102, 240]);
+        }
+        let frame = VideoFrame::nv12(w, h, data, YuvMatrix::Bt709, false, 7);
+        let m = render_frame(&gpu, &pipes, &frame);
+        let row = w as usize * 4;
+        let px = [m[4 * 4 + 4 * row], m[4 * 4 + 4 * row + 1], m[4 * 4 + 4 * row + 2]];
         assert!(px[0] > 245 && px[1] < 10 && px[2] < 10, "expected red, got {px:?}");
     }
 
@@ -687,8 +711,8 @@ mod gpu_tests {
         );
         gpu.queue.submit([enc.finish()]);
         buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        gpu.device.poll(wgpu::Maintain::Wait);
-        let m = buf.slice(..).get_mapped_range();
+        let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
+        let m = buf.slice(..).get_mapped_range().unwrap();
         let i = (16 * 256 + 16 * 4) as usize;
         assert!(m[i + 1] > 245, "window surface must show the green layer, got {:?}", &m[i..i + 4]);
     }
@@ -724,7 +748,7 @@ mod gpu_tests {
             gpu.queue.submit([enc.finish()]);
             r.after_submit();
         }
-        gpu.device.poll(wgpu::Maintain::Wait);
+        let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
         let (w, h, px) = r.poll_stream_readback(&gpu).expect("a finished frame");
         assert_eq!((w, h, px.len()), (32, 32, 32 * 32 * 4));
         let at = |x: u32, y: u32| &px[((y * w + x) * 4) as usize..][..3];
@@ -735,7 +759,7 @@ mod gpu_tests {
         r.encode_stream_readback(&gpu, &pipes, &mut enc, (32, 32));
         gpu.queue.submit([enc.finish()]);
         r.after_submit();
-        gpu.device.poll(wgpu::Maintain::Wait);
+        let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
         assert!(r.poll_stream_readback(&gpu).is_some());
     }
 }

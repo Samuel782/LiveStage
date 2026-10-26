@@ -153,7 +153,7 @@ fn list_tabs(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             r.context_menu(|ui| {
                 if ui.button("Rename").clicked() {
                     st.renaming_list = Some((*id, name.clone()));
-                    ui.close_menu();
+                    ui.close();
                 }
                 let can_delete = lists.len() > 1 && !running;
                 if ui.add_enabled(can_delete, egui::Button::new("Delete list")).clicked() {
@@ -163,7 +163,7 @@ fn list_tabs(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                     }
                     st.selected = None;
                     rt.mark_changed();
-                    ui.close_menu();
+                    ui.close();
                 }
             });
         }
@@ -486,7 +486,7 @@ fn toolbar(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                         l.cues.insert(at, cue);
                     }
                     rt.after_structure_edit();
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         });

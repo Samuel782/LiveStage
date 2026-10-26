@@ -14,6 +14,7 @@ const POSTER_TIMEOUT: Duration = Duration::from_secs(4);
 /// Converts any frame to tightly packed RGBA8 on the CPU.
 pub fn to_rgba(frame: &VideoFrame) -> VideoFrame {
     let PixelFormat::Nv12 { matrix, full_range } = frame.format else { return frame.clone() };
+    let Some(frame) = &frame.to_cpu() else { return VideoFrame::solid([0, 0, 0, 255]) };
     let rows = crate::source::yuv_to_rgb_rows(matrix, full_range);
     let (w, h) = (frame.width as usize, frame.height as usize);
     let cw = frame.chroma_width() as usize;

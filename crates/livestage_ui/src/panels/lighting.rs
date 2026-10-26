@@ -494,11 +494,11 @@ fn palettes(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             resp.context_menu(|ui| {
                 if super::widgets::menu_item(ui, "Update from programmer", None).clicked() {
                     update = Some(i);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if super::widgets::menu_item_danger(ui, "Delete palette", None).clicked() {
                     delete = Some(i);
-                    ui.close_menu();
+                    ui.close();
                 }
             });
         }
@@ -558,7 +558,7 @@ fn effects(ui: &mut Ui, rt: &mut UiRuntime, _st: &mut UiState) {
                         rt.dmx.console.set_effect(e.id, true, now);
                         rt.bundle.project.lighting.effects.push(e);
                         rt.mark_changed();
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
             })
@@ -661,7 +661,7 @@ fn submasters(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
 
 /// A vertical fader with a flash / function button. Returns (level moved,
 /// button pressed (Some(true)) / released (Some(false))).
-fn fader(ui: &mut Ui, name: &str, kind: &str, level: &mut f32, color: Color32, lit: bool, id: impl std::hash::Hash) -> (bool, Option<bool>) {
+fn fader(ui: &mut Ui, name: &str, kind: &str, level: &mut f32, color: Color32, lit: bool, id: impl egui::AsIdSalt) -> (bool, Option<bool>) {
     let mut moved = false;
     let mut flash = None;
     ui.vertical(|ui| {

@@ -1,5 +1,6 @@
 //! Video sources and the pluggable decoder backend trait.
 
+use crate::native::NativeSurface;
 use crate::{VideoError, VideoResult};
 use livestage_core::time::ShowTime;
 use std::path::{Path, PathBuf};
@@ -11,9 +12,12 @@ use std::sync::Arc;
 pub struct VideoFrame {
     pub width: u32,
     pub height: u32,
-    /// Pixel bytes; layout given by `format`.
+    /// Pixel bytes; layout given by `format`. Empty when `native` holds the frame.
     pub data: Arc<Vec<u8>>,
     pub format: PixelFormat,
+    /// A hardware-decoded NV12 frame still in GPU memory, which the renderer
+    /// imports without a CPU copy (see [`crate::native`]).
+    pub native: Option<Arc<NativeSurface>>,
     /// Monotonic id; renderers re-upload only when it changes.
     pub serial: u64,
 }
@@ -46,14 +50,28 @@ impl std::fmt::Debug for VideoFrame {
 impl VideoFrame {
     pub fn new(width: u32, height: u32, data: Vec<u8>, serial: u64) -> Self {
         debug_assert_eq!(data.len(), (width * height * 4) as usize);
-        Self { width, height, data: Arc::new(data), format: PixelFormat::Rgba8, serial }
+        Self { width, height, data: Arc::new(data), format: PixelFormat::Rgba8, native: None, serial }
     }
 
     /// An NV12 frame; `data` holds the Y plane then the CbCr plane, both tightly packed.
     pub fn nv12(width: u32, height: u32, data: Vec<u8>, matrix: YuvMatrix, full_range: bool, serial: u64) -> Self {
-        let f = Self { width, height, data: Arc::new(data), format: PixelFormat::Nv12 { matrix, full_range }, serial };
+        let f = Self { width, height, data: Arc::new(data), format: PixelFormat::Nv12 { matrix, full_range }, native: None, serial };
         debug_assert_eq!(f.data.len(), f.y_len() + f.chroma_width() as usize * f.chroma_height() as usize * 2);
         f
+    }
+
+    /// An NV12 frame left in GPU memory by a hardware decoder.
+    pub fn native_nv12(width: u32, height: u32, surface: NativeSurface, matrix: YuvMatrix, full_range: bool, serial: u64) -> Self {
+        let format = PixelFormat::Nv12 { matrix, full_range };
+        Self { width, height, data: Arc::new(Vec::new()), format, native: Some(Arc::new(surface)), serial }
+    }
+
+    /// This frame with its pixels in `data`: a native frame is read back on
+    /// the CPU (`None` if that fails); any other frame is returned as is.
+    pub fn to_cpu(&self) -> Option<VideoFrame> {
+        let Some(native) = &self.native else { return Some(self.clone()) };
+        let data = native.read_nv12((self.width, self.height))?;
+        Some(Self { data: Arc::new(data), native: None, ..self.clone() })
     }
 
     pub fn chroma_width(&self) -> u32 {

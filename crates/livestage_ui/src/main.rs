@@ -120,7 +120,7 @@ impl App {
             .with_inner_size(winit::dpi::LogicalSize::new(1600.0, 1000.0))
             .with_min_inner_size(winit::dpi::LogicalSize::new(1024.0, 640.0));
         let window = Arc::new(el.create_window(attrs)?);
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance.create_surface(window.clone())?;
         let gpu = pollster::block_on(GpuContext::new(instance, Some(&surface)))?;
         let control = ControlWindow::new(&gpu, window, surface);
@@ -300,7 +300,7 @@ impl App {
         view.sync(&shared.lock());
         view.begin_frame();
         let (ui, physical, previews) = (&mut self.ui, &self.monitors.physical, &self.previews);
-        gfx.control.frame(&gfx.gpu, |ctx| panels::draw(ctx, view, ui, physical, previews, &ndi));
+        gfx.control.frame(&gfx.gpu, |root| panels::draw(root, view, ui, physical, previews, &ndi));
         let edits = view.take_edits();
         view.apply(&mut shared.lock(), edits);
 

@@ -30,6 +30,7 @@ pub mod compositor;
 #[cfg(feature = "ffmpeg")]
 pub mod ffmpeg_backend;
 pub mod gpu;
+pub mod native;
 pub mod ndi;
 pub mod output;
 pub mod pipelines;

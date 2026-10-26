@@ -289,7 +289,7 @@ fn outputs_and_master(ui: &mut Ui, rect: Rect, rt: &mut UiRuntime) {
 /// LiveStage / File / Edit / View / Show menus (macOS-style rows with shortcuts).
 pub fn menu_bar(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     use super::widgets::{menu_item, menu_item_danger, menu_item_enabled, menu_separator, shortcut};
-    egui::menu::bar(ui, |ui| {
+    egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button(RichText::new("LiveStage").strong(), |ui| {
             ui.set_min_width(220.0);
             if menu_item(ui, "Settings…", Some(&shortcut("Cmd+,"))).clicked() {

@@ -369,24 +369,26 @@ impl OutputEngine {
                     }
                 }
                 match s.surface.get_current_texture() {
-                    Ok(f) => {
-                        if f.suboptimal {
-                            tracing::debug!("program surface suboptimal; will reconfigure");
-                        }
+                    wgpu::CurrentSurfaceTexture::Success(f) => {
                         let view = f.texture.create_view(&Default::default());
                         slot.renderer.render_warp(&mut enc, &view);
-                        frame = Some(f);
+                        frame = Some((f, false));
                     }
-                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => s.surface.configure(&gpu.device, &s.config),
-                    Err(wgpu::SurfaceError::Timeout) => {}
-                    Err(e) => tracing::warn!("program surface: {e}"),
+                    wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
+                        tracing::debug!("program surface suboptimal; will reconfigure");
+                        let view = f.texture.create_view(&Default::default());
+                        slot.renderer.render_warp(&mut enc, &view);
+                        frame = Some((f, true));
+                    }
+                    wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => s.surface.configure(&gpu.device, &s.config),
+                    wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {}
+                    other => tracing::warn!("program surface: {other:?}"),
                 }
             }
             cmds.push(enc.finish());
             gpu.queue.submit(cmds);
-            if let (Some(f), Some(s)) = (frame, &mut slot.surface) {
-                let suboptimal = f.suboptimal;
-                f.present();
+            if let (Some((f, suboptimal)), Some(s)) = (frame, &mut slot.surface) {
+                gpu.queue.present(f);
                 presented_any = true;
                 if s.presented == 0 {
                     let size = [s.config.width, s.config.height];

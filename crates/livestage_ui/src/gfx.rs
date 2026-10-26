@@ -14,13 +14,16 @@ pub fn paint_egui(
     encoder: &mut wgpu::CommandEncoder,
     target: &wgpu::TextureView,
     size: [u32; 2],
-    output: egui::FullOutput,
+    mut output: egui::FullOutput,
     clear: Option<wgpu::Color>,
 ) -> Vec<wgpu::CommandBuffer> {
     let ppp = output.pixels_per_point;
-    let prims = ctx.tessellate(output.shapes, ppp);
-    for (id, delta) in &output.textures_delta.set {
-        renderer.update_texture(&gpu.device, &gpu.queue, *id, delta);
+    let prims = ctx.tessellate(std::mem::take(&mut output.shapes), ppp);
+    // Texture deltas are consumed (egui checks that none is dropped unapplied).
+    for (id, deltas) in output.textures_delta.set.drain() {
+        for delta in &deltas {
+            renderer.update_texture(&gpu.device, &gpu.queue, id, delta);
+        }
     }
     let sd = egui_wgpu::ScreenDescriptor { size_in_pixels: size, pixels_per_point: ppp };
     let cmds = renderer.update_buffers(&gpu.device, &gpu.queue, encoder, &prims, &sd);
@@ -30,6 +33,7 @@ pub fn paint_egui(
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
                     store: wgpu::StoreOp::Store,
@@ -37,13 +41,14 @@ pub fn paint_egui(
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
+            multiview_mask: None,
             occlusion_query_set: None,
         });
         let mut pass = pass.forget_lifetime();
         renderer.render(&mut pass, &prims, &sd);
     }
-    for id in &output.textures_delta.free {
-        renderer.free_texture(id);
+    for id in output.textures_delta.free.drain() {
+        renderer.free_texture(&id);
     }
     cmds
 }
@@ -57,6 +62,15 @@ pub struct ControlWindow {
     pub ctx: egui::Context,
     pub state: egui_winit::State,
     pub renderer: egui_wgpu::Renderer,
+    /// Texture updates (font atlas, images) of frames that could not be
+    /// painted (window occluded, surface lost), applied on the next one.
+    pending_textures: egui::TexturesDelta,
+}
+
+impl Drop for ControlWindow {
+    fn drop(&mut self) {
+        self.pending_textures.clear(); // nothing left to paint them into
+    }
 }
 
 impl ControlWindow {
@@ -75,8 +89,8 @@ impl ControlWindow {
             None,
             Some(gpu.device.limits().max_texture_dimension_2d as usize),
         );
-        let renderer = egui_wgpu::Renderer::new(&gpu.device, format, None, 1, false);
-        Self { window, surface, format, size, ctx, state, renderer }
+        let renderer = egui_wgpu::Renderer::new(&gpu.device, format, egui_wgpu::RendererOptions::default());
+        Self { window, surface, format, size, ctx, state, renderer, pending_textures: Default::default() }
     }
 
     pub fn resize(&mut self, gpu: &GpuContext, w: u32, h: u32) {
@@ -86,19 +100,24 @@ impl ControlWindow {
         }
     }
 
-    /// Runs the UI closure and presents.
-    pub fn frame(&mut self, gpu: &GpuContext, ui: impl FnMut(&egui::Context)) {
+    /// Runs the UI closure (given egui's root `Ui`) and presents.
+    pub fn frame(&mut self, gpu: &GpuContext, ui: impl FnMut(&mut egui::Ui)) {
         let raw = self.state.take_egui_input(&self.window);
-        let output = self.ctx.run(raw, ui);
+        let mut output = self.ctx.run_ui(raw, ui);
         self.state.handle_platform_output(&self.window, output.platform_output.clone());
+        // Keep texture updates until a frame is actually painted: dropping
+        // them would lose glyphs and images for good.
+        self.pending_textures.append(std::mem::take(&mut output.textures_delta));
         let frame = match self.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 gpu.configure_surface(&self.surface, self.format, self.size, true);
                 return;
             }
-            Err(e) => return tracing::warn!("control surface: {e}"),
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return,
+            other => return tracing::warn!("control surface: {other:?}"),
         };
+        output.textures_delta = std::mem::take(&mut self.pending_textures);
         let view = frame.texture.create_view(&Default::default());
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         let bg = crate::theme::BG;
@@ -108,7 +127,7 @@ impl ControlWindow {
         cmds.push(enc.finish());
         gpu.queue.submit(cmds);
         self.window.pre_present_notify();
-        frame.present();
+        gpu.queue.present(frame);
     }
 }
 
@@ -122,7 +141,7 @@ impl OverlayPainter {
     pub fn new(gpu: &GpuContext) -> Self {
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
-        Self { ctx, renderer: egui_wgpu::Renderer::new(&gpu.device, CANVAS_FORMAT, None, 1, false) }
+        Self { ctx, renderer: egui_wgpu::Renderer::new(&gpu.device, CANVAS_FORMAT, egui_wgpu::RendererOptions::default()) }
     }
 
     pub fn paint(
@@ -137,9 +156,9 @@ impl OverlayPainter {
         let raw = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
         let mut sorted: Vec<&Overlay> = overlays.iter().collect();
         sorted.sort_by_key(|o| o.z);
-        let output = self.ctx.run(raw, |ctx| {
-            let painter = ctx.layer_painter(LayerId::background());
-            let rect = ctx.screen_rect();
+        let output = self.ctx.run_ui(raw, |ui| {
+            let painter = ui.ctx().layer_painter(LayerId::background());
+            let rect = ui.ctx().content_rect();
             for o in &sorted {
                 let [r, g, b, a] = o.color;
                 let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0) as u8;

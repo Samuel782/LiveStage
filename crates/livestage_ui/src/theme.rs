@@ -236,7 +236,7 @@ pub fn apply(ctx: &egui::Context) {
     v.handle_shape = egui::style::HandleShape::Rect { aspect_ratio: 0.55 };
     ctx.set_visuals(v);
 
-    ctx.style_mut(|s| {
+    ctx.all_styles_mut(|s| {
         s.text_styles.insert(TextStyle::Small, FontId::new(11.0, FontFamily::Proportional));
         s.text_styles.insert(TextStyle::Body, FontId::new(13.5, FontFamily::Proportional));
         s.text_styles.insert(TextStyle::Button, FontId::new(13.0, FontFamily::Proportional));

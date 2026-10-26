@@ -270,7 +270,7 @@ fn output_combo(ui: &mut Ui, id: &str, value: &mut OutputId, outputs: &[(OutputI
     changed
 }
 
-fn asset_combo(ui: &mut Ui, id: impl std::hash::Hash, value: &mut AssetRef, assets: &[AssetRef]) -> bool {
+fn asset_combo(ui: &mut Ui, id: impl egui::AsIdSalt, value: &mut AssetRef, assets: &[AssetRef]) -> bool {
     let mut changed = false;
     ComboBox::from_id_salt(id).width(220.0).selected_text(value.file_name().to_string()).show_ui(ui, |ui| {
         for a in assets {

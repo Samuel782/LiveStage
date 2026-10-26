@@ -55,7 +55,7 @@ const SCRUB_INTERVAL: f64 = 0.04;
 /// Playhead scrubber for a running cue: shows progress and returns a new
 /// position while the operator clicks or drags (throttled to ~25 seeks/s,
 /// plus the exact position on release).
-pub fn scrub_bar(ui: &mut Ui, id_salt: impl std::hash::Hash, elapsed: ShowTime, duration: ShowTime, height: f32, accent: egui::Color32) -> Option<ShowTime> {
+pub fn scrub_bar(ui: &mut Ui, id_salt: impl egui::AsIdSalt, elapsed: ShowTime, duration: ShowTime, height: f32, accent: egui::Color32) -> Option<ShowTime> {
     use crate::theme;
     let width = ui.available_width().max(60.0);
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click_and_drag());
@@ -114,8 +114,8 @@ pub fn menu_item_enabled(ui: &mut Ui, enabled: bool, label: &str, shortcut: Opti
 fn menu_row(ui: &mut Ui, label: &str, shortcut: Option<&str>, enabled: bool, danger: bool) -> egui::Response {
     use crate::theme;
     let font = egui::FontId::proportional(13.5);
-    let label_w = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font.clone(), theme::TEXT).size().x);
-    let short_w = shortcut.map_or(0.0, |s| ui.fonts(|f| f.layout_no_wrap(s.to_string(), font.clone(), theme::TEXT).size().x) + 28.0);
+    let label_w = ui.fonts_mut(|f| f.layout_no_wrap(label.to_string(), font.clone(), theme::TEXT).size().x);
+    let short_w = shortcut.map_or(0.0, |s| ui.fonts_mut(|f| f.layout_no_wrap(s.to_string(), font.clone(), theme::TEXT).size().x) + 28.0);
     let width = ui.available_width().max(label_w + short_w + 24.0).max(190.0);
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 24.0), sense);
@@ -136,7 +136,7 @@ fn menu_row(ui: &mut Ui, label: &str, shortcut: Option<&str>, enabled: bool, dan
         p.text(rect.right_center() - egui::vec2(10.0, 0.0), egui::Align2::RIGHT_CENTER, s, font, c);
     }
     if resp.clicked() {
-        ui.close_menu();
+        ui.close();
     }
     resp
 }
@@ -169,7 +169,7 @@ pub fn shortcut(keys: &str) -> String {
 /// `HH:MM:SS:FF` editor. The text is committed (parsed at `rate`) when the
 /// field loses focus or Enter is pressed; invalid input is outlined and
 /// discarded. Returns true when `tc` changed.
-pub fn timecode_field(ui: &mut Ui, id: impl std::hash::Hash, tc: &mut livestage_core::Timecode, rate: livestage_core::FrameRate) -> bool {
+pub fn timecode_field(ui: &mut Ui, id: impl egui::AsIdSalt, tc: &mut livestage_core::Timecode, rate: livestage_core::FrameRate) -> bool {
     use livestage_core::Timecode;
     let id = ui.make_persistent_id(id);
     let mut text = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| tc.with_rate(rate).to_string());
@@ -306,7 +306,7 @@ pub fn key(ui: &mut Ui, rect: Rect, label: &str, size: f32, legend: Option<&str>
 /// Compact tactile key laid out inline (deck secondary actions).
 pub fn small_key(ui: &mut Ui, label: &str) -> Response {
     let font = FontId::proportional(11.5);
-    let w = ui.fonts(|f| f.layout_no_wrap(label.to_uppercase(), font.clone(), theme::TEXT).size().x) + 22.0;
+    let w = ui.fonts_mut(|f| f.layout_no_wrap(label.to_uppercase(), font.clone(), theme::TEXT).size().x) + 22.0;
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w.max(54.0), 26.0), Sense::click());
     let pressed = resp.is_pointer_button_down_on();
     let face = if pressed { rect.translate(Vec2::new(0.0, 1.0)) } else { rect.shrink2(Vec2::new(0.0, 0.5)).translate(Vec2::new(0.0, -0.5)) };
@@ -336,12 +336,12 @@ pub fn module(ui: &mut Ui, rect: Rect, title: &str, status: Option<(&str, Color3
     }
     let font = FontId::proportional(10.0);
     let title_pos = rect.left_top() + Vec2::new(10.0, 8.0);
-    let g = ui.fonts(|f| f.layout_no_wrap(spaced(title), font.clone(), theme::TEXT_DIM));
+    let g = ui.fonts_mut(|f| f.layout_no_wrap(spaced(title), font.clone(), theme::TEXT_DIM));
     let title_w = g.size().x;
     p.galley(title_pos, g, theme::TEXT_DIM);
     if let Some((text, c)) = status {
         let font = FontId::proportional(10.0);
-        let g = ui.fonts(|f| f.layout_no_wrap(spaced(text), font, c));
+        let g = ui.fonts_mut(|f| f.layout_no_wrap(spaced(text), font, c));
         let x = (rect.right() - 10.0 - g.size().x).max(title_pos.x + title_w + 18.0);
         p.circle_filled(Pos2::new(x - 7.0, title_pos.y + g.size().y / 2.0), 3.0, c);
         p.circle_filled(Pos2::new(x - 7.0, title_pos.y + g.size().y / 2.0), 6.0, c.gamma_multiply(0.18));

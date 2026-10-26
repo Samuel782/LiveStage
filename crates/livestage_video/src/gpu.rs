@@ -20,23 +20,27 @@ impl GpuContext {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
                 compatible_surface,
+                apply_limit_buckets: false,
             })
             .await
-            .ok_or(VideoError::NoAdapter)?;
+            .map_err(|_| VideoError::NoAdapter)?;
         let info = adapter.get_info();
         tracing::info!(adapter = %info.name, backend = ?info.backend, "GPU adapter selected");
+        // Optional: lets hardware-decoded video skip the CPU (see `native`).
+        let features = adapter.features() & crate::native::wanted_features();
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("livestage-device"),
-                    required_features: wgpu::Features::empty(),
+                    required_features: features,
                     required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
                     memory_hints: wgpu::MemoryHints::Performance,
+                    experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                    trace: wgpu::Trace::Off,
                 },
-                None,
             )
             .await?;
-        device.on_uncaptured_error(Box::new(|e| tracing::error!("wgpu: {e}")));
+        device.on_uncaptured_error(Arc::new(|e| tracing::error!("wgpu: {e}")));
         Ok(Arc::new(Self { instance, adapter, device, queue }))
     }
 
@@ -76,6 +80,7 @@ impl GpuContext {
             desired_maximum_frame_latency: frames_in_flight.max(1),
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
+            color_space: Default::default(),
         }
     }
 
@@ -107,6 +112,7 @@ impl GpuContext {
                 desired_maximum_frame_latency: frames_in_flight.max(1),
                 alpha_mode: caps.alpha_modes[0],
                 view_formats: vec![],
+                color_space: Default::default(),
             },
         );
     }

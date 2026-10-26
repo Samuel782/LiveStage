@@ -1,8 +1,10 @@
 //! Render pipelines shared by every output on a device.
 
 use crate::CANVAS_FORMAT;
+use crate::native::{NativeSurface, Planes};
 use crate::source::{yuv_to_rgb_rows, PixelFormat, VideoFrame};
 use bytemuck::{Pod, Zeroable};
+use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 const LAYER_WGSL: &str = r#"
@@ -233,13 +235,13 @@ impl Pipelines {
         });
         let layer_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("layer-pl"),
-            bind_group_layouts: &[&layer_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&layer_layout)],
+            immediate_size: 0,
         });
         let warp_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("warp-pl"),
-            bind_group_layouts: &[&warp_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&warp_layout)],
+            immediate_size: 0,
         });
         let nv12_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nv12.wgsl"),
@@ -251,8 +253,8 @@ impl Pipelines {
         });
         let nv12_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nv12-pl"),
-            bind_group_layouts: &[&nv12_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&nv12_layout)],
+            immediate_size: 0,
         });
         let nv12_pipeline = quad_pipeline(device, "nv12-pipeline", &nv12_pl, &nv12_module);
         let layer_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -277,7 +279,7 @@ impl Pipelines {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -300,11 +302,11 @@ impl Pipelines {
                 module: &self.warp_module,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<WarpVertexGpu>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
-                }],
+                })],
             },
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
             depth_stencil: None,
@@ -319,7 +321,7 @@ impl Pipelines {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         })
     }
@@ -344,7 +346,7 @@ fn quad_pipeline(device: &wgpu::Device, label: &str, layout: &wgpu::PipelineLayo
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     })
 }
@@ -356,7 +358,11 @@ pub struct GpuLayer {
     pub size: (u32, u32),
     pub format: PixelFormat,
     pub uniform: wgpu::Buffer,
+    /// What the layer draws with: `owned_bind_group`, or for a zero-copy
+    /// frame, one over that frame's imported planes.
     pub bind_group: wgpu::BindGroup,
+    /// Binds `textures`.
+    owned_bind_group: wgpu::BindGroup,
     pub serial: u64,
 }
 
@@ -382,6 +388,20 @@ fn write_plane(queue: &wgpu::Queue, tex: &wgpu::Texture, data: &[u8], w: u32, h:
     );
 }
 
+fn nv12_bind_group(device: &wgpu::Device, pipes: &Pipelines, uniform: &wgpu::Buffer, y: &wgpu::Texture, uv: &wgpu::Texture) -> wgpu::BindGroup {
+    let (yv, uvv) = (y.create_view(&Default::default()), uv.create_view(&Default::default()));
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("nv12-bg"),
+        layout: &pipes.nv12_layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&yv) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&uvv) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&pipes.sampler) },
+        ],
+    })
+}
+
 impl GpuLayer {
     pub fn new(device: &wgpu::Device, pipes: &Pipelines, frame: &VideoFrame) -> Self {
         let size = (frame.width, frame.height);
@@ -390,7 +410,6 @@ impl GpuLayer {
             contents: bytemuck::bytes_of(&LayerUniform::new([0.0, 0.0, 1.0, 1.0], [1.0; 4])),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let sampler = wgpu::BindingResource::Sampler(&pipes.sampler);
         let (textures, bind_group) = match frame.format {
             PixelFormat::Rgba8 => {
                 let t = plane_texture(device, size.0, size.1, wgpu::TextureFormat::Rgba8Unorm);
@@ -401,7 +420,7 @@ impl GpuLayer {
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&v) },
-                        wgpu::BindGroupEntry { binding: 2, resource: sampler },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&pipes.sampler) },
                     ],
                 });
                 (vec![t], bg)
@@ -409,21 +428,11 @@ impl GpuLayer {
             PixelFormat::Nv12 { .. } => {
                 let y = plane_texture(device, size.0, size.1, wgpu::TextureFormat::R8Unorm);
                 let uv = plane_texture(device, frame.chroma_width(), frame.chroma_height(), wgpu::TextureFormat::Rg8Unorm);
-                let (yv, uvv) = (y.create_view(&Default::default()), uv.create_view(&Default::default()));
-                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("nv12-bg"),
-                    layout: &pipes.nv12_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&yv) },
-                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&uvv) },
-                        wgpu::BindGroupEntry { binding: 3, resource: sampler },
-                    ],
-                });
+                let bg = nv12_bind_group(device, pipes, &uniform, &y, &uv);
                 (vec![y, uv], bg)
             }
         };
-        Self { textures, size, format: frame.format, uniform, bind_group, serial: u64::MAX }
+        Self { textures, size, format: frame.format, uniform, owned_bind_group: bind_group.clone(), bind_group, serial: u64::MAX }
     }
 
     /// Whether this layer's textures can take `frame` (same size and plane layout).
@@ -450,21 +459,60 @@ impl GpuLayer {
         }
     }
 
-    pub fn upload(&mut self, queue: &wgpu::Queue, frame: &VideoFrame) {
+    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, pipes: &Pipelines, frame: &VideoFrame) {
         if frame.serial == self.serial {
             return;
         }
-        match frame.format {
-            PixelFormat::Rgba8 => write_plane(queue, &self.textures[0], &frame.data, frame.width, frame.height, 4),
-            PixelFormat::Nv12 { .. } => {
-                let (y, uv) = frame.data.split_at(frame.y_len());
-                write_plane(queue, &self.textures[0], y, frame.width, frame.height, 1);
-                write_plane(queue, &self.textures[1], uv, frame.chroma_width(), frame.chroma_height(), 2);
-            }
+        self.bind_group = self.owned_bind_group.clone();
+        match (&frame.native, frame.format) {
+            (Some(native), PixelFormat::Nv12 { .. }) => self.upload_native(device, queue, pipes, frame, native),
+            (_, PixelFormat::Rgba8) => write_plane(queue, &self.textures[0], &frame.data, frame.width, frame.height, 4),
+            (None, PixelFormat::Nv12 { .. }) => self.write_nv12(queue, frame, &frame.data),
         }
         // Colour tags can change mid-stream without a size change.
         self.format = frame.format;
         self.serial = frame.serial;
+    }
+
+    fn write_nv12(&self, queue: &wgpu::Queue, frame: &VideoFrame, data: &[u8]) {
+        let (y, uv) = data.split_at(frame.y_len().min(data.len()));
+        write_plane(queue, &self.textures[0], y, frame.width, frame.height, 1);
+        write_plane(queue, &self.textures[1], uv, frame.chroma_width(), frame.chroma_height(), 2);
+    }
+
+    /// Zero-copy: binds the imported planes, or copies them GPU → GPU into
+    /// the layer's textures. Falls back to a CPU read of the frame (and turns
+    /// zero-copy off) if the import fails.
+    fn upload_native(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, pipes: &Pipelines, frame: &VideoFrame, native: &Arc<NativeSurface>) {
+        match native.import(device, (frame.width, frame.height)) {
+            Ok(Planes::Bind { y, uv }) => {
+                // The bind group keeps the planes (and so the decoder's
+                // surface) alive until the GPU has drawn with them.
+                self.bind_group = nv12_bind_group(device, pipes, &self.uniform, &y, &uv);
+            }
+            Ok(Planes::Copy { y, uv }) => {
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("native-plane-copy") });
+                let plane = [(&y, &self.textures[0], frame.width, frame.height), (&uv, &self.textures[1], frame.chroma_width(), frame.chroma_height())];
+                for (src, dst, w, h) in plane {
+                    encoder.copy_texture_to_texture(
+                        wgpu::TexelCopyTextureInfo { texture: &src.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: src.aspect },
+                        wgpu::TexelCopyTextureInfo { texture: dst, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                    );
+                }
+                queue.submit([encoder.finish()]);
+                // The decoder may reuse the surface once this copy has run.
+                let hold = native.clone();
+                queue.on_submitted_work_done(move || drop(hold));
+            }
+            Err(reason) => {
+                crate::native::disable(&reason);
+                match native.read_nv12((frame.width, frame.height)) {
+                    Some(data) => self.write_nv12(queue, frame, &data),
+                    None => tracing::warn!("could not read back a hardware video frame; it is skipped"),
+                }
+            }
+        }
     }
 }
 

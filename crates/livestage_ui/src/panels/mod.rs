@@ -236,7 +236,8 @@ impl UiState {
     /// Brings a tab to the front, re-adding it if it was closed.
     pub fn focus_tab(&mut self, tab: Tab) {
         if let Some(loc) = self.dock.find_tab(&tab) {
-            self.dock.set_active_tab(loc);
+            // `loc` was just found, so it is valid.
+            let _ = self.dock.set_active_tab(loc);
         } else {
             self.dock.push_to_focused_leaf(tab);
         }
@@ -259,6 +260,9 @@ struct Viewer<'a> {
 
 impl TabViewer for Viewer<'_> {
     type Tab = Tab;
+    fn id(&mut self, tab: &mut Tab) -> egui::Id {
+        egui::Id::new(tab.title())
+    }
     fn title(&mut self, tab: &mut Tab) -> egui::WidgetText {
         egui::RichText::new(tab.title().to_uppercase()).size(10.5).extra_letter_spacing(1.0).into()
     }
@@ -284,7 +288,7 @@ fn shortcuts(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
     if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
         st.settings_open = !st.settings_open;
     }
-    if ctx.wants_keyboard_input() || st.pad_learn.is_some() {
+    if ctx.egui_wants_keyboard_input() || st.pad_learn.is_some() {
         return;
     }
     // Pad keys first, so a pad bound to a key never also triggers a shortcut.
@@ -391,19 +395,19 @@ fn recovery_modal(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
 
 /// Non-blocking strip under the transport when movie playback is missing or
 /// degraded (see [`livestage_video::capabilities`]).
-fn media_banner(ctx: &egui::Context, st: &mut UiState) {
+fn media_banner(root: &mut egui::Ui, st: &mut UiState) {
     if st.media_banner_dismissed {
         return;
     }
     let Some(warning) = livestage_video::capabilities::movie_support().warning() else { return };
-    egui::TopBottomPanel::top("media-warning")
+    egui::Panel::top("media-warning")
         .frame(
             egui::Frame::default()
                 .fill(crate::theme::wash(crate::theme::standby(), 0.08))
                 .stroke(egui::Stroke::new(1.0_f32, crate::theme::wash(crate::theme::standby(), 0.35)))
                 .inner_margin(egui::Margin::symmetric(12, 5)),
         )
-        .show(ctx, |ui| {
+        .show(root, |ui| {
             ui.horizontal(|ui| {
                 ui.label(widgets::caption_text("Advisory").color(crate::theme::standby()));
                 ui.add(egui::Label::new(egui::RichText::new(warning).color(crate::theme::standby())).wrap());
@@ -427,7 +431,7 @@ fn inspector_panel(host: &mut egui::Ui, rt: &mut UiRuntime, st: &mut UiState) {
     use livestage_core::cue::{Cue, CueExt};
     let frame = egui::Frame::default().fill(theme::PANEL_RAISED).stroke(egui::Stroke::new(1.0_f32, theme::BORDER));
     if !st.inspector_open {
-        egui::SidePanel::right("inspector-rail").exact_width(30.0).resizable(false).show_separator_line(false).frame(frame.fill(theme::BG_DEEP)).show_inside(host, |ui| {
+        egui::Panel::right("inspector-rail").exact_size(30.0).resizable(false).show_separator_line(false).frame(frame.fill(theme::BG_DEEP)).show(host, |ui| {
             let rect = ui.max_rect();
             let r = ui.interact(rect, egui::Id::new("inspector-rail-hit"), egui::Sense::click()).on_hover_text("Show the inspector");
             let p = ui.painter();
@@ -437,7 +441,7 @@ fn inspector_panel(host: &mut egui::Ui, rt: &mut UiRuntime, st: &mut UiState) {
             p.text(egui::pos2(rect.center().x, rect.top() + 16.0), egui::Align2::CENTER_CENTER, "◂", egui::FontId::proportional(13.0), theme::TEXT_DIM);
             let text = egui::epaint::TextShape::new(
                 egui::pos2(rect.center().x - 6.0, rect.top() + 120.0),
-                ui.fonts(|f| f.layout_no_wrap("I N S P E C T O R".into(), egui::FontId::proportional(10.0), theme::TEXT_DIM)),
+                ui.fonts_mut(|f| f.layout_no_wrap("I N S P E C T O R".into(), egui::FontId::proportional(10.0), theme::TEXT_DIM)),
                 theme::TEXT_DIM,
             )
             .with_angle(-std::f32::consts::FRAC_PI_2);
@@ -448,13 +452,13 @@ fn inspector_panel(host: &mut egui::Ui, rt: &mut UiRuntime, st: &mut UiState) {
         });
         return;
     }
-    egui::SidePanel::right("inspector")
+    egui::Panel::right("inspector")
         .resizable(true)
-        .default_width(430.0)
-        .width_range(340.0..=760.0)
+        .default_size(430.0)
+        .size_range(340.0..=760.0)
         .show_separator_line(false)
         .frame(frame.inner_margin(0.0))
-        .show_inside(host, |ui| {
+        .show(host, |ui| {
             // Header strip.
             let (bar, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::hover());
             ui.painter().rect_filled(bar, 0.0, theme::BG_DEEP);
@@ -502,14 +506,16 @@ fn inspector_panel(host: &mut egui::Ui, rt: &mut UiRuntime, st: &mut UiState) {
         });
 }
 
+/// Lays out the whole operator window inside egui's root `ui`.
 pub fn draw(
-    ctx: &egui::Context,
+    root: &mut egui::Ui,
     rt: &mut UiRuntime,
     st: &mut UiState,
     physical: &[PhysicalDisplayInfo],
     previews: &Previews,
     ndi: &NdiStatus,
 ) {
+    let ctx = &root.ctx().clone();
     st.thumbs.poll(ctx);
     shortcuts(ctx, rt, st);
     // A pad held with the mouse is released even if its panel was hidden meanwhile.
@@ -533,18 +539,18 @@ pub fn draw(
     settings::window(ctx, rt, st);
 
     // Files dropped on the window are imported into the bundle as cues.
-    let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
+    let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
     for p in dropped {
         rt.import_and_create_cue(&p);
     }
 
     use crate::theme;
-    egui::TopBottomPanel::top("menu")
+    egui::Panel::top("menu")
         .show_separator_line(false)
         .frame(egui::Frame::default().fill(theme::BG_DEEP).inner_margin(egui::Margin::symmetric(8, 2)))
-        .show(ctx, |ui| transport::menu_bar(ui, rt, st));
-    egui::TopBottomPanel::top("deck")
-        .exact_height(transport::HEIGHT + 20.0)
+        .show(root, |ui| transport::menu_bar(ui, rt, st));
+    egui::Panel::top("deck")
+        .exact_size(transport::HEIGHT + 20.0)
         .show_separator_line(false)
         .frame(
             egui::Frame::default()
@@ -552,10 +558,10 @@ pub fn draw(
                 .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
                 .inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 12 }),
         )
-        .show(ctx, |ui| transport::show(ui, rt, st));
-    media_banner(ctx, st);
-    egui::TopBottomPanel::bottom("status")
-        .exact_height(24.0)
+        .show(root, |ui| transport::show(ui, rt, st));
+    media_banner(root, st);
+    egui::Panel::bottom("status")
+        .exact_size(24.0)
         .show_separator_line(false)
         .frame(
             egui::Frame::default()
@@ -563,19 +569,19 @@ pub fn draw(
                 .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
                 .inner_margin(egui::Margin::symmetric(10, 2)),
         )
-        .show(ctx, |ui| transport::status_bar(ui, rt, st));
+        .show(root, |ui| transport::status_bar(ui, rt, st));
     transport::import_window(ctx, rt, st);
     // Workspace: tool dock along the bottom (full width), the inspector to
     // the right of the cue grid, the cue grid in the remaining core area.
-    egui::CentralPanel::default().frame(egui::Frame::default().fill(theme::BG).inner_margin(6.0)).show(ctx, |ui| {
+    egui::CentralPanel::default().frame(egui::Frame::default().fill(theme::BG).inner_margin(6.0)).show(root, |ui| {
         let h = ui.available_height();
-        egui::TopBottomPanel::bottom("tools")
+        egui::Panel::bottom("tools")
             .resizable(true)
-            .default_height((h * 0.40).max(260.0))
-            .height_range(160.0..=(h - 200.0).max(200.0))
+            .default_size((h * 0.40).max(260.0))
+            .size_range(160.0..=(h - 200.0).max(200.0))
             .show_separator_line(false)
             .frame(egui::Frame::default().inner_margin(egui::Margin { left: 0, right: 0, top: 6, bottom: 0 }))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 let style = crate::theme::dock_style(ui.style());
                 let mut dock = std::mem::replace(&mut st.dock, DockState::new(vec![]));
                 DockArea::new(&mut dock)
@@ -595,6 +601,6 @@ pub fn draw(
                     .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
                     .inner_margin(egui::Margin { left: 10, right: 10, top: 8, bottom: 4 }),
             )
-            .show_inside(ui, |ui| cue_grid::show(ui, rt, st));
+            .show(ui, |ui| cue_grid::show(ui, rt, st));
     });
 }

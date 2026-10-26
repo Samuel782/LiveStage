@@ -101,7 +101,7 @@ impl SnapshotArgs {
 }
 
 pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let gpu = pollster::block_on(GpuContext::new(instance, None))?;
     let bundle = match &a.show {
         Some(p) => ProjectBundle::open(p)?,
@@ -201,7 +201,7 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
 
     let ctx = egui::Context::default();
     crate::theme::apply(&ctx);
-    let mut renderer = egui_wgpu::Renderer::new(&gpu.device, CANVAS_FORMAT, None, 1, false);
+    let mut renderer = egui_wgpu::Renderer::new(&gpu.device, CANVAS_FORMAT, egui_wgpu::RendererOptions::default());
     let mut previews = Previews::default();
     for (id, c) in engine.previews() {
         let tex = renderer.register_native_texture(&gpu.device, &c.view, wgpu::FilterMode::Linear);
@@ -220,7 +220,8 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
         raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(a.scale);
         raw
     };
-    // A few passes so egui settles sizes (first frames measure text, dock splits).
+    // Enough passes (16 × 16 ms of egui time) for egui to settle sizes (first
+    // frames measure text, dock splits) and finish its 200 ms fade-ins.
     // Texture uploads (font atlas) from earlier passes must be kept.
     let mut textures = egui::TexturesDelta::default();
     // Extra passes while thumbnails decode on worker threads (bounded), then
@@ -231,16 +232,16 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
     let mut output = loop {
         view.sync(&rt);
         view.begin_frame();
-        let mut out = ctx.run(input(i as f64 * 0.016), |ctx| panels::draw(ctx, &mut view, &mut ui, &[], &previews, &ndi));
+        let mut out = ctx.run_ui(input(i as f64 * 0.016), |root| panels::draw(root, &mut view, &mut ui, &[], &previews, &ndi));
         let edits = view.take_edits();
         view.apply(&mut rt, edits);
         textures.append(std::mem::take(&mut out.textures_delta));
-        let settling = i < 4 || (ui.thumbs.pending() > 0 && i < 200);
+        let settling = i < 16 || (ui.thumbs.pending() > 0 && i < 200);
         if i >= 3 && ui.thumbs.pending() > 0 {
             std::thread::sleep(Duration::from_millis(20));
         }
         i += 1;
-        if !settling && i > 4 {
+        if !settling && i > 16 {
             break out;
         }
     };
@@ -279,8 +280,8 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
     cmds.push(enc.finish());
     gpu.queue.submit(cmds);
     buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-    gpu.device.poll(wgpu::Maintain::Wait);
-    let mapped = buf.slice(..).get_mapped_range();
+    let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
+    let mapped = buf.slice(..).get_mapped_range().map_err(|e| anyhow::anyhow!("snapshot readback: {e}"))?;
     let mut rgba = Vec::with_capacity((px[0] * px[1] * 4) as usize);
     for y in 0..px[1] as usize {
         rgba.extend_from_slice(&mapped[y * row as usize..y * row as usize + px[0] as usize * 4]);
