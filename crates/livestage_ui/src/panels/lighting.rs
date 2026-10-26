@@ -19,6 +19,7 @@ use livestage_core::id::{FixtureId, SubmasterId};
 use livestage_core::lighting::{Effect, EffectKind, Palette, PaletteKind};
 use livestage_core::state::Rgb;
 use livestage_core::ShowTime;
+use std::collections::HashSet;
 use std::f32::consts::PI;
 
 /// Pointer interaction on the stage plot.
@@ -241,7 +242,7 @@ fn stage(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState, height: f32) {
     let to_stage = |q: Pos2| [((q.x - deck.left()) / deck.width()).clamp(0.0, 1.0), ((q.y - deck.top()) / deck.height()).clamp(0.0, 1.0)];
     let r = (deck.width().min(deck.height()) * 0.035).clamp(6.0, 13.0);
     let fixtures = positions(rt);
-    let selection = rt.dmx.console.programmer.selection.clone();
+    let selection: HashSet<FixtureId> = rt.dmx.console.programmer.selection.iter().copied().collect();
 
     for (id, name, at) in &fixtures {
         let c = to_screen(*at);
@@ -314,13 +315,15 @@ fn stage(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState, height: f32) {
 fn fixture_tiles(ui: &mut Ui, rt: &mut UiRuntime, _st: &mut UiState) {
     section(ui, "FIXTURES");
     let fixtures: Vec<(FixtureId, String, u16, u16)> = rt.bundle.project.dmx.patch.iter().map(|f| (f.id, f.name.clone(), f.universe, f.address)).collect();
+    let selected_set: HashSet<FixtureId> = rt.dmx.console.programmer.selection.iter().copied().collect();
+    let programmed_set: HashSet<FixtureId> = rt.dmx.console.programmer.values().map(|(f, _, _)| f).collect();
     egui::ScrollArea::vertical().id_salt("lx-tiles").show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::splat(5.0);
             for (i, (id, name, uni, addr)) in fixtures.iter().enumerate() {
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(96.0, 52.0), Sense::click());
-                let selected = rt.dmx.console.programmer.selection.contains(id);
-                let programmed = rt.dmx.console.programmer.values().any(|(f, _, _)| f == *id);
+                let selected = selected_set.contains(id);
+                let programmed = programmed_set.contains(id);
                 let p = ui.painter_at(rect);
                 p.rect(rect, 6.0, if selected { theme::accent_dim() } else { theme::PANEL_RAISED }, Stroke::new(if selected { 2.0_f32 } else { 1.0_f32 }, if selected { theme::accent() } else { theme::BORDER }), egui::StrokeKind::Inside);
                 let color = rt.dmx.fixture_color(*id).unwrap_or([0.0; 3]);

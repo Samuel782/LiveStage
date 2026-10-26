@@ -836,10 +836,6 @@ impl SlideCue {
         }
     }
 
-    /// The slide after the current one, if any.
-    pub fn upcoming(&self) -> Option<&Slide> {
-        self.deck.slides.get(self.current + 1)
-    }
 }
 
 impl Cue for SlideCue {
@@ -1176,7 +1172,7 @@ mod tests {
         let id = cue.header.id;
         cue.go(&mut ctx);
         assert!(matches!(&ctx.actions[0], EngineAction::Video(VideoAction::Show { content: VisualContent::Slides { index: 1, slides }, .. }) if slides.len() == 3));
-        assert_eq!(cue.upcoming().map(|s| s.text.as_str()), Some("Slide 2"));
+        assert_eq!(cue.deck.slides.get(cue.current + 1).map(|s| s.text.as_str()), Some("Slide 2"));
         ctx.actions.clear();
         assert!(cue.next(&mut ctx));
         assert!(!cue.next(&mut ctx), "already on the last slide");

@@ -311,12 +311,6 @@ impl CueList {
         }
     }
 
-    pub fn stop_cue(&mut self, ctx: &mut dyn CueContext, id: CueId, fade: Option<ShowTime>) {
-        if let Some(i) = self.index_of(id) {
-            self.cues[i].stop(ctx, fade);
-        }
-    }
-
     /// Scrubs a cue (top level or timeline child) to `position`.
     pub fn seek_cue(&mut self, ctx: &mut dyn CueContext, id: CueId, position: ShowTime) -> bool {
         fn find(c: &mut AnyCue, id: CueId) -> Option<&mut AnyCue> {

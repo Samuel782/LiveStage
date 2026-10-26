@@ -501,6 +501,8 @@ impl OutputThread {
             let mut published: HashMap<OutputId, u64> = HashMap::new();
             let (mut frames, mut window_start) = (0u64, Instant::now());
             let mut sync_worst = 0.0f64;
+            // Copy of the project's displays, refreshed only when they change.
+            let (mut displays, mut displays_rev) = (Vec::new(), 0u64);
             let mut next = Instant::now();
             while r.load(Ordering::Relaxed) {
                 let frame_start = Instant::now();
@@ -511,10 +513,14 @@ impl OutputThread {
                 }
                 // Snapshot what the render pass needs (short lock).
                 let masters = engine.compositor.sync_masters();
-                let (displays, pixel_sources, clocks) = {
+                let (pixel_sources, clocks) = {
                     let rt = rt.lock();
+                    if rt.displays_rev != displays_rev {
+                        displays_rev = rt.displays_rev;
+                        displays.clone_from(&rt.bundle.project.displays);
+                    }
                     let pixel: Vec<_> = rt.bundle.project.dmx.pixel_maps.iter().filter(|m| m.enabled).map(|m| m.source).collect();
-                    (rt.bundle.project.displays.clone(), pixel, master_clocks(&rt, &masters))
+                    (pixel, master_clocks(&rt, &masters))
                 };
                 for w in engine.sync_slots(&displays) {
                     let _ = ret_tx.send(w);

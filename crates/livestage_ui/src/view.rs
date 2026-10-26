@@ -234,7 +234,7 @@ impl DmxView {
         self.last.get(r.slot()).map(|v| v.value)
     }
     pub fn fixture_color(&self, fixture: FixtureId) -> Option<[f32; 3]> {
-        livestage_dmx::engine::fixture_color(&self.patch, fixture, |a| self.output(fixture, a))
+        livestage_dmx::engine::fixture_color(&self.patch, fixture, |s| self.last.get(s).map(|v| v.value))
     }
     pub fn programmer_set(&mut self, attribute: &str, value: f32) {
         self.console.programmer.set_selected(attribute, value, &self.patch);
@@ -285,6 +285,11 @@ pub struct UiRuntime {
     changed: bool,
     /// Copies released by `sync`, freed outside the lock.
     trash: Vec<Project>,
+    /// `sync` took a new copy of the live project this frame.
+    base_changed: bool,
+    /// The panels' copy still equals `base` (last frame made no edits), so
+    /// it can be reused instead of cloned.
+    copy_clean: bool,
 }
 
 impl UiRuntime {
@@ -328,6 +333,8 @@ impl UiRuntime {
             ops: Vec::new(),
             changed: false,
             trash: Vec::new(),
+            base_changed: true,
+            copy_clean: false,
         };
         v.sync(rt);
         v
@@ -335,10 +342,15 @@ impl UiRuntime {
 
     /// Step 1: copies the live state (call with the runtime lock held).
     pub fn sync(&mut self, rt: &ShowRuntime) {
-        // Freeing last frame's copy costs as much as making the new one, so
-        // it is parked and dropped in `begin_frame`, outside the lock.
-        let previous = std::mem::replace(&mut self.base, rt.bundle.project.clone());
-        self.trash.push(previous);
+        // Re-copy the live project only when it changed: an equality check
+        // allocates nothing, a clone of a large show does. Freeing the old
+        // copy costs as much as making the new one, so it is parked and
+        // dropped in `begin_frame`, outside the lock.
+        self.base_changed = rt.bundle.project != self.base;
+        if self.base_changed {
+            let previous = std::mem::replace(&mut self.base, rt.bundle.project.clone());
+            self.trash.push(previous);
+        }
         if self.bundle.root != rt.bundle.root() {
             self.bundle.root = rt.bundle.root().to_path_buf();
         }
@@ -351,10 +363,14 @@ impl UiRuntime {
             d.patch_errors.clone_from(&rt.dmx.patch_errors);
         }
         let c = &rt.dmx.console;
-        d.console.programmer.clone_from(&c.programmer);
-        d.console.flashes.clone_from(&c.flashes);
-        d.console.blackout = c.blackout;
-        d.console.base = (c.programmer.clone(), c.flashes.clone(), c.blackout);
+        if (&c.programmer, &c.flashes, c.blackout) != (&d.console.base.0, &d.console.base.1, d.console.base.2) {
+            d.console.base.0.clone_from(&c.programmer);
+            d.console.base.1.clone_from(&c.flashes);
+            d.console.base.2 = c.blackout;
+        }
+        d.console.programmer.clone_from(&d.console.base.0);
+        d.console.flashes.clone_from(&d.console.base.1);
+        d.console.blackout = d.console.base.2;
         d.console.running = rt.bundle.project.lighting.effects.iter().map(|e| e.id).filter(|id| c.effect_running(*id)).collect();
         d.console.console_fx = c.console_effects();
         d.last.reset_from(rt.dmx.last_values());
@@ -419,12 +435,20 @@ impl UiRuntime {
     /// Step 2 (no lock): the copy the panels edit. Call after [`sync`](Self::sync).
     pub fn begin_frame(&mut self) {
         self.trash.clear();
-        self.bundle.project = self.base.clone();
+        if self.base_changed || !self.copy_clean {
+            self.bundle.project.clone_from(&self.base);
+        }
+        self.copy_clean = false;
     }
 
     /// What the panels changed in the project this frame. All comparisons
     /// happen here, outside the lock.
     pub fn take_edits(&mut self) -> Option<ProjectEdits> {
+        if self.bundle.project == self.base {
+            // Nothing edited: keep the copy for the next frame.
+            self.copy_clean = true;
+            return None;
+        }
         let ours = std::mem::replace(&mut self.bundle.project, Project::new(""));
         ProjectEdits::diff(&self.base, ours)
     }
@@ -433,7 +457,11 @@ impl UiRuntime {
     /// (call with the runtime lock held, after [`take_edits`](Self::take_edits)).
     pub fn apply(&mut self, rt: &mut ShowRuntime, edits: Option<ProjectEdits>) {
         if let Some(e) = edits {
+            let displays = e.touches_displays();
             rt.bundle.project.apply_edits(e);
+            if displays {
+                rt.touch_displays();
+            }
         }
         let c = &mut self.dmx.console;
         if c.programmer != c.base.0 {

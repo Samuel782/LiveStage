@@ -76,6 +76,20 @@ impl Default for EngineShared {
 }
 
 impl EngineShared {
+    /// Frames elapsed since the last device callback, capped at one buffer;
+    /// `None` until the device has called back. The sample clock only
+    /// advances once per callback (e.g. every 5.3 ms at 256 frames); adding
+    /// this removes that step from timeline scheduling and frame-locked video.
+    pub fn frames_since_callback(&self, sample_rate: u32) -> Option<u64> {
+        let at = self.callback_at_ns.load(Ordering::Acquire);
+        if at == 0 {
+            return None;
+        }
+        let since_ns = (self.epoch.elapsed().as_nanos() as u64).saturating_sub(at);
+        let frames = since_ns * sample_rate as u64 / 1_000_000_000;
+        Some(frames.min(self.callback_frames.load(Ordering::Relaxed) as u64))
+    }
+
     /// Reads and resets the peak of an output.
     pub fn take_peak(&self, ch: usize) -> f32 {
         self.peaks.get(ch).map(|p| f32::from_bits(p.swap(0, Ordering::Relaxed))).unwrap_or(0.0)
@@ -114,9 +128,6 @@ impl Ramp {
     }
     pub fn is_settled(&self) -> bool {
         self.remaining == 0
-    }
-    pub fn target(&self) -> f32 {
-        self.target
     }
 }
 
@@ -205,7 +216,6 @@ pub struct Renderer {
     routing: Box<RoutingTable>,
     master: Ramp,
     channels: usize,
-    sample_rate: u32,
     shared: Arc<EngineShared>,
     /// Per-output peak accumulator for the current callback.
     peak_scratch: [f32; MAX_CHANNELS],
@@ -217,7 +227,6 @@ impl Renderer {
         garbage: HeapProd<Garbage>,
         routing: Box<RoutingTable>,
         channels: usize,
-        sample_rate: u32,
         shared: Arc<EngineShared>,
     ) -> Self {
         let mut groups = Vec::with_capacity(MAX_GROUPS);
@@ -229,17 +238,9 @@ impl Renderer {
             routing,
             master: Ramp::new(1.0),
             channels,
-            sample_rate,
             shared,
             peak_scratch: [0.0; MAX_CHANNELS],
         }
-    }
-
-    pub fn channels(&self) -> usize {
-        self.channels
-    }
-    pub fn sample_rate(&self) -> u32 {
-        self.sample_rate
     }
 
     fn trash(&mut self, g: Garbage) {

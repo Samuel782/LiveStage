@@ -79,6 +79,12 @@ pub struct ProjectEdits {
 }
 
 impl ProjectEdits {
+    /// Whether applying these edits replaces the logical displays (output
+    /// routing, warp grids, masks), which renderers cache.
+    pub fn touches_displays(&self) -> bool {
+        self.whole.displays.is_some()
+    }
+
     /// What the editor changed going from `base` to `ours`; None if nothing.
     pub fn diff(base: &Project, ours: Project) -> Option<Self> {
         let Project {

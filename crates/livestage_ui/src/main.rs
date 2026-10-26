@@ -194,11 +194,11 @@ impl App {
         let Some(shared) = self.rt.clone() else { return };
 
         // 1. Program windows requested by commands (UI, OSC, MIDI, cues).
-        let (live_request, displays) = {
+        let live_request = {
             let mut rt = shared.lock();
-            (rt.outputs_live_request.take(), rt.bundle.project.displays.clone())
+            rt.outputs_live_request.take().map(|live| (live, rt.bundle.project.displays.clone()))
         };
-        if let Some(live) = live_request {
+        if let Some((live, displays)) = live_request {
             self.set_live(el, &displays, live);
             let mut rt = shared.lock();
             rt.outputs_live = live;

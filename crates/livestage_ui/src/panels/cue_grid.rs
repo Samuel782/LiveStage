@@ -194,125 +194,130 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     let mut actions: Vec<RowAction> = Vec::new();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
+        // Every row spans the full width, so the columns are the same for all.
+        let cols = columns(ui.available_width());
         let mut top_index = 0usize;
         for row in &rows {
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), if row.depth > 0 { CHILD_H } else { ROW_H }), Sense::click());
-            let cols = columns(rect.width());
-            let selected = st.selected == Some(row.id);
-            let running = row.state.is_active();
             if row.depth == 0 {
                 top_index += 1;
             }
-            // Alternating contrast by top-level cue (children share their parent's band).
-            let mut bg = if top_index.is_multiple_of(2) { theme::ROW_ALT } else { theme::PANEL_RAISED };
-            if row.depth > 0 {
-                bg = bg.lerp_to_gamma(theme::BG_DEEP, 0.45);
-            }
-            let signal = if row.is_standby && !running { Some(theme::standby()) } else if running { Some(theme::active()) } else { None };
-            if let Some(c) = signal {
-                bg = bg.lerp_to_gamma(c, 0.11);
-            } else if selected {
-                bg = theme::accent_dim();
-            }
-            let p = ui.painter_at(rect);
-            p.rect_filled(rect, 0.0, bg);
-            p.hline(rect.x_range(), rect.bottom() - 0.5, egui::Stroke::new(1.0_f32, theme::BORDER.gamma_multiply(0.7)));
-            if let Some(c) = signal.or_else(|| theme::state_color(row.state)) {
-                let bar = Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
-                p.rect_filled(bar.expand2(egui::vec2(3.0, 0.0)).translate(egui::vec2(3.0, 0.0)), 0.0, c.gamma_multiply(0.12));
-                p.rect_filled(bar, 0.0, c);
-            }
-            if selected {
-                p.rect_stroke(rect.shrink(0.5), 2.0, egui::Stroke::new(1.0_f32, theme::accent()), egui::StrokeKind::Inside);
-            }
-            // Running: a thin progress trace along the bottom of the row.
-            if let Some(pr) = row.progress.filter(|_| running) {
-                let y = rect.bottom() - 1.5;
-                p.hline(rect.left()..=rect.left() + rect.width() * pr.clamp(0.0, 1.0), y, egui::Stroke::new(2.0_f32, theme::active().gamma_multiply(0.8)));
-            }
+            // Rows outside the scroll view are laid out (for their height and
+            // clicks) but not painted.
+            if ui.is_rect_visible(rect) {
+                let selected = st.selected == Some(row.id);
+                let running = row.state.is_active();
+                // Alternating contrast by top-level cue (children share their parent's band).
+                let mut bg = if top_index.is_multiple_of(2) { theme::ROW_ALT } else { theme::PANEL_RAISED };
+                if row.depth > 0 {
+                    bg = bg.lerp_to_gamma(theme::BG_DEEP, 0.45);
+                }
+                let signal = if row.is_standby && !running { Some(theme::standby()) } else if running { Some(theme::active()) } else { None };
+                if let Some(c) = signal {
+                    bg = bg.lerp_to_gamma(c, 0.11);
+                } else if selected {
+                    bg = theme::accent_dim();
+                }
+                let p = ui.painter_at(rect);
+                p.rect_filled(rect, 0.0, bg);
+                p.hline(rect.x_range(), rect.bottom() - 0.5, egui::Stroke::new(1.0_f32, theme::BORDER.gamma_multiply(0.7)));
+                if let Some(c) = signal.or_else(|| theme::state_color(row.state)) {
+                    let bar = Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
+                    p.rect_filled(bar.expand2(egui::vec2(3.0, 0.0)).translate(egui::vec2(3.0, 0.0)), 0.0, c.gamma_multiply(0.12));
+                    p.rect_filled(bar, 0.0, c);
+                }
+                if selected {
+                    p.rect_stroke(rect.shrink(0.5), 2.0, egui::Stroke::new(1.0_f32, theme::accent()), egui::StrokeKind::Inside);
+                }
+                // Running: a thin progress trace along the bottom of the row.
+                if let Some(pr) = row.progress.filter(|_| running) {
+                    let y = rect.bottom() - 1.5;
+                    p.hline(rect.left()..=rect.left() + rect.width() * pr.clamp(0.0, 1.0), y, egui::Stroke::new(2.0_f32, theme::active().gamma_multiply(0.8)));
+                }
 
-            let text = if row.armed { theme::TEXT } else { theme::TEXT_FAINT };
-            let indent = row.depth as f32 * 16.0;
-            for (c, r) in &cols {
-                match c {
-                    Col::Number => {
-                        if row.depth > 0 {
-                            let x = rect.left() + r.left() + indent - 9.0;
-                            p.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.center().y)], egui::Stroke::new(1.0_f32, theme::BORDER_HI));
-                            p.line_segment([egui::pos2(x, rect.center().y), egui::pos2(x + 6.0, rect.center().y)], egui::Stroke::new(1.0_f32, theme::BORDER_HI));
-                            cell(&p, rect, *r, &row.number, FontId::monospace(12.0), theme::TEXT_DIM, indent);
-                        } else {
-                            cell(&p, rect, *r, &row.number, FontId::monospace(16.0), text, 0.0);
+                let text = if row.armed { theme::TEXT } else { theme::TEXT_FAINT };
+                let indent = row.depth as f32 * 16.0;
+                for (c, r) in &cols {
+                    match c {
+                        Col::Number => {
+                            if row.depth > 0 {
+                                let x = rect.left() + r.left() + indent - 9.0;
+                                p.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.center().y)], egui::Stroke::new(1.0_f32, theme::BORDER_HI));
+                                p.line_segment([egui::pos2(x, rect.center().y), egui::pos2(x + 6.0, rect.center().y)], egui::Stroke::new(1.0_f32, theme::BORDER_HI));
+                                cell(&p, rect, *r, &row.number, FontId::monospace(12.0), theme::TEXT_DIM, indent);
+                            } else {
+                                cell(&p, rect, *r, &row.number, FontId::monospace(16.0), text, 0.0);
+                            }
                         }
-                    }
-                    Col::Kind => {
-                        let kind = [CueKind::Audio, CueKind::Video, CueKind::Timer, CueKind::Slides, CueKind::Dmx, CueKind::Control, CueKind::Timeline]
-                            .into_iter()
-                            .find(|k| k.label() == row.kind);
-                        let color = kind.map_or(theme::TEXT_DIM, theme::kind_color);
-                        let clip = Rect::from_min_max(egui::pos2(rect.left() + r.left(), rect.top()), egui::pos2(rect.left() + r.right() - 4.0, rect.bottom()));
-                        super::widgets::pill(&p.with_clip_rect(clip), egui::pos2(clip.left(), rect.center().y), row.kind, color.gamma_multiply(if row.armed { 1.0 } else { 0.5 }));
-                    }
-                    Col::Name => cell(&p, rect, *r, &row.name, FontId::proportional(if row.depth > 0 { 13.5 } else { 15.5 }), text, indent),
-                    Col::Pre => {
-                        let (v, c) = match (row.offset, row.timecode) {
-                            (Some(o), _) => (format!("@ {}", &o.to_clock_string()[3..]), theme::TEXT_DIM),
-                            // Timecode-triggered: the trigger replaces the pre-wait.
-                            (None, Some(tc)) => (tc.to_string(), theme::accent()),
-                            (None, None) => (secs(row.pre_wait), theme::TEXT_DIM),
-                        };
-                        cell(&p, rect, *r, v, FontId::monospace(12.0), c, 0.0);
-                    }
-                    Col::Action => {
-                        let ar = Rect::from_min_max(
-                            egui::pos2(rect.left() + r.left(), rect.center().y - 11.0),
-                            egui::pos2(rect.left() + r.right() - 8.0, rect.center().y + 11.0),
-                        );
-                        if let Some(pr) = row.progress.filter(|_| running) {
-                            p.rect(ar, 3.0, theme::BG_DEEP, egui::Stroke::new(1.0_f32, theme::BORDER), egui::StrokeKind::Inside);
-                            let mut fill = ar.shrink(1.0);
-                            fill.set_width(fill.width() * pr.clamp(0.0, 1.0));
-                            p.rect_filled(fill, 2.0, theme::active().gamma_multiply(0.30));
-                            // The progress bar of a running cue is a scrub bar.
-                            if let Some(d) = row.duration.filter(|d| !d.is_zero()) {
-                                if let Some(t) = scrub_cell(ui, &p, ar, row, d) {
-                                    actions.push(RowAction::Seek(row.id, t));
+                        Col::Kind => {
+                            let kind = [CueKind::Audio, CueKind::Video, CueKind::Timer, CueKind::Slides, CueKind::Dmx, CueKind::Control, CueKind::Timeline]
+                                .into_iter()
+                                .find(|k| k.label() == row.kind);
+                            let color = kind.map_or(theme::TEXT_DIM, theme::kind_color);
+                            let clip = Rect::from_min_max(egui::pos2(rect.left() + r.left(), rect.top()), egui::pos2(rect.left() + r.right() - 4.0, rect.bottom()));
+                            super::widgets::pill(&p.with_clip_rect(clip), egui::pos2(clip.left(), rect.center().y), row.kind, color.gamma_multiply(if row.armed { 1.0 } else { 0.5 }));
+                        }
+                        Col::Name => cell(&p, rect, *r, &row.name, FontId::proportional(if row.depth > 0 { 13.5 } else { 15.5 }), text, indent),
+                        Col::Pre => {
+                            let (v, c) = match (row.offset, row.timecode) {
+                                (Some(o), _) => (format!("@ {}", &o.to_clock_string()[3..]), theme::TEXT_DIM),
+                                // Timecode-triggered: the trigger replaces the pre-wait.
+                                (None, Some(tc)) => (tc.to_string(), theme::accent()),
+                                (None, None) => (secs(row.pre_wait), theme::TEXT_DIM),
+                            };
+                            cell(&p, rect, *r, v, FontId::monospace(12.0), c, 0.0);
+                        }
+                        Col::Action => {
+                            let ar = Rect::from_min_max(
+                                egui::pos2(rect.left() + r.left(), rect.center().y - 11.0),
+                                egui::pos2(rect.left() + r.right() - 8.0, rect.center().y + 11.0),
+                            );
+                            if let Some(pr) = row.progress.filter(|_| running) {
+                                p.rect(ar, 3.0, theme::BG_DEEP, egui::Stroke::new(1.0_f32, theme::BORDER), egui::StrokeKind::Inside);
+                                let mut fill = ar.shrink(1.0);
+                                fill.set_width(fill.width() * pr.clamp(0.0, 1.0));
+                                p.rect_filled(fill, 2.0, theme::active().gamma_multiply(0.30));
+                                // The progress bar of a running cue is a scrub bar.
+                                if let Some(d) = row.duration.filter(|d| !d.is_zero()) {
+                                    if let Some(t) = scrub_cell(ui, &p, ar, row, d) {
+                                        actions.push(RowAction::Seek(row.id, t));
+                                    }
                                 }
                             }
+                            let dur = row.detail.clone().unwrap_or_else(|| fmt_dur(row.duration));
+                            let (txt, c) = if running && row.detail.is_some() {
+                                (dur, theme::TEXT)
+                            } else if running {
+                                (format!("{} / {dur}", &row.elapsed.to_clock_string()[3..]), theme::TEXT)
+                            } else if matches!(row.state, CueState::Completed | CueState::Stopped) {
+                                (format!("{} / {dur}", &row.elapsed.to_clock_string()[3..]), theme::TEXT_DIM)
+                            } else {
+                                (dur, theme::TEXT_DIM)
+                            };
+                            cell(&p, rect, *r, txt, FontId::monospace(13.0), c, 7.0);
                         }
-                        let dur = row.detail.clone().unwrap_or_else(|| fmt_dur(row.duration));
-                        let (txt, c) = if running && row.detail.is_some() {
-                            (dur, theme::TEXT)
-                        } else if running {
-                            (format!("{} / {dur}", &row.elapsed.to_clock_string()[3..]), theme::TEXT)
-                        } else if matches!(row.state, CueState::Completed | CueState::Stopped) {
-                            (format!("{} / {dur}", &row.elapsed.to_clock_string()[3..]), theme::TEXT_DIM)
-                        } else {
-                            (dur, theme::TEXT_DIM)
-                        };
-                        cell(&p, rect, *r, txt, FontId::monospace(13.0), c, 7.0);
-                    }
-                    Col::Post => cell(&p, rect, *r, secs(row.post_wait), FontId::monospace(12.0), theme::TEXT_DIM, 0.0),
-                    Col::Follow => {
-                        let f = match row.follow {
-                            FollowMode::None => "",
-                            FollowMode::AutoContinue => "→ cont",
-                            FollowMode::AutoFollow => "⇥ follow",
-                        };
-                        cell(&p, rect, *r, f, FontId::proportional(12.0), theme::TEXT_DIM, 0.0);
-                    }
-                    Col::State => {
-                        let (label, c) = if row.is_standby && !running {
-                            ("Standby", Some(theme::standby()))
-                        } else {
-                            (row.state.label(), theme::state_color(row.state))
-                        };
-                        let at = egui::pos2(rect.left() + r.left(), rect.center().y);
-                        match c {
-                            Some(c) => {
-                                super::widgets::pill(&p, at, label, c);
+                        Col::Post => cell(&p, rect, *r, secs(row.post_wait), FontId::monospace(12.0), theme::TEXT_DIM, 0.0),
+                        Col::Follow => {
+                            let f = match row.follow {
+                                FollowMode::None => "",
+                                FollowMode::AutoContinue => "→ cont",
+                                FollowMode::AutoFollow => "⇥ follow",
+                            };
+                            cell(&p, rect, *r, f, FontId::proportional(12.0), theme::TEXT_DIM, 0.0);
+                        }
+                        Col::State => {
+                            let (label, c) = if row.is_standby && !running {
+                                ("Standby", Some(theme::standby()))
+                            } else {
+                                (row.state.label(), theme::state_color(row.state))
+                            };
+                            let at = egui::pos2(rect.left() + r.left(), rect.center().y);
+                            match c {
+                                Some(c) => {
+                                    super::widgets::pill(&p, at, label, c);
+                                }
+                                None => cell(&p, rect, *r, spaced(label), FontId::proportional(10.0), theme::TEXT_FAINT, 0.0),
                             }
-                            None => cell(&p, rect, *r, spaced(label), FontId::proportional(10.0), theme::TEXT_FAINT, 0.0),
                         }
                     }
                 }

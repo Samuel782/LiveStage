@@ -48,9 +48,6 @@ impl Programmer {
     pub fn get(&self, fixture: FixtureId, attribute: &str) -> Option<f32> {
         self.values.get(&key(fixture, attribute)).copied()
     }
-    pub fn palette_of(&self, fixture: FixtureId, attribute: &str) -> Option<PaletteId> {
-        self.from_palette.get(&key(fixture, attribute)).copied()
-    }
     pub fn values(&self) -> impl Iterator<Item = (FixtureId, &str, f32)> + '_ {
         self.values.iter().map(|((f, a), v)| (*f, a.as_str(), *v))
     }
@@ -230,13 +227,6 @@ impl Layer {
     /// Each universe plane (index `channel - 1`), in universe order.
     pub fn planes(&self) -> impl Iterator<Item = (u16, &[Option<SlotValue>; 512])> + '_ {
         self.planes.iter().map(|(u, p)| (*u, &**p))
-    }
-
-    /// Every set slot, in (universe, channel) order.
-    pub fn iter(&self) -> impl Iterator<Item = (Slot, &SlotValue)> + '_ {
-        self.planes.iter().flat_map(|(u, plane)| {
-            plane.iter().enumerate().filter_map(move |(i, v)| v.as_ref().map(|v| (Slot { universe: *u, channel: i as u16 + 1 }, v)))
-        })
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (Slot, &mut SlotValue)> + '_ {
@@ -461,11 +451,6 @@ impl Console {
 fn submaster_fixtures<'a>(sub: &'a Submaster, patch: &'a Patch) -> impl Iterator<Item = FixtureId> + 'a {
     let all = if sub.fixtures.is_empty() { usize::MAX } else { 0 };
     patch.fixtures().take(all).map(|(pf, _)| pf.id).chain(sub.fixtures.iter().copied().filter(|f| patch.fixture(*f).is_some()))
-}
-
-/// A fixture's dimmer: its intensity channel(s), or its colour emitters.
-pub fn dimmer_slots(patch: &Patch, f: FixtureId) -> &[Slot] {
-    patch.dimmer_slots(f)
 }
 
 /// Expands palette references into attribute values (only attributes the

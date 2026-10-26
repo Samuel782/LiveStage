@@ -40,9 +40,6 @@ impl Fade {
     pub fn done(&self, now: ShowTime) -> bool {
         now >= self.start + self.duration
     }
-    pub fn target(&self) -> f32 {
-        self.to
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -353,10 +350,6 @@ impl Compositor {
         self.outputs.get_mut(&output).map(|v| v.as_mut_slice()).unwrap_or(&mut [])
     }
 
-    pub fn has_content(&self, output: OutputId) -> bool {
-        self.outputs.get(&output).is_some_and(|s| !s.is_empty())
-    }
-
     pub fn overlays(&self, output: OutputId, now: ShowTime) -> Vec<Overlay> {
         let Some(stack) = self.outputs.get(&output) else { return vec![] };
         stack
@@ -415,9 +408,6 @@ impl Compositor {
         &self.finished
     }
 
-    pub fn media_finished(&self, cue: CueId) -> bool {
-        self.finished.contains(&cue)
-    }
 }
 
 /// Per-frame summary of frame-locked layers.
@@ -497,9 +487,9 @@ mod tests {
         assert!((c.layers_mut(out)[0].opacity.value(ShowTime::from_secs(1)) - 0.5).abs() < 1e-6);
         c.handle(ShowTime::from_secs(2), &VideoAction::Hide { cue, fade: ShowTime::from_secs(1) }, &none);
         c.update(ShowTime::from_millis(2_500));
-        assert!(c.has_content(out));
+        assert!(!c.layers_mut(out).is_empty());
         c.update(ShowTime::from_secs(3));
-        assert!(!c.has_content(out));
+        assert!(c.layers_mut(out).is_empty());
     }
 
     #[test]

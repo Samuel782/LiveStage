@@ -24,7 +24,7 @@ livestage_video = { path = "crates/livestage_video" }
 livestage_dmx = { path = "crates/livestage_dmx" }
 livestage_control = { path = "crates/livestage_control" }
 
-serde = { version = "1.0", features = ["derive", "rc"] }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.28", features = ["v4", "serde"] }
 thiserror = "2.0"
@@ -65,7 +65,7 @@ ffmpeg-next = { version = "9.0", default-features = false, features = ["codec", 
 midir = "0.10.4"
 rosc = "0.10.1"
 socket2 = { version = "0.6", features = ["all"] }
-tokio = { version = "1.53", features = ["rt-multi-thread", "net", "sync", "macros", "time"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "net", "sync", "macros"] }
 tokio-tungstenite = "0.26.2"
 futures-util = "0.3"
 

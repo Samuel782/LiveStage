@@ -1,7 +1,7 @@
 //! DMX engine: executes core `DmxAction`s, renders playback through the
 //! lighting console layers, and pixel maps.
 
-use crate::console::{resolve_palettes, Console, Layer, SlotValue};
+use crate::console::{resolve_palettes, Console, Layer, Slot, SlotValue};
 use crate::fixture::{FixtureLibrary, Patch};
 use crate::output::{DmxOutput, SharedFrame};
 use crate::pixelmap::{self, RgbaView};
@@ -82,10 +82,6 @@ impl DmxEngine {
             Ok(o) => self.output = Some(o),
             Err(e) => tracing::error!("DMX output unavailable: {e}"),
         }
-    }
-
-    pub fn is_transmitting(&self) -> bool {
-        self.output.is_some()
     }
 
     pub fn handle(&mut self, now: ShowTime, action: &DmxAction, lighting: &LightingConfig) {
@@ -201,37 +197,12 @@ impl DmxEngine {
         self.render_period
     }
 
-    /// Programmer: set `attribute` on the selected fixtures that have it.
-    pub fn programmer_set(&mut self, attribute: &str, value: f32) {
-        self.console.programmer.set_selected(attribute, value, &self.patch);
-    }
-
-    /// Programmer: release `attribute` on the selection (back to playback).
-    pub fn programmer_release(&mut self, attribute: &str) {
-        for f in self.console.programmer.selection.clone() {
-            self.console.programmer.release(f, attribute);
-        }
-    }
-
-    /// Programmer: apply a palette to the selection. Returns values set.
-    pub fn programmer_apply_palette(&mut self, palette: &livestage_core::lighting::Palette) -> usize {
-        self.console.programmer.apply_palette(palette, &self.patch)
-    }
-
-    /// Programmer values of one category on the selection, as palette data.
-    pub fn programmer_palette_values(&self, kind: livestage_core::lighting::PaletteKind) -> Vec<livestage_core::lighting::LightValue> {
-        self.console.programmer.palette_values(kind, &self.patch)
-    }
-
-    /// Output value (0..=1) of a fixture attribute after the last render.
-    pub fn output(&self, fixture: FixtureId, attribute: &str) -> Option<f32> {
+    /// Output value (0..=1) of a fixture attribute after the last render
+    /// (tests; the UI reads its frame copy, `DmxView::output`).
+    #[cfg(test)]
+    pub(crate) fn output(&self, fixture: FixtureId, attribute: &str) -> Option<f32> {
         let r = self.patch.resolve(fixture, attribute)?;
         self.layer.get(r.slot()).map(|v| v.value)
-    }
-
-    /// Approximate emitted colour (0..=1 RGB, intensity applied) for the stage view.
-    pub fn fixture_color(&self, fixture: FixtureId) -> Option<[f32; 3]> {
-        fixture_color(&self.patch, fixture, |a| self.output(fixture, a))
     }
 
     /// Every slot value written by the last render (for UI snapshots).
@@ -251,17 +222,15 @@ impl DmxEngine {
 }
 
 /// Approximate emitted colour (0..=1 RGB, intensity applied) of a fixture,
-/// given its attribute output values.
-pub fn fixture_color(patch: &Patch, fixture: FixtureId, get: impl Fn(&str) -> Option<f32>) -> Option<[f32; 3]> {
-    let attrs = patch.attributes_of(fixture);
-    if attrs.is_empty() {
-        return None;
-    }
-    let dimmer = if attrs.iter().any(|(_, r)| r.kind.is_intensity()) { attrs.iter().find(|(_, r)| r.kind.is_intensity()).and_then(|(n, _)| get(n)).unwrap_or(0.0) } else { 1.0 };
-    let has_rgb = get("red").is_some();
-    let mut c = if has_rgb {
-        let w = get("white").unwrap_or(0.0) + get("amber").unwrap_or(0.0) * 0.5;
-        [get("red").unwrap_or(0.0) + w, get("green").unwrap_or(0.0) + w * 0.8, get("blue").unwrap_or(0.0) + w * 0.6]
+/// given the output value of a slot. Uses the colour slots the patch
+/// resolved when it was built: no attribute lookups per call.
+pub fn fixture_color(patch: &Patch, fixture: FixtureId, get: impl Fn(Slot) -> Option<f32>) -> Option<[f32; 3]> {
+    let slots = patch.color_slots(fixture)?;
+    let v = |s: Option<Slot>| s.and_then(&get);
+    let dimmer = if slots.intensity.is_some() { v(slots.intensity).unwrap_or(0.0) } else { 1.0 };
+    let mut c = if let Some(red) = v(slots.red) {
+        let w = v(slots.white).unwrap_or(0.0) + v(slots.amber).unwrap_or(0.0) * 0.5;
+        [red + w, v(slots.green).unwrap_or(0.0) + w * 0.8, v(slots.blue).unwrap_or(0.0) + w * 0.6]
     } else {
         [1.0, 0.95, 0.85]
     };
@@ -384,7 +353,8 @@ mod tests {
         dmx.console.set_effect(circle_id, true, ShowTime::ZERO);
         dmx.console.set_effect(wave_id, true, ShowTime::ZERO);
         dmx.console.programmer.selection = ids[..64].to_vec();
-        dmx.programmer_set("color", 0.3);
+        let patch = dmx.patch().clone();
+        dmx.console.programmer.set_selected("color", 0.3, &patch);
 
         let n = 2_000u64;
         for i in 0..50 {

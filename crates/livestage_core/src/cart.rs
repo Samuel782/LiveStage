@@ -158,6 +158,7 @@ impl CueCart {
         self.rows as usize * self.cols as usize
     }
 
+    /// No pad is assigned (`len` counts slots, used or not).
     pub fn is_empty(&self) -> bool {
         self.pads.iter().all(Option::is_none)
     }
@@ -197,10 +198,6 @@ impl CueCart {
     }
     pub fn pad_mut(&mut self, slot: usize) -> Option<&mut CartPad> {
         self.pads.get_mut(slot)?.as_mut()
-    }
-
-    pub fn slot_of(&self, cue: CueId) -> Option<usize> {
-        self.pads.iter().position(|p| p.as_ref().is_some_and(|p| p.cue.header().id == cue))
     }
 
     pub fn press(&mut self, ctx: &mut dyn CueContext, slot: usize) -> bool {

@@ -14,7 +14,7 @@ use livestage_core::project::AssetRef;
 use livestage_core::routing::AudioRouting;
 use livestage_core::time::ShowTime;
 use parking_lot::Mutex;
-use ringbuf::traits::{Consumer, Observer, Producer, Split};
+use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -73,7 +73,6 @@ enum ClipSlot {
 struct ClipCache {
     slots: Arc<Mutex<HashMap<PathBuf, ClipSlot>>>,
     loader: mpsc::Sender<PathBuf>,
-    sample_rate: u32,
 }
 
 impl ClipCache {
@@ -90,7 +89,7 @@ impl ClipCache {
                 }
             })
             .expect("spawn audio loader");
-        Self { slots, loader: tx, sample_rate }
+        Self { slots, loader: tx }
     }
 
     fn preload(&self, path: &Path) {
@@ -101,22 +100,19 @@ impl ClipCache {
         }
     }
 
-    /// Returns the clip, decoding synchronously if it wasn't preloaded.
-    fn get_blocking(&self, path: &Path) -> Result<Arc<AudioClip>, String> {
-        let current = self.slots.lock().get(path).cloned();
-        match current {
-            Some(ClipSlot::Ready(c)) => Ok(c),
-            Some(ClipSlot::Failed(e)) => Err(e),
-            // Not loaded or still loading: decode here. GO must never be lost.
-            _ => {
-                tracing::warn!(file = %path.display(), "asset not preloaded; decoding on GO");
-                let slot = load(path, self.sample_rate);
-                self.slots.lock().insert(path.to_path_buf(), slot.clone());
-                match slot {
-                    ClipSlot::Ready(c) => Ok(c),
-                    ClipSlot::Failed(e) => Err(e),
-                    ClipSlot::Loading => unreachable!(),
-                }
+    /// The clip once decoded, its error if decoding failed, or `None` while
+    /// the loader thread works on it (queued now if nobody asked before).
+    /// Never decodes on the calling thread.
+    fn poll(&self, path: &Path) -> Option<Result<Arc<AudioClip>, String>> {
+        let mut slots = self.slots.lock();
+        match slots.get(path) {
+            Some(ClipSlot::Ready(c)) => Some(Ok(c.clone())),
+            Some(ClipSlot::Failed(e)) => Some(Err(e.clone())),
+            Some(ClipSlot::Loading) => None,
+            None => {
+                slots.insert(path.to_path_buf(), ClipSlot::Loading);
+                let _ = self.loader.send(path.to_path_buf());
+                None
             }
         }
     }
@@ -168,23 +164,24 @@ impl VoiceClock {
         }
         let ended = v.finished.load(Ordering::Acquire);
         let running = v.playing.load(Ordering::Relaxed) && !ended;
-        let frames = v.position_frames.load(Ordering::Relaxed) + if running { self.interpolated_frames() } else { 0 };
+        let extra = if running { self.engine.frames_since_callback(self.sample_rate).unwrap_or(0) } else { 0 };
+        let frames = v.position_frames.load(Ordering::Relaxed) + extra;
         ClockReading { position: ShowTime::from_frames(frames, self.sample_rate), running, ended }
     }
+}
 
-    /// Frames elapsed since the last device callback, capped at one buffer.
-    /// The sample clock only advances once per callback (e.g. every 5.3 ms at
-    /// 256 frames); interpolating removes that step from timeline scheduling
-    /// and from frame-locked video.
-    fn interpolated_frames(&self) -> u64 {
-        let at = self.engine.callback_at_ns.load(Ordering::Acquire);
-        if at == 0 {
-            return 0;
-        }
-        let since_ns = (self.engine.epoch.elapsed().as_nanos() as u64).saturating_sub(at);
-        let frames = since_ns * self.sample_rate as u64 / 1_000_000_000;
-        frames.min(self.engine.callback_frames.load(Ordering::Relaxed) as u64)
-    }
+/// A GO whose files are still being decoded. Its clock is registered (held
+/// at zero) so timelines and frame-locked video wait for it; it starts on the
+/// first [`AudioEngine::maintenance`] after the loader delivers.
+struct WaitingPlay {
+    cue: CueId,
+    play: AudioAction,
+    /// Resolved file per track (`None`: muted or unresolvable).
+    paths: Vec<Option<PathBuf>>,
+    shared: Arc<VoiceShared>,
+    /// Pause / resume / seek / gain changes received meanwhile, replayed in
+    /// order once the voice starts.
+    deferred: Vec<AudioAction>,
 }
 
 /// Owner of the audio pipeline. Lives on the control thread.
@@ -193,6 +190,7 @@ pub struct AudioEngine {
     garbage: HeapCons<Garbage>,
     shared: Arc<EngineShared>,
     voices: HashMap<CueId, Arc<VoiceShared>>,
+    waiting: Vec<WaitingPlay>,
     cache: ClipCache,
     sample_rate: u32,
     channels: u16,
@@ -210,12 +208,13 @@ impl AudioEngine {
         let shared = Arc::new(EngineShared::default());
         let (table, dropped) = RoutingTable::compile(routing, channels);
         let table = Box::new(table);
-        let renderer = Renderer::new(rx, gtx, table, channels as usize, sample_rate, shared.clone());
+        let renderer = Renderer::new(rx, gtx, table, channels as usize, shared.clone());
         let engine = Self {
             tx,
             garbage: grx,
             shared,
             voices: HashMap::new(),
+            waiting: Vec::new(),
             cache: ClipCache::new(sample_rate),
             sample_rate,
             channels,
@@ -327,71 +326,37 @@ impl AudioEngine {
         self.dropped_routes = dropped;
     }
 
-    /// Crosspoints currently ignored because the device has too few outputs.
-    pub fn dropped_routes(&self) -> &[(String, u16)] {
-        &self.dropped_routes
-    }
-
     /// Makes a clip available under `path` without decoding (tests, generated audio).
     pub fn insert_clip(&self, path: impl Into<PathBuf>, clip: AudioClip) {
         self.cache.insert(path.into(), Arc::new(clip.resampled(self.sample_rate)));
     }
 
-    pub fn preload(&self, path: &Path) {
-        self.cache.preload(path);
-    }
-
     /// Executes a core [`AudioAction`]. `resolve` maps bundle asset refs to
     /// absolute paths.
     pub fn handle(&mut self, action: &AudioAction, resolve: &dyn Fn(&AssetRef) -> Option<PathBuf>) {
+        if self.defer_for_waiting(action) {
+            return;
+        }
         match action {
-            AudioAction::Play { cue, tracks, click, gain_db, fade_in, start_at, end_at, looped } => {
-                let mut voices = Vec::with_capacity(tracks.len());
-                for t in tracks.iter().filter(|t| !t.mute) {
-                    let Some(path) = resolve(&t.asset) else {
-                        tracing::error!(asset = %t.asset, "cannot resolve audio asset");
-                        continue;
-                    };
-                    match self.cache.get_blocking(&path) {
-                        Ok(clip) => voices.push(TrackVoice { clip, stem: t.stem, gain: db_to_gain(t.gain_db) }),
-                        Err(e) => tracing::error!(asset = %t.asset, "audio unavailable: {e}"),
-                    }
-                }
-                let click = click.as_ref().map(|c| (Metronome::new(c, self.sample_rate), c.stem));
-                let count_in = match (click.as_ref(), action) {
-                    (Some((m, _)), AudioAction::Play { click: Some(c), start_at, .. }) if start_at.is_zero() => {
-                        m.count_in_frames(c.count_in_bars)
-                    }
-                    _ => 0,
-                };
-                let level = db_to_gain(*gain_db);
-                let mut gain = Ramp::new(if fade_in.is_zero() { level } else { 0.0 });
-                if !fade_in.is_zero() {
-                    gain.to(level, self.frames(*fade_in));
-                }
+            AudioAction::Play { cue, tracks, .. } => {
+                let paths = tracks
+                    .iter()
+                    .map(|t| {
+                        let p = if t.mute { None } else { resolve(&t.asset) };
+                        if p.is_none() && !t.mute {
+                            tracing::error!(asset = %t.asset, "cannot resolve audio asset");
+                        }
+                        p
+                    })
+                    .collect();
+                self.waiting.retain(|w| w.cue != *cue);
                 let shared = Arc::new(VoiceShared::default());
                 self.voices.insert(*cue, shared.clone());
-                let start_frame = start_at.to_frames(self.sample_rate);
-                let mut group = Box::new(VoiceGroup {
-                    cue: *cue,
-                    tracks: voices,
-                    click,
-                    count_in,
-                    frame: 0,
-                    start_frame,
-                    end_frame: end_at.map(|e| e.to_frames(self.sample_rate)),
-                    looped: *looped,
-                    gain,
-                    level,
-                    state: GroupState::Playing,
-                    shared,
-                    pending_seek: None,
-                });
-                // Keep the click phase-aligned with the song position when starting mid-way.
-                if let Some((m, _)) = group.click.as_mut() {
-                    m.seek(start_frame);
+                let w = WaitingPlay { cue: *cue, play: action.clone(), paths, shared, deferred: Vec::new() };
+                if !self.try_start(&w) {
+                    tracing::warn!(cue = %cue, "audio not preloaded; starting once decoded");
+                    self.waiting.push(w);
                 }
-                self.send(RtCommand::Start(group));
             }
             AudioAction::Stop { cue, fade } => {
                 let fade_frames = self.frames(*fade);
@@ -418,6 +383,9 @@ impl AudioEngine {
                 }
             }
             AudioAction::StopAll { fade } => {
+                for w in self.waiting.drain(..) {
+                    self.voices.remove(&w.cue);
+                }
                 let fade_frames = self.frames(*fade);
                 self.send(RtCommand::StopAll { fade_frames });
             }
@@ -425,6 +393,89 @@ impl AudioEngine {
                 self.send(RtCommand::SetMasterGain { gain: db_to_gain(*db), fade_frames: 480 })
             }
         }
+    }
+
+    /// Starts a play whose clips are all decoded (failed ones are skipped);
+    /// returns false, starting nothing, while any is still loading.
+    fn try_start(&mut self, w: &WaitingPlay) -> bool {
+        let mut clips = Vec::with_capacity(w.paths.len());
+        for p in &w.paths {
+            clips.push(match p {
+                Some(p) => match self.cache.poll(p) {
+                    Some(c) => Some(c),
+                    None => return false,
+                },
+                None => None,
+            });
+        }
+        let AudioAction::Play { cue, tracks, click, gain_db, fade_in, start_at, end_at, looped } = &w.play else {
+            unreachable!("waiting plays hold Play actions")
+        };
+        let mut voices = Vec::with_capacity(tracks.len());
+        for (t, clip) in tracks.iter().zip(clips) {
+            match clip {
+                Some(Ok(clip)) => voices.push(TrackVoice { clip, stem: t.stem, gain: db_to_gain(t.gain_db) }),
+                Some(Err(e)) => tracing::error!(asset = %t.asset, "audio unavailable: {e}"),
+                None => {}
+            }
+        }
+        let click = click.as_ref().map(|c| (Metronome::new(c, self.sample_rate), c.stem));
+        let count_in = match (click.as_ref(), &w.play) {
+            (Some((m, _)), AudioAction::Play { click: Some(c), start_at, .. }) if start_at.is_zero() => m.count_in_frames(c.count_in_bars),
+            _ => 0,
+        };
+        let level = db_to_gain(*gain_db);
+        let mut gain = Ramp::new(if fade_in.is_zero() { level } else { 0.0 });
+        if !fade_in.is_zero() {
+            gain.to(level, self.frames(*fade_in));
+        }
+        let start_frame = start_at.to_frames(self.sample_rate);
+        let mut group = Box::new(VoiceGroup {
+            cue: *cue,
+            tracks: voices,
+            click,
+            count_in,
+            frame: 0,
+            start_frame,
+            end_frame: end_at.map(|e| e.to_frames(self.sample_rate)),
+            looped: *looped,
+            gain,
+            level,
+            state: GroupState::Playing,
+            shared: w.shared.clone(),
+            pending_seek: None,
+        });
+        // Keep the click phase-aligned with the song position when starting mid-way.
+        if let Some((m, _)) = group.click.as_mut() {
+            m.seek(start_frame);
+        }
+        self.send(RtCommand::Start(group));
+        let none = |_: &AssetRef| None;
+        for a in &w.deferred {
+            self.handle(a, &none);
+        }
+        true
+    }
+
+    /// Queues a transport change for a cue still waiting on its clips, or
+    /// drops the wait on stop. Returns whether the action was consumed.
+    fn defer_for_waiting(&mut self, action: &AudioAction) -> bool {
+        let cue = match action {
+            AudioAction::Stop { cue, .. }
+            | AudioAction::Pause { cue }
+            | AudioAction::Resume { cue }
+            | AudioAction::Seek { cue, .. }
+            | AudioAction::SetGain { cue, .. } => *cue,
+            _ => return false,
+        };
+        let Some(i) = self.waiting.iter().position(|w| w.cue == cue) else { return false };
+        if matches!(action, AudioAction::Stop { .. }) {
+            self.waiting.remove(i);
+            self.voices.remove(&cue);
+        } else {
+            self.waiting[i].deferred.push(action.clone());
+        }
+        true
     }
 
     /// Sample-clock position of a cue (drives timeline children).
@@ -442,12 +493,7 @@ impl AudioEngine {
     /// The device sample clock: frames rendered since the engine started,
     /// interpolated between callbacks. None until the device has called back.
     pub fn sample_clock(&self) -> Option<ShowTime> {
-        let at = self.shared.callback_at_ns.load(Ordering::Acquire);
-        if at == 0 {
-            return None;
-        }
-        let since_ns = (self.shared.epoch.elapsed().as_nanos() as u64).saturating_sub(at);
-        let extra = (since_ns * self.sample_rate as u64 / 1_000_000_000).min(self.shared.callback_frames.load(Ordering::Relaxed) as u64);
+        let extra = self.shared.frames_since_callback(self.sample_rate)?;
         let frames = self.shared.frames_rendered.load(Ordering::Relaxed) + extra;
         Some(ShowTime::from_frames(frames, self.sample_rate))
     }
@@ -458,6 +504,13 @@ impl AudioEngine {
 
     /// Drops objects returned by the audio thread. Call every UI frame.
     pub fn maintenance(&mut self) {
+        if !self.waiting.is_empty() {
+            for w in std::mem::take(&mut self.waiting) {
+                if !self.try_start(&w) {
+                    self.waiting.push(w);
+                }
+            }
+        }
         let mut n = 0;
         while let Some(g) = self.garbage.try_pop() {
             if let Garbage::Group(g) = &g {
@@ -475,10 +528,6 @@ impl AudioEngine {
         if n > 0 {
             tracing::trace!(n, "audio garbage collected");
         }
-    }
-
-    pub fn pending_commands(&self) -> usize {
-        self.tx.occupied_len()
     }
 
     /// Reads and resets peak levels for all outputs.
@@ -641,6 +690,50 @@ mod tests {
         assert!((last - 0.25).abs() < 0.01, "not playing from the new position: {last}");
         let pos = engine.media_position(cue).unwrap();
         assert!(pos > ShowTime::from_secs(1) && pos < ShowTime::from_millis(1_020), "{pos:?}");
+    }
+
+    #[test]
+    fn go_before_decode_starts_later_without_blocking() {
+        let dir = std::env::temp_dir().join(format!("ls-wait-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let samples: Vec<i16> = (0..48_000).map(|i| ((i % 100) * 300) as i16).collect();
+        crate::decode::tests::write_wav(&dir.join("late.wav"), 48_000, 1, &samples);
+        let routing = AudioRouting::default();
+        let (mut engine, mut rt) = AudioEngine::offline(48_000, 2, &routing);
+        let resolve = |a: &AssetRef| Some(dir.join(a.as_str()));
+        let play = |cue| AudioAction::Play {
+            cue,
+            tracks: vec![AudioTrack { asset: AssetRef::new("late.wav"), stem: routing.stems[0].id, gain_db: 0.0, mute: false }],
+            click: None,
+            gain_db: 0.0,
+            fade_in: ShowTime::ZERO,
+            start_at: ShowTime::ZERO,
+            end_at: None,
+            looped: false,
+        };
+
+        // Stopped before the decode lands: never starts.
+        let dropped = CueId::new();
+        engine.handle(&play(dropped), &resolve);
+        engine.handle(&AudioAction::Stop { cue: dropped, fade: ShowTime::ZERO }, &resolve);
+        assert_eq!(engine.media_position(dropped), None);
+
+        let cue = CueId::new();
+        engine.handle(&play(cue), &resolve);
+        // The clock exists but holds at zero while the loader decodes.
+        assert_eq!(engine.voice_clock(cue).unwrap().read(), ClockReading { position: ShowTime::ZERO, running: false, ended: false });
+        engine.handle(&AudioAction::SetGain { cue, gain_db: -6.0, fade: ShowTime::ZERO }, &resolve);
+        let mut buf = vec![0.0f32; 256 * 2];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while engine.media_position(cue) == Some(ShowTime::ZERO) {
+            assert!(std::time::Instant::now() < deadline, "never started");
+            engine.maintenance();
+            rt.render(&mut buf);
+            std::thread::yield_now();
+        }
+        assert!(buf.iter().any(|s| s.abs() > 0.01), "silent after start");
+        assert_eq!(engine.media_position(dropped), None);
+        std::fs::remove_dir_all(dir).ok();
     }
 }
 

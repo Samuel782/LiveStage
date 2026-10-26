@@ -113,7 +113,7 @@ pub fn decode_file(path: &Path) -> AudioResult<AudioClip> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Writes a minimal 16-bit PCM WAV.

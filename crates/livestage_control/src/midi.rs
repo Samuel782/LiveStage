@@ -150,11 +150,6 @@ pub fn list_inputs() -> Vec<String> {
     input.ports().iter().filter_map(|p| input.port_name(p).ok()).collect()
 }
 
-pub fn list_outputs() -> Vec<String> {
-    let Ok(out) = MidiOutput::new("LiveStage probe") else { return vec![] };
-    out.ports().iter().filter_map(|p| out.port_name(p).ok()).collect()
-}
-
 /// An open MIDI input. Dropping it closes the port.
 pub struct MidiInputHandler {
     _conn: MidiInputConnection<()>,
@@ -208,12 +203,6 @@ impl MidiInputHandler {
     /// Replaces the bindings without reopening the port.
     pub fn set_bindings(&self, bindings: Vec<MidiBinding>) {
         *self.bindings.write() = bindings;
-    }
-
-    /// The most recent note-on (channel, note) since the last call — for
-    /// "MIDI learn". Call once to clear before learning.
-    pub fn take_learned(&self) -> Option<(u8, u8)> {
-        self.learned.lock().take()
     }
 
     /// The slot MIDI learn writes to, for readers on other threads.

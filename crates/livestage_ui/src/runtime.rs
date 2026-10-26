@@ -232,7 +232,14 @@ pub struct ShowRuntime {
     pub log_seq: u64,
     /// Bumped when the DMX engine is rebuilt (new patch / library).
     pub dmx_generation: u64,
+    /// Revision of `bundle.project.displays`; renderers re-copy the displays
+    /// only when it changes. Unique across runtimes (see [`touch_displays`](Self::touch_displays)).
+    pub displays_rev: u64,
 }
+
+/// Source of display revisions, global so a newly opened show never reuses
+/// the revision a renderer cached for the previous one.
+static DISPLAYS_REV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl ShowRuntime {
     pub fn new(bundle: ProjectBundle) -> Self {
@@ -275,6 +282,7 @@ impl ShowRuntime {
             timecode_input: String::new(),
             log_seq: 0,
             dmx_generation: 0,
+            displays_rev: DISPLAYS_REV.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             bundle,
         };
         for e in rt.dmx.patch_errors.clone() {
@@ -295,6 +303,11 @@ impl ShowRuntime {
 
     pub fn now(&self) -> ShowTime {
         self.epoch.elapsed().into()
+    }
+
+    /// Marks `bundle.project.displays` as changed for cached copies.
+    pub fn touch_displays(&mut self) {
+        self.displays_rev = DISPLAYS_REV.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The show clock origin (shared with the render thread).
@@ -1026,6 +1039,9 @@ impl ShowRuntime {
     /// state is adopted from the current project, and live levels survive.
     pub fn restore(&mut self, mut project: livestage_core::Project, what: &str) {
         let old = std::mem::replace(&mut self.bundle.project, livestage_core::Project::new(""));
+        if project.displays != old.displays {
+            self.touch_displays();
+        }
         project.adopt_runtime_from(&old);
         project.audio.master_gain_db = old.audio.master_gain_db;
         let dmx_changed = project.dmx != old.dmx;

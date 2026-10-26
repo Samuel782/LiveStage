@@ -177,9 +177,6 @@ impl FixtureLibrary {
         Self { defs: defs.into_iter().map(|d| (d.key.to_string(), d)).collect() }
     }
 
-    pub fn register(&mut self, def: FixtureDefinition) {
-        self.defs.insert(def.key.to_string(), def);
-    }
     pub fn get(&self, key: &str) -> Option<&FixtureDefinition> {
         self.defs.get(key)
     }
@@ -206,6 +203,18 @@ impl ResolvedAttribute {
     }
 }
 
+/// Slots read to approximate a fixture's emitted colour (stage view, tiles),
+/// resolved once when the patch is built.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ColorSlots {
+    pub intensity: Option<Slot>,
+    pub red: Option<Slot>,
+    pub green: Option<Slot>,
+    pub blue: Option<Slot>,
+    pub white: Option<Slot>,
+    pub amber: Option<Slot>,
+}
+
 #[derive(Debug, Clone)]
 struct PatchEntry {
     fixture: PatchedFixture,
@@ -215,6 +224,7 @@ struct PatchEntry {
     /// The fixture's dimmer: intensity slots, or its colour emitters.
     dimmer: Vec<Slot>,
     has_intensity: bool,
+    color: ColorSlots,
 }
 
 impl PatchEntry {
@@ -240,7 +250,16 @@ impl PatchEntry {
             .filter(|(_, r)| if has_intensity { r.kind.is_intensity() } else { r.kind.is_emitter() })
             .map(|(_, r)| r.slot())
             .collect();
-        Self { fixture, mode, attributes, dimmer, has_intensity }
+        let named = |n: &str| attributes.iter().find(|(a, _)| a.eq_ignore_ascii_case(n)).map(|(_, r)| r.slot());
+        let color = ColorSlots {
+            intensity: attributes.iter().find(|(_, r)| r.kind.is_intensity()).map(|(_, r)| r.slot()),
+            red: named("red"),
+            green: named("green"),
+            blue: named("blue"),
+            white: named("white"),
+            amber: named("amber"),
+        };
+        Self { fixture, mode, attributes, dimmer, has_intensity, color }
     }
 }
 
@@ -346,8 +365,10 @@ impl Patch {
         self.entry(id).map_or(&[], |e| &e.dimmer)
     }
 
-    pub fn has_intensity(&self, id: FixtureId) -> bool {
-        self.entry(id).is_some_and(|e| e.has_intensity)
+    /// Colour slots of a fixture; `None` for unknown fixtures or fixtures
+    /// without attributes.
+    pub fn color_slots(&self, id: FixtureId) -> Option<&ColorSlots> {
+        self.entry(id).filter(|e| !e.attributes.is_empty()).map(|e| &e.color)
     }
 
     /// Emitter slots acting as dimmers (fixtures without an intensity channel).
@@ -364,17 +385,6 @@ impl Patch {
         e.attributes.iter().find(|(n, _)| n.eq_ignore_ascii_case(attribute)).map(|(_, r)| *r)
     }
 
-    /// All attributes of all fixtures (for homing / blackout classification).
-    pub fn all_attributes(&self) -> impl Iterator<Item = ResolvedAttribute> + '_ {
-        self.entries.iter().flat_map(|e| e.attributes.iter().map(|(_, r)| *r))
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
 }
 
 #[cfg(test)]

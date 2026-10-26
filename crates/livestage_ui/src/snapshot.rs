@@ -117,7 +117,8 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
     }
     for name in &a.palettes {
         if let Some(p) = rt.bundle.project.lighting.palettes.iter().find(|p| p.name.eq_ignore_ascii_case(name)).cloned() {
-            rt.dmx.programmer_apply_palette(&p);
+            let patch = rt.dmx.patch().clone();
+            rt.dmx.console.programmer.apply_palette(&p, &patch);
         }
     }
     for &effect in &a.fx {

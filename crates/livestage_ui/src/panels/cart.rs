@@ -59,12 +59,8 @@ fn reserved(key: egui::Key) -> bool {
     RESERVED_KEYS.contains(&key)
 }
 
-fn kind_color(k: CueKind) -> Color32 {
-    theme::kind_color(k)
-}
-
 fn pad_color(p: &CartPad) -> Color32 {
-    p.color.map(theme::rgb).unwrap_or_else(|| kind_color(p.cue.kind()))
+    p.color.map(theme::rgb).unwrap_or_else(|| theme::kind_color(p.cue.kind()))
 }
 
 pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
@@ -486,7 +482,7 @@ fn editor(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             ui.label("Colour");
             ui.horizontal_wrapped(|ui| {
                 let (r, auto) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
-                ui.painter().circle_stroke(r.center(), 8.0, Stroke::new(1.5_f32, kind_color(p.cue.kind())));
+                ui.painter().circle_stroke(r.center(), 8.0, Stroke::new(1.5_f32, theme::kind_color(p.cue.kind())));
                 if p.color.is_none() {
                     ui.painter().circle_filled(r.center(), 3.0, theme::TEXT);
                 }

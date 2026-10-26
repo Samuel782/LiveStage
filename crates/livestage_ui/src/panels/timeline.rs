@@ -5,17 +5,13 @@ use super::UiState;
 use crate::view::UiRuntime;
 use crate::theme;
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui};
-use livestage_core::cue::{AnyCue, Cue, CueExt, CueKind};
+use livestage_core::cue::{AnyCue, Cue, CueExt};
 use livestage_core::id::CueId;
 use livestage_core::ShowTime;
 
 const GUTTER: f32 = 190.0;
 const ROW: f32 = 30.0;
 const RULER: f32 = 24.0;
-
-fn kind_color(k: CueKind) -> Color32 {
-    theme::kind_color(k)
-}
 
 /// The timeline to show: the selected one, the one containing the selected
 /// child, or the first timeline in the active list.
@@ -101,7 +97,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             match t.master.as_deref() {
                 Some(m) => {
                     let b = block(0, 0.0, Some(m.duration().map_or(length, |d| d.as_secs_f32())));
-                    p.rect_filled(b, 3.0, kind_color(m.kind()).gamma_multiply(0.7));
+                    p.rect_filled(b, 3.0, theme::kind_color(m.kind()).gamma_multiply(0.7));
                     p.with_clip_rect(b.shrink(2.0)).text(
                         b.left_center() + egui::vec2(6.0, 0.0),
                         Align2::LEFT_CENTER,
@@ -134,7 +130,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                 p.with_clip_rect(gutter).text(Pos2::new(r.left() + 8.0, r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), theme::TEXT);
                 let dur = item.cue.duration().map(|d| d.as_secs_f32());
                 let b = block(lane, item.offset.as_secs_f32(), dur);
-                let color = kind_color(item.cue.kind());
+                let color = theme::kind_color(item.cue.kind());
                 let fired = item.cue.state().is_active();
                 p.rect_filled(b, 3.0, if fired { color } else { color.gamma_multiply(0.6) });
                 if selected {
