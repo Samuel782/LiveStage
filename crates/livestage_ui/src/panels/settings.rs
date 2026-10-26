@@ -410,6 +410,31 @@ fn timecode(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                 changed |= ui.add(DragValue::new(&mut cfg.artnet_port).range(1024..=65_535).prefix("UDP ")).changed();
                 ui.end_row();
             }
+            TimecodeSource::Ltc => {
+                if st.audio_inputs.is_empty() {
+                    st.audio_inputs = livestage_audio::ltc::list_input_devices();
+                }
+                ui.label("Audio input");
+                ui.horizontal(|ui| {
+                    let current = cfg.ltc_input.clone().unwrap_or_else(|| "System default".into());
+                    ComboBox::from_id_salt("set-tc-ltc-in").width(260.0).selected_text(current).show_ui(ui, |ui| {
+                        changed |= ui.selectable_value(&mut cfg.ltc_input, None, "System default").changed();
+                        for (name, ch) in &st.audio_inputs {
+                            changed |= ui.selectable_value(&mut cfg.ltc_input, Some(name.clone()), format!("{name} ({ch} ch)")).changed();
+                        }
+                    });
+                    if ui.small_button("Rescan").clicked() {
+                        st.audio_inputs = livestage_audio::ltc::list_input_devices();
+                    }
+                });
+                ui.end_row();
+                ui.label("Channel");
+                ui.horizontal(|ui| {
+                    changed |= ui.add(DragValue::new(&mut cfg.ltc_channel).range(1..=64)).changed();
+                    hint(ui, "24, 25, 29.97 (DF) and 30 fps are detected from the signal");
+                });
+                ui.end_row();
+            }
         }
         if cfg.source != TimecodeSource::Internal {
             ui.label("Freewheel");
@@ -430,6 +455,44 @@ fn timecode(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             ui.end_row();
         }
     });
+
+    ui.add_space(10.0);
+    ui.label(RichText::new("Timecode out").strong());
+    hint(ui, "Sends the show timecode (the internal generator, or the source it follows) so other machines can chase LiveStage.");
+    if st.midi_outputs.is_empty() {
+        st.midi_outputs = livestage_control::midi::list_outputs();
+    }
+    egui::Grid::new("set-tc-out").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
+        let out = &mut cfg.output;
+        changed |= toggle(ui, &mut out.mtc, "MTC").changed();
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(out.mtc, |ui| {
+                let current = out.mtc_port.clone().unwrap_or_else(|| "First available".into());
+                ComboBox::from_id_salt("set-tc-mtc-out").width(260.0).selected_text(current).show_ui(ui, |ui| {
+                    changed |= ui.selectable_value(&mut out.mtc_port, None, "First available").changed();
+                    for p in &st.midi_outputs {
+                        changed |= ui.selectable_value(&mut out.mtc_port, Some(p.clone()), p).changed();
+                    }
+                });
+            });
+            if ui.small_button("Rescan").clicked() {
+                st.midi_outputs = livestage_control::midi::list_outputs();
+            }
+        });
+        ui.end_row();
+        changed |= toggle(ui, &mut out.ltc, "LTC").changed();
+        ui.add_enabled_ui(out.ltc, |ui| {
+            ui.horizontal(|ui| {
+                changed |= ui.add(DragValue::new(&mut out.ltc_channel).range(1..=64).prefix("output ")).changed();
+                changed |= ui.add(DragValue::new(&mut out.ltc_level_db).range(-30.0..=0.0).speed(0.25).suffix(" dBFS")).changed();
+                hint(ui, "on the show's audio device, after the master: panics do not mute it");
+            });
+        });
+        ui.end_row();
+    });
+    if !rt.timecode_output.is_empty() && rt.timecode_output != "off" {
+        hint(ui, &format!("Sending {}", rt.timecode_output));
+    }
     if changed {
         rt.bundle.project.timecode = cfg;
         rt.apply_timecode_config();

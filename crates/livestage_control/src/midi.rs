@@ -145,6 +145,11 @@ pub fn to_command(event: &MidiEvent, bindings: &[MidiBinding]) -> Option<ShowCom
     })
 }
 
+pub fn list_outputs() -> Vec<String> {
+    let Ok(output) = MidiOutput::new("LiveStage probe") else { return vec![] };
+    output.ports().iter().filter_map(|p| output.port_name(p).ok()).collect()
+}
+
 pub fn list_inputs() -> Vec<String> {
     let Ok(input) = MidiInput::new("LiveStage probe") else { return vec![] };
     input.ports().iter().filter_map(|p| input.port_name(p).ok()).collect()

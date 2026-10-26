@@ -220,6 +220,9 @@ pub struct DmxView {
     last: Layer,
     universes: BTreeMap<u16, Universe>,
     packets_sent: u64,
+    /// sACN input running, and its live universes (universe, sources, priority).
+    pub input_running: bool,
+    pub input: Vec<(u16, u8, u8)>,
     /// `ShowRuntime::dmx_generation` the patch and library were copied at.
     generation: u64,
 }
@@ -267,6 +270,7 @@ pub struct UiRuntime {
     pub audio_error: Option<String>,
     pub timecode: TimecodeView,
     pub timecode_input: String,
+    pub timecode_output: String,
     pub midi_in: Option<MidiView>,
     pub log: VecDeque<LogLine>,
     log_seq: u64,
@@ -311,12 +315,15 @@ impl UiRuntime {
                 last: Layer::default(),
                 universes: BTreeMap::new(),
                 packets_sent: 0,
+                input_running: false,
+                input: Vec::new(),
                 generation: u64::MAX,
             },
             audio: None,
             audio_error: None,
             timecode: TimecodeView::default(),
             timecode_input: String::new(),
+            timecode_output: String::new(),
             midi_in: None,
             log: VecDeque::new(),
             log_seq: u64::MAX,
@@ -386,6 +393,12 @@ impl UiRuntime {
             }
         }
         d.packets_sent = rt.dmx.packets_sent();
+        d.input_running = rt.dmx.input_running();
+        if d.input_running {
+            d.input = rt.dmx.input_status();
+        } else {
+            d.input.clear();
+        }
 
         self.audio = rt.audio.as_ref().map(|a| {
             // Peaks accumulate until read, so frames that skip the meters lose nothing.
@@ -419,6 +432,7 @@ impl UiRuntime {
         self.timecode.lock_error_us = rt.timecode.lock_error_us();
         self.timecode.reset_requested = false;
         self.timecode_input.clone_from(&rt.timecode_input);
+        self.timecode_output.clone_from(&rt.timecode_output);
         self.midi_in = rt.midi_in.as_ref().map(|m| MidiView { port_name: m.port_name.clone(), learned: m.learn_slot() });
 
         if self.log_seq != rt.log_seq {

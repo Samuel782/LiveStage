@@ -288,6 +288,8 @@ pub enum RtCommand {
     StopAll { fade_frames: u32 },
     SetMasterGain { gain: f32, fade_frames: u32 },
     SetRouting(Box<RoutingTable>),
+    /// Where the show timecode is, for the LTC generator.
+    SetLtc(crate::ltc::LtcAnchor),
 }
 
 /// Objects handed back to the control thread to be dropped there.
@@ -307,6 +309,7 @@ pub struct Renderer {
     shared: Arc<EngineShared>,
     /// Per-output peak accumulator for the current callback.
     peak_scratch: [f32; MAX_CHANNELS],
+    ltc: crate::ltc::LtcGenerator,
 }
 
 impl Renderer {
@@ -316,6 +319,7 @@ impl Renderer {
         routing: Box<RoutingTable>,
         channels: usize,
         shared: Arc<EngineShared>,
+        sample_rate: u32,
     ) -> Self {
         let mut groups = Vec::with_capacity(MAX_GROUPS);
         groups.resize_with(MAX_GROUPS, || None);
@@ -328,6 +332,7 @@ impl Renderer {
             channels,
             shared,
             peak_scratch: [0.0; MAX_CHANNELS],
+            ltc: crate::ltc::LtcGenerator::new(sample_rate),
         }
     }
 
@@ -432,6 +437,7 @@ impl Renderer {
                     let old = std::mem::replace(&mut self.routing, table);
                     self.trash(Garbage::Routing(old));
                 }
+                RtCommand::SetLtc(anchor) => self.ltc.set(anchor),
             }
         }
     }
@@ -482,6 +488,9 @@ impl Renderer {
                 p.store(self.peak_scratch[c].to_bits(), Ordering::Relaxed);
             }
         }
+        // Timecode after the master: panics and fades never silence it.
+        let first = self.shared.frames_rendered.load(Ordering::Relaxed);
+        self.ltc.render(out, ch, first);
         let active = self.groups.iter().filter(|g| g.is_some()).count() as u32;
         self.shared.active_groups.store(active, Ordering::Relaxed);
         self.shared.callbacks.fetch_add(1, Ordering::Relaxed);

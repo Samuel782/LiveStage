@@ -41,8 +41,9 @@ pub struct DmxOutput {
 }
 
 impl DmxOutput {
-    /// Starts the sender. Universes with `Disabled` transport are not sent.
-    pub fn start(config: &DmxConfig, frame: SharedFrame) -> Result<Self, DmxError> {
+    /// Starts the sender, identified on sACN as `source`. Universes with
+    /// `Disabled` transport are not sent.
+    pub fn start(config: &DmxConfig, frame: SharedFrame, source: sacn::SacnSource) -> Result<Self, DmxError> {
         let mut routes = Vec::new();
         for u in &config.universes {
             match &u.transport {
@@ -73,7 +74,6 @@ impl DmxOutput {
         let running = Arc::new(AtomicBool::new(true));
         let packets_sent = Arc::new(AtomicU64::new(0));
         let period = Duration::from_secs_f32(1.0 / config.refresh_hz.clamp(1.0, 44.0));
-        let source = sacn::SacnSource::new("LiveStage");
 
         let (frame2, running2, sent2) = (frame.clone(), running.clone(), packets_sent.clone());
         let handle = std::thread::Builder::new().name("livestage-dmx-out".into()).spawn(move || {

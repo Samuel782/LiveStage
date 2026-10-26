@@ -6,6 +6,7 @@
 //! * [`lock`] — locks a jittery incoming stream (MTC, Art-Net) to the local
 //!   clock with a phase/frequency loop: drift compensation, dropout
 //!   freewheel, jump and stop detection.
+//! * [`ltc`] — linear timecode (SMPTE 12M) audio encoder and decoder.
 //! * [`clock`] — the internal generator (wall clock or audio sample clock).
 //! * [`engine`] — picks the configured source and publishes a
 //!   [`TcTransport`] every show tick.
@@ -21,10 +22,11 @@
 pub mod clock;
 pub mod engine;
 pub mod lock;
+pub mod ltc;
 pub mod slave;
 
 pub use clock::{ClockBase, InternalClock};
-pub use engine::{TimecodeConfig, TimecodeEngine, TimecodeSource};
+pub use engine::{TimecodeConfig, TimecodeEngine, TimecodeOutput, TimecodeSource};
 pub use lock::{LockConfig, LockState, SampleKind, TcSample, TimecodeLock};
 pub use slave::{ListTimecode, OnTimecodeStop, TimecodeSlave};
 

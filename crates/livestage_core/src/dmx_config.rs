@@ -81,11 +81,124 @@ pub struct PixelMapConfig {
     pub enabled: bool,
 }
 
+/// Where an imported fixture profile came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileSource {
+    /// GDTF (`.gdtf`, DIN SPEC 15800).
+    Gdtf,
+    /// Open Fixture Library JSON.
+    Ofl,
+}
+
+impl ProfileSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            ProfileSource::Gdtf => "GDTF",
+            ProfileSource::Ofl => "OFL",
+        }
+    }
+}
+
+/// One DMX attribute of an imported mode.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProfileAttribute {
+    /// Attribute name used by cues and palettes (`intensity`, `red`, `pan`, ...).
+    pub name: String,
+    /// Attribute kind (`intensity`, `red`, `pan`, `gobo`, `generic`, ...).
+    pub kind: String,
+    /// 0-based offset of the coarse byte inside the footprint.
+    pub coarse: u16,
+    /// 0-based offset of the fine byte of a 16-bit attribute.
+    #[serde(default)]
+    pub fine: Option<u16>,
+    /// Home value, normalised 0..=1.
+    #[serde(default)]
+    pub default: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProfileMode {
+    pub name: String,
+    pub footprint: u16,
+    pub attributes: Vec<ProfileAttribute>,
+}
+
+/// A fixture type imported from GDTF or the Open Fixture Library. Stored in
+/// the show, so a show file opens with its fixture types on any machine.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FixtureProfile {
+    /// Library key the patch refers to, e.g. `ofl/cameo/auro-spot-300`.
+    pub key: String,
+    pub manufacturer: String,
+    pub model: String,
+    pub source: ProfileSource,
+    pub modes: Vec<ProfileMode>,
+}
+
+/// How an input universe combines with LiveStage's own output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputMerge {
+    /// Highest takes precedence, per channel.
+    #[default]
+    Htp,
+    /// The input replaces the show's values while a source is sending.
+    Override,
+}
+
+impl InputMerge {
+    pub const ALL: [InputMerge; 2] = [InputMerge::Htp, InputMerge::Override];
+    pub fn label(self) -> &'static str {
+        match self {
+            InputMerge::Htp => "HTP merge",
+            InputMerge::Override => "Override",
+        }
+    }
+}
+
+/// Patches channels of a received sACN universe onto an output universe.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InputPatch {
+    /// sACN universe to receive (1..=63999).
+    pub sacn_universe: u16,
+    /// First received channel (1-based).
+    pub from: u16,
+    /// Number of channels.
+    pub count: u16,
+    /// Internal output universe index.
+    pub universe: u16,
+    /// First output channel (1-based).
+    pub to: u16,
+    pub merge: InputMerge,
+    pub enabled: bool,
+}
+
+impl InputPatch {
+    /// A whole universe, merged HTP onto the same-numbered output.
+    pub fn whole(sacn_universe: u16, universe: u16) -> Self {
+        Self { sacn_universe, from: 1, count: 512, universe, to: 1, merge: InputMerge::Htp, enabled: true }
+    }
+}
+
+/// sACN reception: merged per the E1.31 rules (priority, then HTP between
+/// sources of equal priority) and patched onto output universes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SacnInputConfig {
+    pub enabled: bool,
+    pub patches: Vec<InputPatch>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DmxConfig {
     pub universes: Vec<UniverseConfig>,
     pub patch: Vec<PatchedFixture>,
     pub pixel_maps: Vec<PixelMapConfig>,
+    /// Fixture types imported from GDTF / OFL files.
+    #[serde(default)]
+    pub profiles: Vec<FixtureProfile>,
+    #[serde(default)]
+    pub sacn_input: SacnInputConfig,
     /// Transmit rate in Hz (Art-Net / sACN typically 30–44).
     pub refresh_hz: f32,
     /// How often the lighting layers are rendered on the show thread, in Hz.
@@ -108,6 +221,8 @@ impl Default for DmxConfig {
             }],
             patch: vec![],
             pixel_maps: vec![],
+            profiles: vec![],
+            sacn_input: SacnInputConfig::default(),
             refresh_hz: 40.0,
             render_hz: default_render_hz(),
         }

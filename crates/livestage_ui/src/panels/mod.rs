@@ -115,6 +115,12 @@ pub struct UiState {
     pub meters: Vec<f32>,
     pub audio_devices: Vec<livestage_audio::OutputDeviceInfo>,
     pub midi_inputs: Vec<String>,
+    pub midi_outputs: Vec<String>,
+    /// Audio inputs (name, channels), for LTC.
+    pub audio_inputs: Vec<(String, u16)>,
+    /// Fixture file to import (GDTF / OFL), and the last import's result.
+    pub fixture_import_path: String,
+    pub fixture_import_result: Option<(bool, String)>,
     pub test_patterns: std::collections::HashSet<OutputId>,
     pub dragging_warp: Option<(OutputId, usize)>,
     pub new_fixture_def: String,
@@ -175,6 +181,10 @@ impl Default for UiState {
             meters: Vec::new(),
             audio_devices: Vec::new(),
             midi_inputs: Vec::new(),
+            midi_outputs: Vec::new(),
+            audio_inputs: Vec::new(),
+            fixture_import_path: String::new(),
+            fixture_import_result: None,
             test_patterns: Default::default(),
             dragging_warp: None,
             new_fixture_def: "generic/rgb-par".into(),

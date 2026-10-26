@@ -1,4 +1,4 @@
-//! Timecode inputs: MIDI Time Code (MTC) and Art-Net timecode.
+//! Timecode inputs (MIDI Time Code, Art-Net timecode) and MTC output.
 //!
 //! Decoders turn wire messages into [`TcSample`]s stamped with their
 //! arrival time; the show thread feeds them to the core
@@ -17,10 +17,17 @@
 //!
 //! `OpTimeCode` (0x9700) packets carry one label per frame. A label repeated
 //! by a stopped sender is reported as a locate.
+//!
+//! ## MTC out
+//!
+//! [`MtcGenerator`] turns the show's [`TcTransport`] into MTC from the show
+//! thread: a full-frame message on every locate, start and stop, and while
+//! rolling the quarter frame due at each quarter-frame boundary (piece *p*
+//! of the cycle labelled *F* at *F + p/4*, cycles on even frames).
 
 use crate::ControlError;
 use crossbeam_channel::Sender;
-use livestage_core::timecode::{FrameRate, SampleKind, TcSample, Timecode, TimecodeSource};
+use livestage_core::timecode::{FrameRate, SampleKind, TcSample, TcTransport, Timecode, TimecodeSource};
 use livestage_core::ShowTime;
 use midir::{Ignore, MidiInput, MidiInputConnection};
 use std::net::UdpSocket;
@@ -177,6 +184,98 @@ impl MtcInput {
             .map_err(|e| ControlError::Midi(e.to_string()))?;
         tracing::info!(port = %name, "MTC input open");
         Ok(Self { _conn: conn, port_name: name })
+    }
+}
+
+// =================================================================== MTC out
+
+/// Schedules MTC messages for a transport (no I/O; see [`MtcOutput`]).
+#[derive(Clone, Debug, Default)]
+pub struct MtcGenerator {
+    /// Last quarter frame sent (quarter frames since `00:00:00:00`).
+    sent: Option<i64>,
+    running: bool,
+    generation: Option<u64>,
+    rate: Option<FrameRate>,
+}
+
+impl MtcGenerator {
+    /// Emits the messages due for `t` through `send`. Call every show tick:
+    /// at 1 kHz quarter frames (every 10 ms at 25 fps) leave on time.
+    pub fn update(&mut self, t: &TcTransport, mut send: impl FnMut(&[u8])) {
+        let frames = t.rate.micros_to_frames(t.position.as_micros() as f64);
+        let jumped = self.generation != Some(t.generation) || self.rate != Some(t.rate);
+        self.generation = Some(t.generation);
+        self.rate = Some(t.rate);
+        if !t.running {
+            if self.running || jumped {
+                // Parked: tell receivers where.
+                send(&encode_full_frame(&Timecode::from_frames(frames.max(0.0) as u64 % t.rate.frames_per_day(), t.rate), 0x7F));
+            }
+            self.running = false;
+            self.sent = None;
+            return;
+        }
+        let q = (frames * 4.0).floor() as i64;
+        match self.sent {
+            // Rolling on: every quarter frame since the last one (a late
+            // tick catches up within one cycle).
+            Some(last) if self.running && !jumped && (last..last + 8).contains(&q) => {
+                for k in last + 1..=q {
+                    send(&[0xF1, quarter_frame(k, t.rate)]);
+                }
+            }
+            // Started, located, or too far behind: a full frame first.
+            _ => send(&encode_full_frame(&Timecode::from_frames((q / 4).max(0) as u64 % t.rate.frames_per_day(), t.rate), 0x7F)),
+        }
+        self.sent = Some(q);
+        self.running = true;
+    }
+}
+
+/// Data byte of quarter frame `k` (counted from `00:00:00:00`).
+fn quarter_frame(k: i64, rate: FrameRate) -> u8 {
+    let piece = k.rem_euclid(8) as usize;
+    let cycle_frame = (k - piece as i64) / 4;
+    let label = Timecode::from_frames(cycle_frame.max(0) as u64 % rate.frames_per_day(), rate);
+    encode_quarter_frames(&label)[piece]
+}
+
+/// An open MTC output port driven by an [`MtcGenerator`].
+pub struct MtcOutput {
+    conn: midir::MidiOutputConnection,
+    generator: MtcGenerator,
+    pub port_name: String,
+    errors: u64,
+}
+
+impl MtcOutput {
+    /// Opens the named MIDI output (or the first available one).
+    pub fn open(port_name: Option<&str>) -> Result<Self, ControlError> {
+        let out = midir::MidiOutput::new("LiveStage MTC").map_err(|e| ControlError::Midi(e.to_string()))?;
+        let ports = out.ports();
+        let port = ports
+            .iter()
+            .find(|p| port_name.is_none_or(|want| out.port_name(p).is_ok_and(|n| n == want)))
+            .ok_or_else(|| ControlError::Midi(format!("no MIDI output {}", port_name.unwrap_or("available"))))?
+            .clone();
+        let name = out.port_name(&port).unwrap_or_default();
+        let conn = out.connect(&port, "livestage-mtc-out").map_err(|e| ControlError::Midi(e.to_string()))?;
+        tracing::info!(port = %name, "MTC output open");
+        Ok(Self { conn, generator: MtcGenerator::default(), port_name: name, errors: 0 })
+    }
+
+    /// Sends what is due for `t` (call every show tick).
+    pub fn update(&mut self, t: &TcTransport) {
+        let (conn, errors) = (&mut self.conn, &mut self.errors);
+        self.generator.update(t, |msg| {
+            if let Err(e) = conn.send(msg) {
+                *errors += 1;
+                if errors.is_power_of_two() {
+                    tracing::warn!("MTC output: {e} ({errors} failed sends)");
+                }
+            }
+        });
     }
 }
 
@@ -418,5 +517,51 @@ mod tests {
         assert!((t.drift_ppm() + 500.0).abs() < 200.0, "measured drift {} ppm", t.drift_ppm());
         // 500 cycles = 1000 frames = 40 s after the start label.
         assert_eq!(lock.transport(now + ShowTime::from_millis(20)).timecode().to_string(), "10:00:38:00");
+    }
+
+    /// MTC out read back by the MTC decoder: positions agree within a
+    /// quarter frame while rolling; locates and stops send full frames.
+    #[test]
+    fn generated_mtc_decodes_to_the_transport() {
+        use livestage_core::timecode::TcTransport;
+        for rate in [FrameRate::Fps25, FrameRate::Fps2997Df, FrameRate::Fps24] {
+            let start = tc("00:59:59:00").with_rate(rate).to_time();
+            let mut gen = MtcGenerator::default();
+            let mut dec = MtcDecoder::default();
+            let mut t = TcTransport { position: start, rate, running: true, generation: 1, ..TcTransport::default() };
+            let (mut full, mut checked) = (0, 0);
+            for ms in 0..3_000u64 {
+                t.position = start + ShowTime::from_millis(ms);
+                let mut msgs = Vec::new();
+                gen.update(&t, |m| msgs.push(m.to_vec()));
+                for m in msgs {
+                    if m[0] == 0xF0 {
+                        full += 1;
+                    }
+                    if let Some(s) = dec.message(&m) {
+                        if s.kind == SampleKind::Running {
+                            let err = s.position.as_micros() as f64 - t.position.as_micros() as f64;
+                            assert!(err.abs() <= rate.frame_duration().as_micros() as f64 / 4.0 + 1_000.0, "{rate:?} at {ms} ms: {err} µs");
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+            assert_eq!(full, 1, "{rate:?}: one full frame at the start");
+            assert!(checked as f64 > rate.fps() * 4.0 * 2.5, "{rate:?}: {checked} quarter frames decoded");
+            // A locate is a new generation: full frame, then rolling again.
+            t.generation = 2;
+            t.position = tc("02:00:00:00").with_rate(rate).to_time();
+            let mut msgs = Vec::new();
+            gen.update(&t, |m| msgs.push(m.to_vec()));
+            assert_eq!(msgs.len(), 1);
+            assert_eq!(parse_full_frame(&msgs[0]).unwrap().hours, 2);
+            // Stopping parks with a full frame, once.
+            t.running = false;
+            let mut n = 0;
+            gen.update(&t, |_| n += 1);
+            gen.update(&t, |_| n += 1);
+            assert_eq!(n, 1);
+        }
     }
 }

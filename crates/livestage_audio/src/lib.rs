@@ -21,6 +21,7 @@ pub mod clip;
 pub mod decode;
 pub mod device;
 pub mod engine;
+pub mod ltc;
 pub mod metronome;
 pub mod renderer;
 pub mod routing;

@@ -6,6 +6,8 @@ use crate::fixture::{FixtureLibrary, Patch};
 use crate::output::{DmxOutput, SharedFrame};
 use crate::pixelmap::{self, RgbaView};
 use crate::playback::DmxPlayback;
+use crate::sacn::SacnSource;
+use crate::sacn_in::{self, SacnReceiver};
 use crate::universe::Universe;
 use livestage_core::action::DmxAction;
 use livestage_core::dmx_config::DmxConfig;
@@ -23,6 +25,11 @@ pub struct DmxEngine {
     universes: BTreeMap<u16, Universe>,
     frame: SharedFrame,
     output: Option<DmxOutput>,
+    /// This LiveStage on sACN (its CID keeps our output out of our input).
+    source: SacnSource,
+    input: Option<SacnReceiver>,
+    /// Input generation the last render merged.
+    input_seen: u64,
     pixel_enabled: Vec<bool>,
     /// Programmer, effects, flashes and blackout.
     pub console: Console,
@@ -40,8 +47,9 @@ pub struct DmxEngine {
 
 impl DmxEngine {
     pub fn new(config: DmxConfig) -> Self {
-        let library = FixtureLibrary::builtin();
-        let (patch, patch_errors) = Patch::build(&config.patch, &library);
+        let (library, mut patch_errors) = FixtureLibrary::with_profiles(&config.profiles);
+        let (patch, errors) = Patch::build(&config.patch, &library);
+        patch_errors.extend(errors);
         for e in &patch_errors {
             tracing::warn!("patch: {e}");
         }
@@ -61,6 +69,9 @@ impl DmxEngine {
             universes,
             frame: Default::default(),
             output: None,
+            source: SacnSource::new("LiveStage"),
+            input: None,
+            input_seen: 0,
             pixel_enabled,
             console: Console::default(),
             layer: home.clone(),
@@ -76,12 +87,36 @@ impl DmxEngine {
         &self.patch
     }
 
-    /// Starts network output. Failure is logged and leaves the engine usable offline.
+    /// Starts network output, and sACN input when it is enabled and patched.
+    /// Failures are logged and leave the engine usable offline.
     pub fn start_output(&mut self) {
-        match DmxOutput::start(&self.config, self.frame.clone()) {
+        match DmxOutput::start(&self.config, self.frame.clone(), self.source.clone()) {
             Ok(o) => self.output = Some(o),
             Err(e) => tracing::error!("DMX output unavailable: {e}"),
         }
+        let input = &self.config.sacn_input;
+        let mut universes: Vec<u16> = input.patches.iter().filter(|p| p.enabled).map(|p| p.sacn_universe).collect();
+        universes.sort_unstable();
+        universes.dedup();
+        if input.enabled && !universes.is_empty() {
+            match SacnReceiver::start(&universes, self.source.cid) {
+                Ok(r) => self.input = Some(r),
+                Err(e) => tracing::error!("sACN input unavailable: {e}"),
+            }
+        }
+    }
+
+    /// Received sACN universes with live sources: (universe, sources, priority).
+    pub fn input_status(&self) -> Vec<(u16, u8, u8)> {
+        let Some(input) = &self.input else { return Vec::new() };
+        let mut v: Vec<_> = input.shared.universes.lock().iter().map(|(u, m)| (*u, m.sources, m.priority)).collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// sACN input is running.
+    pub fn input_running(&self) -> bool {
+        self.input.is_some()
     }
 
     pub fn handle(&mut self, now: ShowTime, action: &DmxAction, lighting: &LightingConfig) {
@@ -140,12 +175,16 @@ impl DmxEngine {
         let due = match self.last_render {
             None => true,
             // `now < t`: show time jumped back (a new epoch); render at once.
-            Some(t) => self.force_render || now < t || now >= t + self.render_period,
+            Some(t) => self.force_render || now < t || now >= t + self.render_period || self.input_changed(),
         };
         if due {
             self.render(now, lighting);
         }
         due
+    }
+
+    fn input_changed(&self) -> bool {
+        self.input.as_ref().is_some_and(|i| i.shared.generation.load(std::sync::atomic::Ordering::Acquire) != self.input_seen)
     }
 
     /// Renders home values, playback and the console layers into the
@@ -175,13 +214,24 @@ impl DmxEngine {
                 }
             }
         }
+        // Received sACN is merged into what is sent, not into the engine's
+        // own universes, so input that stops leaves nothing behind.
+        let input = self.input.as_ref().map(|i| {
+            self.input_seen = i.shared.generation.load(std::sync::atomic::Ordering::Acquire);
+            i.shared.universes.lock()
+        });
+        let patches = &self.config.sacn_input.patches;
         let mut f = self.frame.lock();
         for (index, u) in &self.universes {
+            let mut data = u.data;
+            if let Some(input) = &input {
+                sacn_in::apply_patches(patches, *index, input, &mut data);
+            }
             match f.get_mut(index) {
-                Some(sent) if sent.data == u.data => {}
-                Some(sent) => sent.data = u.data,
+                Some(sent) if sent.data == data => {}
+                Some(sent) => sent.data = data,
                 None => {
-                    f.insert(*index, u.clone());
+                    f.insert(*index, Universe { data });
                 }
             }
         }

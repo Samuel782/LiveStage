@@ -4,7 +4,7 @@
 use livestage_audio::{AudioEngine, EngineConfig};
 use livestage_control::midi::{MidiInputHandler, MidiOutputHandler};
 use livestage_control::osc::{OscSender, OscServer};
-use livestage_control::timecode::{ArtNetTimecodeListener, MtcInput, TimecodeInput};
+use livestage_control::timecode::{ArtNetTimecodeListener, MtcInput, MtcOutput, TimecodeInput};
 use livestage_control::websocket::RemoteServer;
 use livestage_control::{ControlEvent, ControlHub, ControlSource, PanicController};
 use livestage_core::action::{AudioAction, ControlAction, EngineAction};
@@ -22,7 +22,7 @@ use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Video actions stamped with the show time they were dispatched at, sent to
 /// the render thread which owns the compositor.
@@ -226,8 +226,14 @@ pub struct ShowRuntime {
     tc_rx: crossbeam_channel::Receiver<TimecodeInput>,
     mtc_in: Option<MtcInput>,
     artnet_tc: Option<ArtNetTimecodeListener>,
+    ltc_in: Option<livestage_audio::ltc::LtcInput>,
     /// What the timecode input is doing (port name or error), for the UI.
     pub timecode_input: String,
+    mtc_out: Option<MtcOutput>,
+    /// When the LTC generator was last pointed at the transport, and at what.
+    ltc_sent: Option<(Instant, livestage_audio::ltc::LtcAnchor, u64)>,
+    /// What timecode generation is doing, for the UI.
+    pub timecode_output: String,
     /// Bumped on every log line (UI copies the log only when it changed).
     pub log_seq: u64,
     /// Bumped when the DMX engine is rebuilt (new patch / library).
@@ -279,7 +285,11 @@ impl ShowRuntime {
             tc_rx,
             mtc_in: None,
             artnet_tc: None,
+            ltc_in: None,
             timecode_input: String::new(),
+            mtc_out: None,
+            ltc_sent: None,
+            timecode_output: String::new(),
             log_seq: 0,
             dmx_generation: 0,
             displays_rev: DISPLAYS_REV.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -291,6 +301,7 @@ impl ShowRuntime {
         rt.start_audio();
         rt.start_control();
         rt.start_timecode_input();
+        rt.start_timecode_output();
         for a in rt.bundle.missing_assets() {
             rt.log(LogLevel::Warn, format!("missing asset: {a}"));
         }
@@ -435,12 +446,76 @@ impl ShowRuntime {
     /// Applies edited timecode settings (source, rate, ports, lock tuning).
     pub fn apply_timecode_config(&mut self) {
         let cfg = self.bundle.project.timecode.clone();
-        let reopen = cfg.source != self.timecode.config().source
-            || cfg.mtc_input != self.timecode.config().mtc_input
-            || cfg.artnet_port != self.timecode.config().artnet_port;
+        let old = self.timecode.config();
+        let reopen = cfg.source != old.source
+            || cfg.mtc_input != old.mtc_input
+            || cfg.artnet_port != old.artnet_port
+            || cfg.ltc_input != old.ltc_input
+            || cfg.ltc_channel != old.ltc_channel;
+        let reopen_out = cfg.output.mtc != old.output.mtc || cfg.output.mtc_port != old.output.mtc_port || cfg.output.ltc != old.output.ltc;
         self.timecode.set_config(cfg);
         if reopen {
             self.start_timecode_input();
+        }
+        if reopen_out {
+            self.start_timecode_output();
+        }
+    }
+
+    /// Opens the MTC output and describes the generators (LTC out runs in
+    /// the audio engine and needs no opening).
+    pub fn start_timecode_output(&mut self) {
+        let out = self.bundle.project.timecode.output.clone();
+        self.mtc_out = None;
+        let mut parts = Vec::new();
+        if out.mtc {
+            match MtcOutput::open(out.mtc_port.as_deref()) {
+                Ok(m) => {
+                    parts.push(format!("MTC to {}", m.port_name));
+                    self.mtc_out = Some(m);
+                }
+                Err(e) => parts.push(format!("MTC out unavailable: {e}")),
+            }
+        }
+        if out.ltc {
+            parts.push(format!("LTC on output {}", out.ltc_channel));
+        }
+        self.ltc_sent = None;
+        self.timecode_output = if parts.is_empty() { "off".into() } else { parts.join(", ") };
+        if !parts.is_empty() {
+            let level = if self.timecode_output.contains("unavailable") { LogLevel::Warn } else { LogLevel::Info };
+            self.log(level, format!("timecode out: {}", self.timecode_output));
+        }
+    }
+
+    /// Points the audio engine's LTC generator at the transport: at once on
+    /// any change, otherwise every 250 ms (a restarted engine picks it up).
+    fn update_ltc_out(&mut self, tc: &livestage_core::timecode::TcTransport, audio_clock: Option<ShowTime>) {
+        use livestage_audio::ltc::LtcAnchor;
+        let Some(audio) = self.audio.as_mut() else { return };
+        let out = &self.bundle.project.timecode.output;
+        let anchor = match audio_clock {
+            Some(clock) if out.ltc => LtcAnchor {
+                channel: Some(out.ltc_channel.max(1) as usize - 1),
+                gain: livestage_audio::db_to_gain(out.ltc_level_db),
+                rate: tc.rate,
+                running: tc.running,
+                at_frame: clock.to_frames(audio.sample_rate()),
+                position_us: tc.position.as_micros() as f64,
+                speed: if tc.speed.is_finite() { tc.speed } else { 1.0 },
+            },
+            _ => LtcAnchor::OFF,
+        };
+        let changed = |a: &LtcAnchor| (a.channel, a.running, a.rate, a.gain.to_bits()) != (anchor.channel, anchor.running, anchor.rate, anchor.gain.to_bits());
+        let due = match &self.ltc_sent {
+            None => true,
+            Some((at, last, generation)) => {
+                changed(last) || *generation != tc.generation || (anchor.running && at.elapsed() >= Duration::from_millis(250))
+            }
+        };
+        if due {
+            audio.set_ltc(anchor);
+            self.ltc_sent = Some((Instant::now(), anchor, tc.generation));
         }
     }
 
@@ -449,6 +524,7 @@ impl ShowRuntime {
         let cfg = self.bundle.project.timecode.clone();
         self.mtc_in = None;
         self.artnet_tc = None;
+        self.ltc_in = None;
         // Stale samples from a previous source must not reach the new lock.
         while self.tc_rx.try_recv().is_ok() {}
         self.timecode_input = match cfg.source {
@@ -468,6 +544,14 @@ impl ShowRuntime {
                     s
                 }
                 Err(e) => format!("Art-Net port {} unavailable: {e}", cfg.artnet_port),
+            },
+            TimecodeSource::Ltc => match livestage_audio::ltc::LtcInput::open(cfg.ltc_input.as_deref(), cfg.ltc_channel, cfg.rate) {
+                Ok(l) => {
+                    let s = format!("LTC on {} channel {}", l.device_name, l.channel);
+                    self.ltc_in = Some(l);
+                    s
+                }
+                Err(e) => format!("LTC input unavailable: {e}"),
             },
         };
         let level = if self.timecode_input.contains("unavailable") { LogLevel::Warn } else { LogLevel::Info };
@@ -902,8 +986,20 @@ impl ShowRuntime {
             let local: ShowTime = input.at.saturating_duration_since(self.epoch).into();
             self.timecode.feed(local, input.origin, input.sample);
         }
+        if let Some(ltc) = &mut self.ltc_in {
+            for r in ltc.drain() {
+                let local: ShowTime = r.at.saturating_duration_since(self.epoch).into();
+                let sample = livestage_core::timecode::ltc::frame_end_sample(&r.timecode);
+                self.timecode.feed(local, TimecodeSource::Ltc, sample);
+            }
+        }
         let audio_clock = self.audio.as_ref().and_then(|a| a.sample_clock());
         let tc = self.timecode.update(self.now(), audio_clock);
+        // Timecode out: MTC from this thread, LTC from the audio engine.
+        if let Some(m) = &mut self.mtc_out {
+            m.update(&tc);
+        }
+        self.update_ltc_out(&tc, audio_clock);
         self.with_all_lists(|l, c| l.follow_timecode(c, &tc));
         self.with_all_lists(|l, c| l.tick(c));
         self.with_carts(|k, c| k.tick(c));

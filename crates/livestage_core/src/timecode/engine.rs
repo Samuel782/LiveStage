@@ -1,5 +1,6 @@
 //! Source selection: one place that turns the configured timecode source
-//! (internal generator, MTC, Art-Net) into the show's [`TcTransport`].
+//! (internal generator, MTC, Art-Net, LTC) into the show's [`TcTransport`],
+//! and the settings for sending it on (MTC and LTC out).
 
 use super::{ClockBase, FrameRate, InternalClock, LockConfig, TcSample, TcTransport, Timecode, TimecodeLock};
 use crate::time::ShowTime;
@@ -15,15 +16,18 @@ pub enum TimecodeSource {
     Mtc,
     /// Art-Net `OpTimeCode` packets.
     ArtNet,
+    /// Linear timecode on an audio input.
+    Ltc,
 }
 
 impl TimecodeSource {
-    pub const ALL: [TimecodeSource; 3] = [TimecodeSource::Internal, TimecodeSource::Mtc, TimecodeSource::ArtNet];
+    pub const ALL: [TimecodeSource; 4] = [TimecodeSource::Internal, TimecodeSource::Mtc, TimecodeSource::ArtNet, TimecodeSource::Ltc];
     pub fn label(self) -> &'static str {
         match self {
             TimecodeSource::Internal => "Internal",
             TimecodeSource::Mtc => "MIDI Time Code",
             TimecodeSource::ArtNet => "Art-Net Timecode",
+            TimecodeSource::Ltc => "Linear Timecode (LTC)",
         }
     }
     pub fn short(self) -> &'static str {
@@ -31,6 +35,7 @@ impl TimecodeSource {
             TimecodeSource::Internal => "INT",
             TimecodeSource::Mtc => "MTC",
             TimecodeSource::ArtNet => "ART",
+            TimecodeSource::Ltc => "LTC",
         }
     }
 }
@@ -49,7 +54,34 @@ pub struct TimecodeConfig {
     pub mtc_input: Option<String>,
     /// UDP port for Art-Net timecode.
     pub artnet_port: u16,
+    /// Audio input carrying LTC (None = the system default input).
+    pub ltc_input: Option<String>,
+    /// Input channel carrying LTC (1-based).
+    pub ltc_channel: u16,
     pub lock: LockConfig,
+    /// Sending the show timecode on, as a master clock.
+    pub output: TimecodeOutput,
+}
+
+/// Timecode generation: the show's timecode (the internal generator, or the
+/// external source it follows) sent as MTC and / or LTC.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TimecodeOutput {
+    pub mtc: bool,
+    /// MIDI output for MTC (None = first available).
+    pub mtc_port: Option<String>,
+    pub ltc: bool,
+    /// Audio output channel for LTC (1-based, on the show's audio device).
+    pub ltc_channel: u16,
+    /// LTC level in dBFS (−10 to −18 is usual for line inputs).
+    pub ltc_level_db: f32,
+}
+
+impl Default for TimecodeOutput {
+    fn default() -> Self {
+        Self { mtc: false, mtc_port: None, ltc: false, ltc_channel: 2, ltc_level_db: -12.0 }
+    }
 }
 
 impl Default for TimecodeConfig {
@@ -61,7 +93,10 @@ impl Default for TimecodeConfig {
             internal_start: Timecode::new(1, 0, 0, 0, FrameRate::Fps25).unwrap_or_default(),
             mtc_input: None,
             artnet_port: 6454,
+            ltc_input: None,
+            ltc_channel: 1,
             lock: LockConfig::default(),
+            output: TimecodeOutput::default(),
         }
     }
 }

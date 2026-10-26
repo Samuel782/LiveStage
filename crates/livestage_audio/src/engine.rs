@@ -287,7 +287,7 @@ impl AudioEngine {
         let shared = Arc::new(EngineShared::default());
         let (table, dropped) = RoutingTable::compile(routing, channels);
         let table = Box::new(table);
-        let renderer = Renderer::new(rx, gtx, table, channels as usize, shared.clone());
+        let renderer = Renderer::new(rx, gtx, table, channels as usize, shared.clone(), sample_rate);
         let engine = Self {
             tx,
             garbage: grx,
@@ -640,6 +640,11 @@ impl AudioEngine {
     /// Times a disk stream ran dry during playback (heard as a dropout).
     pub fn underruns(&self) -> u64 {
         self.shared.underruns.load(Ordering::Relaxed)
+    }
+
+    /// Points the LTC generator at the show timecode (or switches it off).
+    pub fn set_ltc(&mut self, anchor: crate::ltc::LtcAnchor) {
+        self.send(RtCommand::SetLtc(anchor));
     }
 
     /// Errors the device stream has reported since the engine started.
@@ -1003,6 +1008,46 @@ mod tests {
 
 #[cfg(test)]
 mod send_tests {
+    /// LTC out through the engine's command queue: timecode on the chosen
+    /// channel only, unaffected by the master fader, read back by the decoder.
+    #[test]
+    fn ltc_output_through_the_engine() {
+        use crate::ltc::LtcAnchor;
+        use livestage_core::timecode::ltc::LtcDecoder;
+        use livestage_core::timecode::{FrameRate, Timecode};
+        let routing = livestage_core::routing::AudioRouting::default();
+        let (mut engine, mut rt) = crate::AudioEngine::offline(48_000, 4, &routing).unwrap();
+        engine.handle(&livestage_core::action::AudioAction::SetMasterGain { db: -120.0 }, &|_| None);
+        let start = Timecode::parse_with("05:00:00:00", FrameRate::Fps25).unwrap();
+        engine.set_ltc(LtcAnchor {
+            channel: Some(3),
+            gain: 0.25,
+            rate: FrameRate::Fps25,
+            running: true,
+            at_frame: 0,
+            position_us: start.to_time().as_micros() as f64,
+            speed: 1.0,
+        });
+        let mut dec = LtcDecoder::new(48_000);
+        let mut labels = Vec::new();
+        let mut buf = vec![0.0f32; 256 * 4];
+        for _ in 0..(48_000 / 256) {
+            rt.render(&mut buf);
+            for f in buf.as_chunks::<4>().0 {
+                assert_eq!(&f[..3], &[0.0; 3], "nothing on the other channels");
+                if let Some(fr) = dec.push(f[3]) {
+                    labels.push(fr.timecode.to_string());
+                }
+            }
+        }
+        assert_eq!(labels.first().map(String::as_str), Some("05:00:00:00"));
+        assert_eq!(labels.len(), 24, "{labels:?}");
+        engine.set_ltc(LtcAnchor::OFF);
+        rt.render(&mut buf);
+        rt.render(&mut buf);
+        assert!(buf.iter().all(|s| *s == 0.0), "off is silent");
+    }
+
     #[test]
     fn engine_is_send() {
         fn assert_send<T: Send>() {}

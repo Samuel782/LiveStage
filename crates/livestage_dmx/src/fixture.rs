@@ -1,7 +1,7 @@
 //! Fixture definitions, the built-in library, and the patch.
 
 use crate::playback::Slot;
-use livestage_core::dmx_config::PatchedFixture;
+use livestage_core::dmx_config::{FixtureProfile, PatchedFixture};
 use livestage_core::id::FixtureId;
 use livestage_core::lighting::PaletteKind;
 use std::collections::HashMap;
@@ -27,6 +27,54 @@ pub enum AttributeKind {
 }
 
 impl AttributeKind {
+    pub const ALL: [AttributeKind; 16] = [
+        AttributeKind::Intensity,
+        AttributeKind::Red,
+        AttributeKind::Green,
+        AttributeKind::Blue,
+        AttributeKind::White,
+        AttributeKind::Amber,
+        AttributeKind::Uv,
+        AttributeKind::Pan,
+        AttributeKind::Tilt,
+        AttributeKind::Zoom,
+        AttributeKind::Focus,
+        AttributeKind::Gobo,
+        AttributeKind::ColorWheel,
+        AttributeKind::Shutter,
+        AttributeKind::Control,
+        AttributeKind::Generic,
+    ];
+
+    /// Name stored in imported profiles, and the attribute name a profile
+    /// gives its first attribute of this kind.
+    pub fn name(self) -> &'static str {
+        use AttributeKind::*;
+        match self {
+            Intensity => "intensity",
+            Red => "red",
+            Green => "green",
+            Blue => "blue",
+            White => "white",
+            Amber => "amber",
+            Uv => "uv",
+            Pan => "pan",
+            Tilt => "tilt",
+            Zoom => "zoom",
+            Focus => "focus",
+            Gobo => "gobo",
+            ColorWheel => "color",
+            Shutter => "shutter",
+            Control => "control",
+            Generic => "generic",
+        }
+    }
+
+    /// Inverse of [`AttributeKind::name`]; unknown names are generic.
+    pub fn from_name(name: &str) -> Self {
+        Self::ALL.into_iter().find(|k| k.name().eq_ignore_ascii_case(name)).unwrap_or(AttributeKind::Generic)
+    }
+
     /// Attributes forced to zero by a blackout.
     pub fn is_intensity(self) -> bool {
         matches!(self, AttributeKind::Intensity)
@@ -84,12 +132,63 @@ impl FixtureDefinition {
     }
 }
 
+/// Interns a name of an imported profile. Definitions use `&'static str` so
+/// the patch and the render path never allocate or copy names; imported
+/// names are leaked once per distinct string (bounded by the fixture types
+/// ever imported, a few kilobytes).
+fn intern(s: &str) -> &'static str {
+    use std::sync::{LazyLock, Mutex};
+    static NAMES: LazyLock<Mutex<std::collections::HashSet<&'static str>>> = LazyLock::new(Default::default);
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    match names.get(s) {
+        Some(n) => n,
+        None => {
+            let n: &'static str = Box::leak(s.to_owned().into_boxed_str());
+            names.insert(n);
+            n
+        }
+    }
+}
+
+impl FixtureDefinition {
+    /// Converts an imported profile, checking that every attribute fits its
+    /// mode's footprint and that no two attributes share a channel.
+    pub fn from_profile(p: &FixtureProfile) -> Result<Self, String> {
+        let mut modes = Vec::with_capacity(p.modes.len());
+        for m in &p.modes {
+            let mut used = vec![false; m.footprint as usize];
+            let mut attributes = Vec::with_capacity(m.attributes.len());
+            for a in &m.attributes {
+                for off in std::iter::once(a.coarse).chain(a.fine) {
+                    match used.get_mut(off as usize) {
+                        Some(u) if !*u => *u = true,
+                        Some(_) => return Err(format!("{} / {}: channel {} is used twice", p.model, m.name, off + 1)),
+                        None => return Err(format!("{} / {}: `{}` is outside the {}-channel footprint", p.model, m.name, a.name, m.footprint)),
+                    }
+                }
+                attributes.push(AttributeDef {
+                    name: intern(&a.name),
+                    kind: AttributeKind::from_name(&a.kind),
+                    coarse: a.coarse,
+                    fine: a.fine,
+                    default: a.default.clamp(0.0, 1.0),
+                });
+            }
+            modes.push(FixtureMode { name: intern(&m.name), footprint: m.footprint, attributes });
+        }
+        if modes.is_empty() {
+            return Err(format!("{}: no usable DMX modes", p.model));
+        }
+        Ok(Self { key: intern(&p.key), manufacturer: intern(&p.manufacturer), model: intern(&p.model), modes })
+    }
+}
+
 const fn attr(name: &'static str, kind: AttributeKind, coarse: u16, fine: Option<u16>, default: f32) -> AttributeDef {
     AttributeDef { name, kind, coarse, fine, default }
 }
 
-/// Fixture library. Ships generic profiles; GDTF / OFL importers can
-/// register more definitions at runtime via [`FixtureLibrary::register`].
+/// Fixture library: the built-in generic types plus the show's imported
+/// GDTF / OFL profiles ([`FixtureLibrary::with_profiles`]).
 #[derive(Debug, Clone)]
 pub struct FixtureLibrary {
     defs: HashMap<String, FixtureDefinition>,
@@ -175,6 +274,25 @@ impl FixtureLibrary {
             },
         ];
         Self { defs: defs.into_iter().map(|d| (d.key.to_string(), d)).collect() }
+    }
+
+    /// The built-in types plus `profiles`; profiles that cannot be used are
+    /// skipped and reported.
+    pub fn with_profiles(profiles: &[FixtureProfile]) -> (Self, Vec<String>) {
+        let mut lib = Self::builtin();
+        let mut errors = Vec::new();
+        for p in profiles {
+            match FixtureDefinition::from_profile(p) {
+                Ok(def) => lib.register(def),
+                Err(e) => errors.push(e),
+            }
+        }
+        (lib, errors)
+    }
+
+    /// Adds (or replaces) a definition.
+    pub fn register(&mut self, def: FixtureDefinition) {
+        self.defs.insert(def.key.to_string(), def);
     }
 
     pub fn get(&self, key: &str) -> Option<&FixtureDefinition> {
@@ -404,5 +522,32 @@ mod tests {
         assert_eq!(errors.len(), 1, "{errors:?}");
         let tilt = patch.resolve(head.id, "tilt").unwrap();
         assert_eq!((tilt.coarse, tilt.fine), (103, Some(104)));
+    }
+
+    #[test]
+    fn imported_profiles_join_the_library_and_patch() {
+        use livestage_core::dmx_config::{ProfileAttribute, ProfileMode, ProfileSource};
+        let a = |name: &str, kind: &str, coarse, fine| ProfileAttribute { name: name.into(), kind: kind.into(), coarse, fine, default: 0.0 };
+        let profile = FixtureProfile {
+            key: "ofl/test/wash".into(),
+            manufacturer: "Test".into(),
+            model: "Wash".into(),
+            source: ProfileSource::Ofl,
+            modes: vec![ProfileMode { name: "4ch".into(), footprint: 4, attributes: vec![a("intensity", "intensity", 0, Some(1)), a("red", "red", 2, None), a("macro", "nonsense", 3, None)] }],
+        };
+        let mut broken = profile.clone();
+        broken.key = "ofl/test/broken".into();
+        broken.modes[0].attributes.push(a("blue", "blue", 4, None));
+        let (lib, errors) = FixtureLibrary::with_profiles(&[profile, broken]);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("outside the 4-channel footprint"));
+        let def = lib.get("ofl/test/wash").unwrap();
+        assert_eq!(def.modes[0].attributes[2].kind, AttributeKind::Generic);
+        assert!(lib.get("generic/dimmer").is_some(), "built-ins stay");
+        let wash = fx("Wash 1", "ofl/test/wash", "4CH", 10);
+        let (patch, errors) = Patch::build(std::slice::from_ref(&wash), &lib);
+        assert!(errors.is_empty());
+        assert_eq!(patch.resolve(wash.id, "intensity").map(|r| (r.coarse, r.fine)), Some((10, Some(11))));
+        assert_eq!(patch.dimmer_slots(wash.id).len(), 1);
     }
 }

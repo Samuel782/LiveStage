@@ -1851,9 +1851,13 @@ version = "0.1.0"
 dependencies = [
  "livestage_core",
  "parking_lot",
+ "roxmltree",
+ "serde_json",
+ "socket2",
  "thiserror 2.0.21",
  "tracing",
  "uuid",
+ "zip",
 ]
 
 [[package]]

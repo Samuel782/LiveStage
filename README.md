@@ -37,11 +37,11 @@ cargo run --release                        # opens ./shows/Demo Show.livestage (
 | **Live scrubbing** | Click or drag the playhead of any running cue (cue grid, inspector, multiview) to seek **while it plays**: audio jumps in place with a 2 ms de-click dip, video re-times its decoder, timers and teleprompters jump, timelines re-chase their children. |
 | **Multiview / control booth** | Configurable monitor wall (presets, custom rows × columns, a featured 2 × 2 cell). Any cell shows an output's live canvas, the program cue with clocks and a scrub bar, the next cue with a content preview (poster frame, image, first slide, text), the running presentation's current and next slide with notes, or a clock. |
 | **NDI streaming** | Receive any NDI source as a layer; publish any output's program feed at its own resolution (GPU-scaled, triple-buffered async readback). The NDI runtime is loaded at run time, never linked. |
-| **DMX** | Bit-exact Art-Net 4 and sACN (E1.31) output, fixture library with a validated patch (16-bit attributes), timed crossfades, LED pixel mapper fed from output canvases. |
+| **DMX** | Bit-exact Art-Net 4 and sACN (E1.31) output; **sACN input** merged by E1.31 priority / HTP and patched onto outputs (HTP or override); fixture library with a validated patch (16-bit attributes) and **GDTF / Open Fixture Library import**; timed crossfades; LED pixel mapper fed from output canvases. |
 | **Lighting console** | A live **programmer** (encoder wheels, pan/tilt XY pad, colour mixer) over cue playback. **Palettes** (colour, position, beam, intensity) are referenced by cues, so editing one updates every look that uses it, live. **Submaster** faders (additive looks such as blinders, software strobe, group inhibit) with flash buttons, plus a **grand master** and desk blackout. An **FX engine** runs pan/tilt sines and circles, colour chases and dimmer chases with phase spread. A **2D stage plot** shows live colour and beam direction, with lasso selection. |
 | **Control** | MIDI notes/CC/program change, MIDI Show Control, OSC in/out, WebSocket JSON API with live status push, two-stage panic (soft fade, then a hard cut on the second press). |
 | **Soundboard (cue carts)** | Pages of pads (4 × 4, 8 × 8 or any grid up to 16 × 16) for live busking: audio stingers, one-shot videos, DMX flash looks. Each pad is **Toggle**, **Retrigger** or **Hold / Gate**, has its own colour, and can be played from the mouse, a **keyboard key** or a **MIDI note** (with learn), or over OSC. Pads show a progress ring with the remaining time. |
-| **Timecode (SMPTE / MTC / Art-Net)** | 24, 25, 29.97 drop-frame, 29.97 and 30 fps with exact frame ↔ time math. Chase incoming **MIDI Time Code** or **Art-Net timecode** through a lock with drift compensation, freewheel and jump detection, or run the **internal generator** on the audio sample clock. Timeline cues can be **timecode slaves**, and whole cue lists can fire cues on timecode triggers, chasing jumps and pausing when timecode stops. |
+| **Timecode (SMPTE / MTC / Art-Net / LTC)** | 24, 25, 29.97 drop-frame, 29.97 and 30 fps with exact frame ↔ time math. Chase incoming **MIDI Time Code**, **Art-Net timecode** or **LTC** on an audio input through a lock with drift compensation, freewheel and jump detection, or run the **internal generator** on the audio sample clock and send it as **MTC and LTC** (LiveStage as master clock). Timeline cues can be **timecode slaves**, and whole cue lists can fire cues on timecode triggers, chasing jumps and pausing when timecode stops. |
 | **Editing safety** | Coalesced undo/redo that keeps running cues controllable, 30 s background autosave with crash recovery, multiple cue lists, drag-to-retime timeline editor. |
 | **Live reliability** | Show / output / audio watchdogs, contained faults, unclean-exit detection, backup-manifest fallback, rotating logs with periodic health lines, 8-hour soak test. |
 | **Operator comfort** | Settings window (⌘,) for audio device / buffer / sample rate, control ports, output behaviour, accent colour, UI size and tool paths; macOS-style context menus with shortcut hints on cues and multiview cells. |
@@ -77,7 +77,7 @@ has no hardware dependencies.
 | `livestage_core` | The `Cue` trait and its lifecycle state machine (`CueExt`, including in-place seek); cue types Audio, Video, Timer, Slides, DMX, Control, Timeline; multiview layout model; stacked timelines slaved to a master media clock; `CueList` runner (standby, auto-continue/follow, panic); routing model; projection-mapping math; `.livestage` bundle I/O with schema migration, autosave and undo support. |
 | `livestage_audio` | Decoding, resampling, stem → output patch bay, click generator, real-time renderer and device host. |
 | `livestage_video` | Compositor, per-output renderer (warp/blend/mask), GPU readback, video backends (builtin + optional FFmpeg with hardware decode), NDI send/receive, presentation import (PDF / PPTX → slides) and slide playback, thumbnails. |
-| `livestage_dmx` | Protocol encoders, paced UDP sender, fixtures and patch, crossfade playback, pixel mapper. |
+| `livestage_dmx` | Protocol encoders, paced UDP sender, sACN receiver and merger, fixtures and patch, GDTF / OFL import, crossfade playback, pixel mapper. |
 | `livestage_control` | OSC, MIDI/MSC, WebSocket remote API, `ControlHub` command funnel, panic escalation. |
 | `livestage_ui` | The `livestage` binary: control window, dockable panels, output render thread, show thread, settings and preferences, undo, snapshot tool. |
 
@@ -360,7 +360,11 @@ apply live, without dropouts.
 - **Display Routing**: name outputs, map them to screens, set canvas size, kiosk mode, NDI output and
   its resolution, test pattern, and projection mapping (draggable Bezier warp grid, edge blend per
   side, polygon masks, brightness).
-- **DMX**: universes (sACN / Art-Net / off), fixture patch with overlap checks, live universe view.
+- **DMX**: universes (sACN / Art-Net / off), fixture patch with overlap checks and a mode per
+  fixture, **fixture type import** (paste the path of a `.gdtf` file or an Open Fixture Library
+  `.json`; the type is stored in the show), **sACN input** patches (received universe and channel
+  range → output universe and address, HTP merge or override, with the live sources per universe),
+  live universe view.
 - **Control & Log**: OSC/WebSocket/MIDI status, MIDI port selection, and the event log.
 
 ### Soundboard (cue carts)
@@ -426,13 +430,17 @@ The **Lighting** tab is a busking and programming desk on top of the DMX patch. 
 
 ### Timecode
 
-The **TIMECODE** box in the transport shows the show timecode, its source (INT / MTC / ART) and the
+The **TIMECODE** box in the transport shows the show timecode, its source (INT / MTC / ART / LTC) and the
 lock state (green LOCKED, amber LOCKING / FREEWHEEL). Click it to open **Settings → Timecode**:
 
 - **Source**: *Internal* (generator with Start / Stop / Reset / Locate, a frame rate, a start
   timecode, and a clock: the audio sample clock (default) or the system clock), *MIDI Time Code*
-  (choose the MIDI input), or *Art-Net Timecode* (UDP port, shared with lighting software on the same
-  machine). External sources show measured drift (ppm) and jitter.
+  (choose the MIDI input), *Art-Net Timecode* (UDP port, shared with lighting software on the same
+  machine), or *Linear Timecode* (audio input and channel; 24 / 25 / 29.97 DF / 29.97 / 30 fps are
+  detected from the signal). External sources show measured drift (ppm) and jitter.
+- **Timecode out**: send the show timecode as **MTC** (MIDI output) and / or **LTC** (an output
+  channel of the show's audio device, with a level). It follows whatever the show timecode follows:
+  the internal generator makes LiveStage the master clock; an external source is re-generated.
 - **Freewheel / jump threshold**: how long to roll through dropouts, and how big an error counts as a
   jump.
 - **Cue lists in timecode mode**: tick a list, then give cues a **Timecode** trigger in the
@@ -622,6 +630,40 @@ release on note-off; a pad takes precedence over a default note. MIDI Time Code 
   accurate even when the sender's clock is ±0.1 % off. Errors beyond the jump threshold (default
   4 frames) re-locate at once. After a dropout the lock freewheels (default 200 ms) and then reports
   a stop. MTC delivers a sample every quarter frame (≈100/s at 25 fps); Art-Net one per frame.
+- **LTC.** SMPTE 12M biphase-mark frames: 80 bits ending in the sync word, BCD label, drop-frame
+  flag and polarity bit.
+  - **Reading.** An input callback decodes the chosen channel. The crossing threshold follows the
+    signal level, so the decoder works whatever the level, polarity or DC offset. Each frame is
+    stamped with the moment its last bit arrived, which is when the next frame starts, and fed to
+    the lock.
+  - **Rates.** 29.97 and 30 fps differ by only 0.1 %, so the decoder averages about a second of
+    frames before choosing, with hysteresis. The show's configured rate is used as the hint until
+    then.
+  - **Generating.** The audio callback does it, anchored to the device sample clock. Each frame
+    starts on the timecode frame grid, so labels are exact to the sample. Frames are shaped with a
+    roughly 25 µs rise time, re-aligned after a locate, and mixed after the master fader.
+- **MTC out.** Sent from the 1 kHz show thread: a full-frame message on every locate, start and
+  stop, and while rolling each quarter frame at its boundary. Piece *p* of the cycle labelled *F*
+  goes out at *F + p/4*, with cycles on even frames.
+- **sACN input.** A receiver thread joins the multicast group of each patched universe (unicast
+  works too) and merges sources the E1.31 way:
+  - The highest priority takes the universe; equal priorities merge HTP.
+  - Sources are dropped after 2.5 s of silence or on the stream-terminated flag.
+  - Out-of-order and preview packets are ignored, and so is LiveStage's own output (its CID).
+  - The merge is applied to what is sent, never to the engine's own universes, so input that stops
+    leaves nothing behind.
+- **Fixture import.** GDTF archives are read from their `description.xml`:
+  - DMX offsets come from `Offset="1,2"` (coarse, fine), defaults from `value/bytes`.
+  - Geometry references expand into per-cell channels (LED bars).
+  - Virtual channels have no slot; channels on a second DMX break are left out, with a warning.
+
+  OFL files are read from `availableChannels` and `modes`:
+  - Fine-channel aliases become 16-bit attributes, and switching channels are resolved.
+  - Wheel slots become colour or gobo attributes.
+  - Matrix modes are skipped, with a warning.
+
+  Both use LiveStage's attribute names (`intensity`, `red`, `pan`, `gobo`, ...), so palettes and
+  effects work on imported fixtures; a second attribute of the same kind is numbered (`red 2`).
 - **Timecode slaving.** Slaves compare their own clock with timecode every tick. Beyond the tolerance
   (default 80 ms), media timelines re-sync with an in-place seek (de-clicked audio), followed by a
   250 ms hold-off so an engine settling after a jump is not chased again. Timelines without a media

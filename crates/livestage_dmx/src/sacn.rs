@@ -67,9 +67,84 @@ pub fn encode_data_packet(source: &SacnSource, universe: u16, priority: u8, sequ
     p
 }
 
+/// A received E1.31 data packet (start code 0), borrowing its slots.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DataPacket<'a> {
+    pub cid: [u8; 16],
+    pub priority: u8,
+    pub sequence: u8,
+    pub options: u8,
+    pub universe: u16,
+    pub data: &'a [u8],
+}
+
+impl DataPacket<'_> {
+    /// Preview data: for visualisers, not for live output.
+    pub fn preview(&self) -> bool {
+        self.options & 0x80 != 0
+    }
+    /// The source is going away; forget it at once.
+    pub fn terminated(&self) -> bool {
+        self.options & 0x40 != 0
+    }
+}
+
+/// Decodes an E1.31 data packet. Other packets (universe discovery,
+/// synchronisation, alternate start codes such as per-slot priority) and
+/// malformed ones return `None`.
+pub fn decode_data_packet(p: &[u8]) -> Option<DataPacket<'_>> {
+    let be16 = |i: usize| u16::from_be_bytes([p[i], p[i + 1]]);
+    let be32 = |i: usize| u32::from_be_bytes([p[i], p[i + 1], p[i + 2], p[i + 3]]);
+    if p.len() < 126 || be16(0) != 0x0010 || be16(2) != 0 || p[4..16] != ACN_ID {
+        return None;
+    }
+    if be32(18) != VECTOR_ROOT_E131_DATA || be32(40) != VECTOR_E131_DATA_PACKET || p[117] != VECTOR_DMP_SET_PROPERTY {
+        return None;
+    }
+    // Address type 0xA1, first address 0, increment 1, start code 0.
+    if p[118] != 0xA1 || be16(119) != 0 || be16(121) != 1 || p[125] != 0x00 {
+        return None;
+    }
+    let count = be16(123) as usize; // start code + slots
+    if count == 0 || count > 513 || p.len() < 125 + count {
+        return None;
+    }
+    let universe = be16(113);
+    if universe == 0 || universe > 63_999 {
+        return None;
+    }
+    Some(DataPacket {
+        cid: p[22..38].try_into().ok()?,
+        priority: p[108].min(200),
+        sequence: p[111],
+        options: p[112],
+        universe,
+        data: &p[126..125 + count],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_what_it_encodes_and_rejects_the_rest() {
+        let src = SacnSource { cid: [7; 16], name: "Console".into() };
+        let data: Vec<u8> = (0..24).collect();
+        let p = encode_data_packet(&src, 42, 150, 9, &data);
+        let d = decode_data_packet(&p).unwrap();
+        assert_eq!((d.cid, d.priority, d.sequence, d.universe, d.data), ([7; 16], 150, 9, 42, &data[..]));
+        assert!(!d.preview() && !d.terminated());
+        for len in 0..p.len() {
+            assert!(decode_data_packet(&p[..len]).is_none(), "truncated to {len}");
+        }
+        let mut alt = p.clone();
+        alt[125] = 0xDD; // per-slot priority start code
+        assert!(decode_data_packet(&alt).is_none());
+        let mut bad = p.clone();
+        bad[124] = 0xFF; // claims more slots than the packet has
+        assert!(decode_data_packet(&bad).is_none());
+    }
 
     #[test]
     fn full_universe_packet_layout() {
