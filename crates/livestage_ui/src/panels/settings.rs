@@ -7,7 +7,7 @@ use super::widgets::toggle;
 use super::UiState;
 use crate::prefs::Preferences;
 use crate::view::UiRuntime;
-use crate::theme::{self, Accent};
+use crate::theme::{self, Accent, Appearance};
 use egui::{ComboBox, DragValue, RichText, Ui};
 use std::path::PathBuf;
 
@@ -16,7 +16,9 @@ pub enum Section {
     #[default]
     General,
     Audio,
-    Control,
+    Network,
+    Midi,
+    Security,
     Timecode,
     Outputs,
     Files,
@@ -29,12 +31,14 @@ impl Section {
         Self::ALL.into_iter().find(|s| s.title().to_lowercase().starts_with(&n)).unwrap_or_default()
     }
 
-    const ALL: [Section; 6] = [Section::General, Section::Audio, Section::Control, Section::Timecode, Section::Outputs, Section::Files];
+    const ALL: [Section; 8] = [Section::General, Section::Audio, Section::Network, Section::Midi, Section::Security, Section::Timecode, Section::Outputs, Section::Files];
     fn title(self) -> &'static str {
         match self {
             Section::General => "General",
             Section::Audio => "Audio",
-            Section::Control => "Control",
+            Section::Network => "Network",
+            Section::Midi => "MIDI",
+            Section::Security => "Security",
             Section::Timecode => "Timecode",
             Section::Outputs => "Outputs & Video",
             Section::Files => "Files & Paths",
@@ -52,7 +56,7 @@ pub fn window(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_size([760.0, 520.0])
+        .default_size([820.0, 560.0])
         .min_size([620.0, 420.0])
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
@@ -64,7 +68,9 @@ pub fn window(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match st.settings_section {
                         Section::General => general(ui, st),
                         Section::Audio => audio(ui, rt, st),
-                        Section::Control => control(ui, rt, st),
+                        Section::Network => network(ui, rt),
+                        Section::Midi => midi(ui, rt, st),
+                        Section::Security => security(ui, rt, st),
                         Section::Timecode => timecode(ui, rt, st),
                         Section::Outputs => outputs(ui, st),
                         Section::Files => files(ui, rt, st),
@@ -87,6 +93,7 @@ pub fn window(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
 /// Applies the live-adjustable preferences to the UI.
 pub fn apply_prefs(ctx: &egui::Context, p: &Preferences) {
     theme::set_accent(p.accent);
+    theme::set_appearance(p.appearance);
     theme::apply(ctx);
     ctx.set_zoom_factor(p.ui_scale.clamp(0.7, 2.0));
 }
@@ -96,14 +103,14 @@ fn sidebar(ui: &mut Ui, st: &mut UiState) {
         ui.set_width(150.0);
         for s in Section::ALL {
             let selected = st.settings_section == s;
-            let (rect, resp) = ui.allocate_exact_size(egui::vec2(150.0, 28.0), egui::Sense::click());
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(150.0, 30.0), egui::Sense::click());
             if selected {
-                ui.painter().rect_filled(rect, 6.0, theme::accent_menu());
+                ui.painter().rect_filled(rect, theme::RADIUS as f32 + 2.0, theme::accent_menu());
             } else if resp.hovered() {
-                ui.painter().rect_filled(rect, 6.0, theme::PANEL_RAISED);
+                ui.painter().rect_filled(rect, theme::RADIUS as f32 + 2.0, theme::control_hover());
             }
-            let color = if selected { egui::Color32::WHITE } else { theme::TEXT };
-            ui.painter().text(rect.left_center() + egui::vec2(10.0, 0.0), egui::Align2::LEFT_CENTER, s.title(), egui::FontId::proportional(14.0), color);
+            let color = if selected { egui::Color32::WHITE } else { theme::text() };
+            ui.painter().text(rect.left_center() + egui::vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, s.title(), egui::FontId::proportional(theme::type_scale::BODY + 0.5), color);
             if resp.clicked() {
                 st.settings_section = s;
             }
@@ -120,7 +127,7 @@ fn heading(ui: &mut Ui, title: &str, scope: &str) {
 }
 
 fn hint(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(12.0).color(theme::TEXT_DIM));
+    ui.label(RichText::new(text).size(12.0).color(theme::text_dim()));
 }
 
 fn path_field(ui: &mut Ui, id: &str, value: &mut Option<PathBuf>, placeholder: &str) {
@@ -138,17 +145,22 @@ fn path_field(ui: &mut Ui, id: &str, value: &mut Option<PathBuf>, placeholder: &
 fn general(ui: &mut Ui, st: &mut UiState) {
     heading(ui, "General", "this Mac");
     egui::Grid::new("set-general").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
+        ui.label("Appearance");
+        ui.horizontal(|ui| {
+            for a in Appearance::ALL {
+                ui.selectable_value(&mut st.prefs.appearance, a, a.label());
+            }
+        });
+        ui.end_row();
         ui.label("Accent colour");
         ui.horizontal(|ui| {
             for a in Accent::ALL {
                 let selected = st.prefs.accent == a;
-                theme::set_accent(a);
-                let c = theme::accent();
-                theme::set_accent(st.prefs.accent);
+                let c = a.swatch();
                 let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
                 ui.painter().circle_filled(rect.center(), 10.0, c);
                 if selected {
-                    ui.painter().circle_stroke(rect.center(), 12.5, egui::Stroke::new(2.0_f32, theme::TEXT));
+                    ui.painter().circle_stroke(rect.center(), 12.5, egui::Stroke::new(2.0_f32, theme::text()));
                 }
                 if resp.on_hover_text(a.label()).clicked() {
                     st.prefs.accent = a;
@@ -245,14 +257,61 @@ fn audio(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     }
 }
 
-fn control(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
-    heading(ui, "Control", "this show");
-    if st.midi_inputs.is_empty() {
-        st.midi_inputs = livestage_control::midi::list_inputs();
+/// This computer's IP addresses (what remote devices connect to).
+fn local_addresses() -> Vec<(String, std::net::IpAddr)> {
+    let mut out = Vec::new();
+    #[cfg(unix)]
+    {
+        // SAFETY: getifaddrs allocates a list that freeifaddrs releases; the
+        // entries are only read in between, and sockaddr pointers are cast
+        // according to their family.
+        unsafe {
+            let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+            if libc::getifaddrs(&mut list) == 0 {
+                let mut cur = list;
+                while !cur.is_null() {
+                    let ifa = &*cur;
+                    if !ifa.ifa_addr.is_null() {
+                        let name = std::ffi::CStr::from_ptr(ifa.ifa_name).to_string_lossy().into_owned();
+                        match (*ifa.ifa_addr).sa_family as i32 {
+                            libc::AF_INET => {
+                                let a = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                                out.push((name, std::net::IpAddr::V4(std::net::Ipv4Addr::from(u32::from_be(a.sin_addr.s_addr)))));
+                            }
+                            libc::AF_INET6 => {
+                                let a = &*(ifa.ifa_addr as *const libc::sockaddr_in6);
+                                let ip = std::net::Ipv6Addr::from(a.sin6_addr.s6_addr);
+                                // Link-local addresses need a scope id remote apps rarely accept.
+                                if (ip.segments()[0] & 0xffc0) != 0xfe80 {
+                                    out.push((name, std::net::IpAddr::V6(ip)));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    cur = ifa.ifa_next;
+                }
+                libc::freeifaddrs(list);
+            }
+        }
     }
+    #[cfg(not(unix))]
+    {
+        // The address of the interface that routes outward (no packet is sent).
+        if let Some(ip) = std::net::UdpSocket::bind("0.0.0.0:0").and_then(|s| s.connect("192.0.2.1:9").and_then(|_| s.local_addr())).ok().map(|a| a.ip()) {
+            out.push(("primary".into(), ip));
+        }
+    }
+    out.retain(|(_, ip)| !ip.is_loopback());
+    out.sort_by_key(|(_, ip)| (ip.is_ipv6(), *ip));
+    out
+}
+
+fn network(ui: &mut Ui, rt: &mut UiRuntime) {
+    heading(ui, "Network", "this show");
     let mut changed = false;
     let c = &mut rt.bundle.project.control;
-    egui::Grid::new("set-control").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
+    egui::Grid::new("set-network").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
         ui.label("OSC input");
         ui.horizontal(|ui| {
             changed |= toggle(ui, &mut c.osc_enabled, "enabled").changed();
@@ -271,21 +330,53 @@ fn control(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             hint(ui, if c.external_access { "listening on all interfaces" } else { "this computer only (127.0.0.1)" });
         });
         ui.end_row();
-        ui.label("OSC allowlist");
-        ui.vertical(|ui| {
-            let mut text = c.osc_allowlist.join("\n");
-            let edit = egui::TextEdit::multiline(&mut text).desired_rows(2).desired_width(260.0).hint_text("192.168.1.20\n10.0.0.0/24");
-            if ui.add_enabled(c.external_access, edit).changed() {
-                c.osc_allowlist = text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
-                changed = true;
-            }
-            let (_, errors) = livestage_control::acl::IpAllowlist::parse(&c.osc_allowlist);
-            for e in errors {
-                ui.colored_label(theme::stop(), e);
-            }
-            hint(ui, "hosts allowed to send OSC from the network; OSC never runs panic, stop-all, masters, blackout or timecode commands");
-        });
-        ui.end_row();
+    });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        if ui.button(RichText::new("Apply & restart control services").strong()).clicked() {
+            rt.restart_control_requested = true;
+        }
+        let osc = rt.osc_port().map_or("OSC off".to_string(), |p| format!("OSC :{p}"));
+        let ws = rt.ws_port().map_or("WS off".to_string(), |p| format!("WebSocket :{p}"));
+        ui.label(RichText::new(format!("{osc} · {ws}")).color(theme::text_dim()));
+    });
+    ui.add_space(theme::GRID * 1.5);
+    ui.label(RichText::new("This computer's addresses").strong());
+    hint(ui, "Point remote devices (tablets, consoles, other show computers) at one of these.");
+    let ext = rt.bundle.project.control.external_access;
+    egui::Grid::new("set-ifaces").num_columns(3).striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
+        let addrs = local_addresses();
+        if addrs.is_empty() {
+            ui.label(RichText::new("No network interfaces with an address").color(theme::text_dim()));
+            ui.end_row();
+        }
+        for (name, ip) in addrs {
+            ui.label(RichText::new(name).color(theme::text_dim()));
+            ui.label(RichText::new(ip.to_string()).font(theme::clock_font(12.5)));
+            match (rt.osc_port(), ext) {
+                (Some(p), true) if ip.is_ipv4() => ui.label(RichText::new(format!("osc://{ip}:{p}")).size(theme::type_scale::SMALL).color(theme::text_dim())),
+                _ => ui.label(""),
+            };
+            ui.end_row();
+        }
+    });
+    if !ext {
+        hint(ui, "Network access is off: only this computer can reach OSC and the WebSocket.");
+    }
+    hint(ui, "OSC: /livestage/go, /livestage/cue/<n>/go, /livestage/cue/<n>/seek <secs>, /livestage/slide/next … (see README).");
+    if changed {
+        rt.mark_changed();
+    }
+}
+
+fn midi(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
+    heading(ui, "MIDI", "this show");
+    if st.midi_inputs.is_empty() {
+        st.midi_inputs = livestage_control::midi::list_inputs();
+    }
+    let mut changed = false;
+    let c = &mut rt.bundle.project.control;
+    egui::Grid::new("set-midi-in").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
         ui.label("MIDI input");
         ui.horizontal(|ui| {
             let current = c.midi_input.clone().unwrap_or_else(|| "First available".into());
@@ -313,17 +404,125 @@ fn control(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         });
         ui.end_row();
     });
-    ui.add_space(8.0);
     ui.horizontal(|ui| {
-        if ui.button(RichText::new("Apply & restart control services").strong()).clicked() {
+        if ui.button("Apply & restart control services").clicked() {
             rt.restart_control_requested = true;
         }
-        let osc = rt.osc_port().map_or("OSC off".to_string(), |p| format!("OSC :{p}"));
-        let ws = rt.ws_port().map_or("WS off".to_string(), |p| format!("WebSocket :{p}"));
-        let midi = rt.midi_in.as_ref().map_or("MIDI off".to_string(), |m| format!("MIDI: {}", m.port_name));
-        ui.label(RichText::new(format!("{osc} · {ws} · {midi}")).color(theme::TEXT_DIM));
+        ui.label(RichText::new(rt.midi_in.as_ref().map_or("MIDI input closed".to_string(), |m| format!("Listening on {}", m.port_name))).color(theme::text_dim()));
     });
-    hint(ui, "OSC: /livestage/go, /livestage/cue/<n>/seek <secs>, /livestage/slide/next … (see README).");
+    if changed {
+        rt.mark_changed();
+    }
+
+    // ---- learn matrix
+    ui.add_space(theme::GRID * 1.5);
+    ui.label(RichText::new("MIDI learn").strong());
+    hint(ui, "Every MIDI trigger in the show. Learn: press it, then play the note on the controller (Esc cancels).");
+    use super::cart::PadLearn;
+    let learning = st.pad_learn;
+    let mut action: Option<Option<PadLearn>> = None;
+    let mut clear: Option<(usize, usize)> = None;
+    egui::Grid::new("midi-matrix").num_columns(4).striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
+        for h in ["Trigger", "Does", "Note", ""] {
+            ui.label(super::widgets::caption_text(h));
+        }
+        ui.end_row();
+        for b in livestage_control::midi::default_bindings() {
+            let note = match b.trigger {
+                livestage_control::midi::MidiTrigger::Note { channel, note } => format!("ch {} · note {note}", channel + 1),
+                _ => "—".into(),
+            };
+            ui.label("Built in");
+            ui.label(match b.command {
+                livestage_control::ShowCommand::Go { .. } => "GO".to_string(),
+                livestage_control::ShowCommand::StopAll { .. } => "STOP ALL".to_string(),
+                livestage_control::ShowCommand::Panic { .. } => "PANIC".to_string(),
+                ref other => format!("{other:?}"),
+            });
+            ui.label(RichText::new(note).font(theme::clock_font(12.0)));
+            ui.label(RichText::new("fixed").size(theme::type_scale::SMALL).color(theme::text_faint()));
+            ui.end_row();
+        }
+        ui.label("MSC");
+        ui.label("GO / STOP / RESUME / ALL_OFF");
+        ui.label(RichText::new(if rt.bundle.project.control.msc_device_id == 0x7F { "all devices".to_string() } else { format!("device {}", rt.bundle.project.control.msc_device_id) }).font(theme::clock_font(12.0)));
+        ui.label("");
+        ui.end_row();
+        for (ci, cart) in rt.bundle.project.carts.iter().enumerate() {
+            for (slot, pad) in cart.pads.iter().enumerate() {
+                let Some(pad) = pad else { continue };
+                ui.label(format!("{} · pad {}", cart.name, slot + 1));
+                ui.label(&livestage_core::cue::Cue::header(&pad.cue).name);
+                let me = PadLearn::Midi { cart: ci, slot };
+                let listening = learning == Some(me);
+                match (listening, pad.midi) {
+                    (true, _) => ui.colored_label(theme::standby(), "play a note…"),
+                    (false, Some(n)) => ui.label(RichText::new(format!("ch {} · note {}", n.channel + 1, n.note)).font(theme::clock_font(12.0))),
+                    (false, None) => ui.label(RichText::new("—").color(theme::text_faint())),
+                };
+                ui.horizontal(|ui| {
+                    if ui.small_button(if listening { "Cancel" } else { "Learn" }).clicked() {
+                        action = Some(if listening { None } else { Some(me) });
+                    }
+                    if pad.midi.is_some() && ui.small_button("Clear").clicked() {
+                        clear = Some((ci, slot));
+                    }
+                });
+                ui.end_row();
+            }
+        }
+    });
+    if rt.bundle.project.carts.iter().all(|k| k.pads.iter().all(Option::is_none)) {
+        hint(ui, "No soundboard pads yet: pads appear here once the Soundboard has some.");
+    }
+    if let Some(a) = action {
+        super::cart::set_learn(rt, st, a);
+    }
+    if let Some((ci, slot)) = clear {
+        if let Some(p) = rt.bundle.project.carts[ci].pad_mut(slot) {
+            p.midi = None;
+            rt.mark_changed();
+        }
+    }
+    if matches!(st.pad_learn, Some(PadLearn::Midi { .. })) && rt.midi_in.is_none() {
+        ui.colored_label(theme::standby(), "No MIDI input is open: choose one above and apply.");
+    }
+}
+
+fn security(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
+    heading(ui, "Security", "this show");
+    let mut changed = false;
+    let c = &mut rt.bundle.project.control;
+    let (status, color) = if c.external_access {
+        ("Other computers can reach OSC and the WebSocket (WebSocket clients need a token).", theme::standby())
+    } else {
+        ("Only this computer can reach OSC and the WebSocket.", theme::active())
+    };
+    ui.colored_label(color, status);
+    ui.add_space(theme::GRID);
+    egui::Grid::new("set-security").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
+        ui.label("Network access");
+        changed |= toggle(ui, &mut c.external_access, "allow other computers").changed();
+        ui.end_row();
+        ui.label("OSC allowlist");
+        ui.vertical(|ui| {
+            let mut text = c.osc_allowlist.join("\n");
+            let edit = egui::TextEdit::multiline(&mut text).desired_rows(3).desired_width(280.0).hint_text("192.168.1.20\n10.0.0.0/24");
+            if ui.add_enabled(c.external_access, edit).changed() {
+                c.osc_allowlist = text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
+                changed = true;
+            }
+            let (_, errors) = livestage_control::acl::IpAllowlist::parse(&c.osc_allowlist);
+            for e in errors {
+                ui.colored_label(theme::stop_text(), e);
+            }
+            hint(ui, "hosts allowed to send OSC from the network; OSC never runs panic, stop-all, masters, blackout or timecode commands");
+        });
+        ui.end_row();
+    });
+    if ui.button("Apply & restart control services").clicked() {
+        rt.restart_control_requested = true;
+    }
     if changed {
         rt.mark_changed();
     }
@@ -383,19 +582,19 @@ fn timecode(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         LockState::Locked => (theme::active(), if t.running { "Rolling" } else { "Locked" }),
         LockState::Freewheel => (theme::standby(), "Freewheel"),
         LockState::Locking => (theme::standby(), "Locking…"),
-        LockState::Stopped => (theme::TEXT_DIM, "Stopped"),
+        LockState::Stopped => (theme::text_dim(), "Stopped"),
     };
-    egui::Frame::new().fill(theme::PANEL_RAISED).corner_radius(8).inner_margin(10).show(ui, |ui| {
+    egui::Frame::new().fill(theme::raised()).corner_radius(8).inner_margin(10).show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(t.timecode().to_string()).font(theme::clock_font(34.0)).color(if t.running { theme::active() } else { theme::TEXT }));
+            ui.label(RichText::new(t.timecode().to_string()).font(theme::clock_font(34.0)).color(if t.running { theme::active() } else { theme::text() }));
             ui.vertical(|ui| {
                 ui.colored_label(color, RichText::new(state).strong());
-                ui.label(RichText::new(format!("{} · {}", t.rate, rt.timecode_input)).size(12.0).color(theme::TEXT_DIM));
+                ui.label(RichText::new(format!("{} · {}", t.rate, rt.timecode_input)).size(12.0).color(theme::text_dim()));
                 if rt.timecode.config().source != TimecodeSource::Internal && t.state != LockState::Stopped {
                     ui.label(
                         RichText::new(format!("drift {:+.0} ppm · jitter {:+.1} ms", t.drift_ppm(), rt.timecode.lock_error_us() / 1000.0))
                             .size(12.0)
-                            .color(theme::TEXT_DIM),
+                            .color(theme::text_dim()),
                     );
                 }
             });
@@ -693,10 +892,10 @@ fn files(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         });
         ui.end_row();
         ui.label("Current show");
-        ui.label(RichText::new(root.display().to_string()).color(theme::TEXT_DIM));
+        ui.label(RichText::new(root.display().to_string()).color(theme::text_dim()));
         ui.end_row();
         ui.label("Preferences file");
-        ui.label(RichText::new(Preferences::path().map_or("—".into(), |p| p.display().to_string())).color(theme::TEXT_DIM));
+        ui.label(RichText::new(Preferences::path().map_or("—".into(), |p| p.display().to_string())).color(theme::text_dim()));
         ui.end_row();
     });
 }

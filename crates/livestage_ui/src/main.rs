@@ -7,10 +7,13 @@
 //! livestage --check-media        report movie playback support and exit
 //! ```
 
+mod assets;
 mod demo;
 mod display;
 mod gfx;
 mod health;
+#[cfg(test)]
+mod ico;
 mod logging;
 mod panels;
 mod prefs;
@@ -20,6 +23,7 @@ mod show_thread;
 mod snapshot;
 mod undo;
 mod view;
+mod widgets;
 mod theme;
 mod thumbs;
 
@@ -117,9 +121,11 @@ impl App {
     fn init(&mut self, el: &ActiveEventLoop) -> anyhow::Result<()> {
         let attrs = Window::default_attributes()
             .with_title("LiveStage")
+            .with_window_icon(assets::window_icon())
             .with_inner_size(winit::dpi::LogicalSize::new(1600.0, 1000.0))
             .with_min_inner_size(winit::dpi::LogicalSize::new(1024.0, 640.0));
         let window = Arc::new(el.create_window(attrs)?);
+        assets::set_dock_icon();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance.create_surface(window.clone())?;
         let gpu = pollster::block_on(GpuContext::new(instance, Some(&surface)))?;

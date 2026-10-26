@@ -92,7 +92,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState, previews: &Previe
 
 fn toolbar(ui: &mut Ui, layout: &MultiviewLayout, is_auto: bool, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Layout").color(theme::TEXT_DIM));
+        ui.label(RichText::new("Layout").color(theme::text_dim()));
         for (label, r, c, f) in PRESETS {
             let active = layout.rows == r && layout.cols == c && layout.has_feature() == f;
             if ui.selectable_label(active, label).clicked() && !active {
@@ -101,7 +101,7 @@ fn toolbar(ui: &mut Ui, layout: &MultiviewLayout, is_auto: bool, actions: &mut V
         }
         ui.separator();
         let (mut r, mut c, mut f) = (layout.rows, layout.cols, layout.feature_first);
-        ui.label(RichText::new("Custom").color(theme::TEXT_DIM));
+        ui.label(RichText::new("Custom").color(theme::text_dim()));
         let mut changed = ui.add(egui::DragValue::new(&mut r).range(1..=MultiviewLayout::MAX).suffix(" rows")).changed();
         changed |= ui.add(egui::DragValue::new(&mut c).range(1..=MultiviewLayout::MAX).suffix(" cols")).changed();
         changed |= toggle(ui, &mut f, "featured").on_hover_text("First cell spans 2 × 2").changed();
@@ -112,7 +112,7 @@ fn toolbar(ui: &mut Ui, layout: &MultiviewLayout, is_auto: bool, actions: &mut V
         if ui.add_enabled(!is_auto, egui::Button::new("Auto")).on_hover_text("Every output plus Program / Next / Slides / Clock").clicked() {
             actions.push(Action::Auto);
         }
-        ui.label(RichText::new("Right-click a cell to choose its feed").size(12.0).color(theme::TEXT_DIM));
+        ui.label(RichText::new("Right-click a cell to choose its feed").size(12.0).color(theme::text_dim()));
     });
 }
 
@@ -166,8 +166,8 @@ fn cell(
     let picture = Rect::from_min_max(rect.min, egui::pos2(rect.right(), rect.bottom() - CAPTION));
     let (title, accent, badges): (String, Color32, Vec<(String, Color32)>) = match source {
         MultiviewSource::Empty => {
-            p.text(picture.center(), Align2::CENTER_CENTER, "Right-click to assign", FontId::proportional(13.0), theme::TEXT_DIM);
-            (format!("{}", i + 1), theme::BORDER, vec![])
+            p.text(picture.center(), Align2::CENTER_CENTER, "Right-click to assign", FontId::proportional(13.0), theme::text_dim());
+            (format!("{}", i + 1), theme::border(), vec![])
         }
         MultiviewSource::Output { id } => output_cell(&p, picture, id, rt, previews, ndi),
         MultiviewSource::Program => program_cell(ui, picture, rt, st, previews, actions),
@@ -176,25 +176,25 @@ fn cell(
         MultiviewSource::Clock => {
             let now = chrono::Local::now();
             let size = (picture.height() * 0.32).min(picture.width() * 0.16);
-            p.text(picture.center() - egui::vec2(0.0, size * 0.15), Align2::CENTER_CENTER, now.format("%H:%M:%S").to_string(), theme::clock_font(size), theme::TEXT);
+            p.text(picture.center() - egui::vec2(0.0, size * 0.15), Align2::CENTER_CENTER, now.format("%H:%M:%S").to_string(), theme::clock_font(size), theme::text());
             p.text(
                 picture.center() + egui::vec2(0.0, size * 0.62),
                 Align2::CENTER_CENTER,
                 now.format("%A %d %B").to_string(),
                 FontId::proportional((size * 0.22).max(11.0)),
-                theme::TEXT_DIM,
+                theme::text_dim(),
             );
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
-            ("CLOCK".into(), theme::BORDER, vec![])
+            ("CLOCK".into(), theme::border(), vec![])
         }
     };
-    p.rect_stroke(rect, 5.0, Stroke::new(if accent == theme::BORDER { 1.0_f32 } else { 2.0 }, accent), egui::StrokeKind::Inside);
+    p.rect_stroke(rect, 5.0, Stroke::new(if accent == theme::border() { 1.0_f32 } else { 2.0 }, accent), egui::StrokeKind::Inside);
     // Caption strip (tally-style colour on the left edge).
     let cap = Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - CAPTION), rect.max);
-    p.rect_filled(cap, egui::CornerRadius { nw: 0, ne: 0, sw: 5, se: 5 }, theme::PANEL_RECESSED);
+    p.rect_filled(cap, egui::CornerRadius { nw: 0, ne: 0, sw: 5, se: 5 }, theme::recessed());
     p.rect_filled(Rect::from_min_size(cap.min, egui::vec2(4.0, cap.height())), 0.0, accent);
     let cp = ui.painter_at(cap.shrink2(egui::vec2(10.0, 0.0)));
-    cp.text(cap.left_center() + egui::vec2(10.0, 0.0), Align2::LEFT_CENTER, &title, FontId::proportional(13.0), theme::TEXT);
+    cp.text(cap.left_center() + egui::vec2(10.0, 0.0), Align2::LEFT_CENTER, &title, FontId::proportional(13.0), theme::text());
     let mut x = cap.right() - 10.0;
     for (text, color) in badges.into_iter().rev() {
         let r = cp.text(egui::pos2(x, cap.center().y), Align2::RIGHT_CENTER, text, FontId::proportional(11.5), color);
@@ -212,15 +212,15 @@ fn fit_image(p: &egui::Painter, area: Rect, tex: egui::TextureId, size: egui::Ve
 
 fn output_cell(p: &egui::Painter, picture: Rect, id: OutputId, rt: &UiRuntime, previews: &Previews, ndi: &NdiStatus) -> (String, Color32, Vec<(String, Color32)>) {
     let Some(d) = rt.bundle.project.display(id) else {
-        p.text(picture.center(), Align2::CENTER_CENTER, "Output removed", FontId::proportional(13.0), theme::TEXT_DIM);
-        return ("—".into(), theme::BORDER, vec![]);
+        p.text(picture.center(), Align2::CENTER_CENTER, "Output removed", FontId::proportional(13.0), theme::text_dim());
+        return ("—".into(), theme::border(), vec![]);
     };
     match previews.get(&id) {
         Some((tex, (w, h))) => {
             fit_image(p, picture.shrink(2.0), *tex, egui::vec2(*w as f32, *h as f32), Color32::WHITE);
         }
         None => {
-            p.text(picture.center(), Align2::CENTER_CENTER, "Output disabled", FontId::proportional(13.0), theme::TEXT_DIM);
+            p.text(picture.center(), Align2::CENTER_CENTER, "Output disabled", FontId::proportional(13.0), theme::text_dim());
         }
     }
     let mut badges = Vec::new();
@@ -229,12 +229,12 @@ fn output_cell(p: &egui::Painter, picture: Rect, id: OutputId, rt: &UiRuntime, p
         badges.push(("LIVE".to_string(), theme::stop()));
     }
     if let Some(n) = ndi.get(&id) {
-        badges.push((format!("NDI {n}"), if *n > 0 { theme::go() } else { theme::TEXT_DIM }));
+        badges.push((format!("NDI {n}"), if *n > 0 { theme::go() } else { theme::text_dim() }));
     }
     if let Some([w, h]) = d.canvas_size {
-        badges.push((format!("{w}×{h}"), theme::TEXT_DIM));
+        badges.push((format!("{w}×{h}"), theme::text_dim()));
     }
-    (d.name.clone(), if live { theme::stop() } else { theme::BORDER }, badges)
+    (d.name.clone(), if live { theme::stop() } else { theme::border() }, badges)
 }
 
 /// The output a visual cue plays on.
@@ -257,8 +257,8 @@ fn program_cell(
 ) -> (String, Color32, Vec<(String, Color32)>) {
     let p = ui.painter_at(picture);
     let Some((cue, elapsed)) = rt.program_cue() else {
-        p.text(picture.center(), Align2::CENTER_CENTER, "Nothing running", FontId::proportional(16.0), theme::TEXT_DIM);
-        return ("PROGRAM".into(), theme::BORDER, vec![]);
+        p.text(picture.center(), Align2::CENTER_CENTER, "Nothing running", FontId::proportional(16.0), theme::text_dim());
+        return ("PROGRAM".into(), theme::border(), vec![]);
     };
     let h = cue.header();
     let compact = picture.height() < COMPACT;
@@ -276,8 +276,8 @@ fn program_cell(
         has_picture = true;
     } else if let AnyCue::Audio(a) = cue {
         let tracks: Vec<&str> = a.tracks.iter().map(|t| t.asset.file_name()).collect();
-        let galley = p.layout(format!("♪  {}", tracks.join(" · ")), FontId::proportional(13.0), theme::TEXT_DIM, pic.width() - 8.0);
-        p.galley(pic.center() - galley.size() / 2.0, galley, theme::TEXT_DIM);
+        let galley = p.layout(format!("♪  {}", tracks.join(" · ")), FontId::proportional(13.0), theme::text_dim(), pic.width() - 8.0);
+        p.galley(pic.center() - galley.size() / 2.0, galley, theme::text_dim());
         has_picture = compact;
     }
     // Text column: beside the picture (compact) or below it.
@@ -287,7 +287,7 @@ fn program_cell(
         (picture.left() + 12.0, if has_picture { pic.bottom() + 6.0 } else { picture.top() + picture.height() * 0.2 })
     };
     let name_size = if compact { 14.0 } else { (picture.height() * 0.075).clamp(13.0, 26.0) };
-    p.text(egui::pos2(text_left, text_top), Align2::LEFT_TOP, format!("{}  {}", h.number, h.name), FontId::proportional(name_size), theme::TEXT);
+    p.text(egui::pos2(text_left, text_top), Align2::LEFT_TOP, format!("{}  {}", h.number, h.name), FontId::proportional(name_size), theme::text());
     let clock = if compact {
         ((picture.height() - bar_h) * 0.32).clamp(14.0, 34.0)
     } else {
@@ -302,7 +302,7 @@ fn program_cell(
             if compact { Align2::RIGHT_BOTTOM } else { Align2::RIGHT_TOP },
             format!("-{}", (d - elapsed).to_clock_string()),
             theme::clock_font(if compact { clock * 0.7 } else { clock }),
-            if d - elapsed < ShowTime::from_secs(10) { theme::stop() } else { theme::TEXT },
+            if d - elapsed < ShowTime::from_secs(10) { theme::stop() } else { theme::text() },
         );
         // Scrub bar along the bottom of the cell.
         let bar = Rect::from_min_max(egui::pos2(picture.left() + 12.0, picture.bottom() - 30.0), egui::pos2(picture.right() - 12.0, picture.bottom() - 8.0));
@@ -313,7 +313,7 @@ fn program_cell(
     }
     let _ = st;
     let state = cue.state();
-    let badges = vec![(cue.kind().label().to_uppercase(), theme::TEXT_DIM), (state.label().to_string(), theme::state_color(state).unwrap_or(theme::TEXT_DIM))];
+    let badges = vec![(cue.kind().label().to_uppercase(), theme::text_dim()), (state.label().to_string(), theme::state_color(state).unwrap_or(theme::text_dim()))];
     ("PROGRAM".into(), theme::active(), badges)
 }
 
@@ -342,7 +342,7 @@ fn thumb(p: &egui::Painter, area: Rect, rt: &UiRuntime, st: &mut UiState, asset:
         }
         None => {
             let msg = if st.thumbs.failed(&path, at) { "No preview" } else { "Loading preview…" };
-            p.text(area.center(), Align2::CENTER_CENTER, msg, FontId::proportional(12.0), theme::TEXT_DIM);
+            p.text(area.center(), Align2::CENTER_CENTER, msg, FontId::proportional(12.0), theme::text_dim());
             false
         }
     }
@@ -382,8 +382,8 @@ fn describe(c: &AnyCue) -> String {
 
 fn next_cell(p: &egui::Painter, picture: Rect, rt: &UiRuntime, st: &mut UiState, previews: &Previews) -> (String, Color32, Vec<(String, Color32)>) {
     let Some(cue) = rt.standby_cue() else {
-        p.text(picture.center(), Align2::CENTER_CENTER, "End of list", FontId::proportional(16.0), theme::TEXT_DIM);
-        return ("NEXT".into(), theme::BORDER, vec![]);
+        p.text(picture.center(), Align2::CENTER_CENTER, "End of list", FontId::proportional(16.0), theme::text_dim());
+        return ("NEXT".into(), theme::border(), vec![]);
     };
     let h = cue.header();
     let compact = picture.height() < COMPACT;
@@ -401,8 +401,8 @@ fn next_cell(p: &egui::Painter, picture: Rect, rt: &UiRuntime, st: &mut UiState,
     if !shown && preview_asset(cue).is_none() {
         // Timers / text: show the words as they will read; others a summary.
         let size = if matches!(cue, AnyCue::Timer(_)) { (pic.height() * 0.4).min(64.0) } else { 15.0 };
-        let galley = p.layout(text.clone(), FontId::proportional(size), theme::TEXT, pic.width() - 20.0);
-        p.galley(pic.center() - galley.size() / 2.0, galley, theme::TEXT);
+        let galley = p.layout(text.clone(), FontId::proportional(size), theme::text(), pic.width() - 20.0);
+        p.galley(pic.center() - galley.size() / 2.0, galley, theme::text());
     }
     let _ = previews;
     let name_size = if compact { 15.0 } else { (picture.height() * 0.07).clamp(13.0, 24.0) };
@@ -413,15 +413,15 @@ fn next_cell(p: &egui::Painter, picture: Rect, rt: &UiRuntime, st: &mut UiState,
     p.galley(egui::pos2(tx, ty), name, theme::standby());
     if shown && !text.is_empty() {
         let first = text.lines().next().unwrap_or_default();
-        let g = p.layout(first.to_string(), FontId::proportional(12.5), theme::TEXT_DIM, text_w);
-        p.with_clip_rect(picture).galley(egui::pos2(tx, ty + name_h + 6.0), g, theme::TEXT_DIM);
+        let g = p.layout(first.to_string(), FontId::proportional(12.5), theme::text_dim(), text_w);
+        p.with_clip_rect(picture).galley(egui::pos2(tx, ty + name_h + 6.0), g, theme::text_dim());
     }
-    let mut badges = vec![(cue.kind().label().to_uppercase(), theme::TEXT_DIM)];
+    let mut badges = vec![(cue.kind().label().to_uppercase(), theme::text_dim())];
     if let Some(d) = cue.duration() {
-        badges.push((d.to_clock_string()[3..].to_string(), theme::TEXT_DIM));
+        badges.push((d.to_clock_string()[3..].to_string(), theme::text_dim()));
     }
     if !h.pre_wait.is_zero() {
-        badges.push((format!("pre {:.1}s", h.pre_wait.as_secs_f64()), theme::TEXT_DIM));
+        badges.push((format!("pre {:.1}s", h.pre_wait.as_secs_f64()), theme::text_dim()));
     }
     ("NEXT".into(), theme::standby(), badges)
 }
@@ -434,12 +434,12 @@ fn slides_cell(p: &egui::Painter, picture: Rect, rt: &UiRuntime, st: &mut UiStat
         None => match rt.standby_cue().filter(|c| c.kind() == CueKind::Slides) {
             Some(c) => (c, false),
             None => {
-                p.text(picture.center(), Align2::CENTER_CENTER, "No presentation running", FontId::proportional(15.0), theme::TEXT_DIM);
-                return ("SLIDES".into(), theme::BORDER, vec![]);
+                p.text(picture.center(), Align2::CENTER_CENTER, "No presentation running", FontId::proportional(15.0), theme::text_dim());
+                return ("SLIDES".into(), theme::border(), vec![]);
             }
         },
     };
-    let AnyCue::Slides(s) = cue else { return ("SLIDES".into(), theme::BORDER, vec![]) };
+    let AnyCue::Slides(s) = cue else { return ("SLIDES".into(), theme::border(), vec![]) };
     let n = s.slide_count();
     let current = if is_running { s.current } else { s.start_slide };
     // Upcoming slide large on the right, current small on the left (presenter view).
@@ -458,7 +458,7 @@ fn slides_cell(p: &egui::Painter, picture: Rect, rt: &UiRuntime, st: &mut UiStat
             p.text(egui::pos2(right.left(), label_y), Align2::LEFT_TOP, format!("NEXT  {} / {n}", current + 2), FontId::proportional(12.0), theme::standby());
         }
         None => {
-            p.text(right.center(), Align2::CENTER_CENTER, "End of presentation", FontId::proportional(14.0), theme::TEXT_DIM);
+            p.text(right.center(), Align2::CENTER_CENTER, "End of presentation", FontId::proportional(14.0), theme::text_dim());
         }
     }
     // Text of the upcoming slide and the current slide's speaker notes.
@@ -476,8 +476,8 @@ fn slides_cell(p: &egui::Painter, picture: Rect, rt: &UiRuntime, st: &mut UiStat
         lines.push_str(&format!("Notes: {}", cur.notes));
     }
     if !lines.is_empty() {
-        let galley = p.layout(lines, FontId::proportional(12.5), theme::TEXT, text_rect.width());
-        p.with_clip_rect(text_rect).galley(text_rect.min, galley, theme::TEXT);
+        let galley = p.layout(lines, FontId::proportional(12.5), theme::text(), text_rect.width());
+        p.with_clip_rect(text_rect).galley(text_rect.min, galley, theme::text());
     }
     let badges = vec![(if is_running { "RUNNING".to_string() } else { "STANDBY".into() }, if is_running { theme::active() } else { theme::standby() })];
     (format!("SLIDES · {}", s.header.name), if is_running { theme::active() } else { theme::standby() }, badges)

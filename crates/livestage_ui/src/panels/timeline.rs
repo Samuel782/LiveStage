@@ -1,10 +1,12 @@
-//! Timeline editor: stacked cues on a time axis, drag to re-time.
+//! Timeline editor: stacked cues on a time axis. Drag a block (or its grip)
+//! to re-time it; with snap on, starts land on the beat grid (or 0.1 s),
+//! which is drawn under the lanes. Locked in Live mode.
 
 use super::widgets::toggle;
 use super::UiState;
 use crate::view::UiRuntime;
 use crate::theme;
-use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui};
+use egui::{Align2, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui};
 use livestage_core::cue::{AnyCue, Cue, CueExt};
 use livestage_core::id::CueId;
 use livestage_core::ShowTime;
@@ -34,7 +36,7 @@ fn ruler_step(zoom: f32) -> f32 {
 
 pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     let Some(tid) = target(rt, st) else {
-        ui.label(RichText::new("No timeline cue in this list. Add one with “+ Add cue → Timeline”.").color(theme::TEXT_DIM));
+        ui.label(RichText::new("No timeline cue in this list. Add one with “+ Add cue → Timeline”.").color(theme::text_dim()));
         return;
     };
     let playhead = rt.elapsed_of(tid);
@@ -58,7 +60,12 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                 None => "Snap 0.1 s".to_string(),
             };
             toggle(ui, &mut st.tl_snap, snap_label);
+            if st.live_mode {
+                ui.label(RichText::new("Live mode: re-timing locked").size(theme::type_scale::SMALL).color(theme::stop_text()));
+            }
         });
+        let editable = !st.live_mode;
+        let grid = if st.tl_snap { beat.unwrap_or(0.1) } else { 0.0 };
 
         let zoom = st.tl_zoom;
         let rows = 1 + t.items.len();
@@ -68,17 +75,26 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             let (area, _) = ui.allocate_exact_size(egui::vec2(width.max(ui.available_width()), height), Sense::hover());
             let p = ui.painter_at(area);
             let x_of = |secs: f32| area.left() + GUTTER + secs * zoom;
-            p.rect_filled(area, 0.0, theme::PANEL_RECESSED);
+            p.rect_filled(area, 0.0, theme::recessed());
 
             // Ruler + grid.
             let step = ruler_step(zoom);
             let mut s = 0.0f32;
             while s <= length + step {
                 let x = x_of(s);
-                p.line_segment([Pos2::new(x, area.top() + RULER - 6.0), Pos2::new(x, area.bottom())], Stroke::new(1.0_f32, theme::BORDER));
+                p.line_segment([Pos2::new(x, area.top() + RULER - 6.0), Pos2::new(x, area.bottom())], Stroke::new(1.0_f32, theme::border()));
                 let label = ShowTime::from_secs_f64(s as f64).to_clock_string();
-                p.text(Pos2::new(x + 3.0, area.top() + 4.0), Align2::LEFT_TOP, &label[3..10], FontId::monospace(11.0), theme::TEXT_DIM);
+                p.text(Pos2::new(x + 3.0, area.top() + 4.0), Align2::LEFT_TOP, &label[3..10], FontId::monospace(11.0), theme::text_dim());
                 s += step;
+            }
+            // Snap grid (when the lines are far enough apart to read).
+            if grid > 0.0 && grid * zoom >= 8.0 {
+                let mut g = 0.0f32;
+                while g <= length + step {
+                    let x = x_of(g);
+                    p.line_segment([Pos2::new(x, area.top() + RULER), Pos2::new(x, area.bottom())], Stroke::new(1.0_f32, theme::wash(theme::border(), 0.5)));
+                    g += grid;
+                }
             }
 
             let row_rect = |i: usize| {
@@ -93,17 +109,18 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
 
             // Master lane.
             let r0 = row_rect(0);
-            p.text(Pos2::new(r0.left() + 8.0, r0.center().y), Align2::LEFT_CENTER, "MASTER CLOCK", FontId::proportional(11.0), theme::TEXT_DIM);
+            p.text(Pos2::new(r0.left() + 8.0, r0.center().y), Align2::LEFT_CENTER, "MASTER CLOCK", FontId::proportional(11.0), theme::text_dim());
             match t.master.as_deref() {
                 Some(m) => {
                     let b = block(0, 0.0, Some(m.duration().map_or(length, |d| d.as_secs_f32())));
-                    p.rect_filled(b, 3.0, theme::kind_color(m.kind()).gamma_multiply(0.7));
+                    let mc = theme::kind_color(m.kind());
+                    p.rect_filled(b, theme::RADIUS as f32, mc);
                     p.with_clip_rect(b.shrink(2.0)).text(
                         b.left_center() + egui::vec2(6.0, 0.0),
                         Align2::LEFT_CENTER,
                         &m.header().name,
                         FontId::proportional(13.0),
-                        Color32::WHITE,
+                        theme::on(mc),
                     );
                     let resp = ui.interact(b, ui.id().with(("tl-master", m.header().id)), Sense::click());
                     if resp.clicked() {
@@ -111,7 +128,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                     }
                 }
                 None => {
-                    p.text(Pos2::new(x_of(0.0) + 6.0, r0.center().y), Align2::LEFT_CENTER, "show clock (no master)", FontId::proportional(12.0), theme::TEXT_DIM);
+                    p.text(Pos2::new(x_of(0.0) + 6.0, r0.center().y), Align2::LEFT_CENTER, "show clock (no master)", FontId::proportional(12.0), theme::text_dim());
                 }
             }
 
@@ -123,32 +140,48 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                 let id = item.cue.header().id;
                 let selected = st.selected == Some(id);
                 if selected {
-                    p.rect_filled(r, 0.0, Color32::from_rgb(0x22, 0x2A, 0x34));
+                    p.rect_filled(r, 0.0, theme::accent_dim());
+                } else if lane % 2 == 0 {
+                    p.rect_filled(r, 0.0, theme::wash(theme::row_alt(), 0.6));
                 }
                 let label = format!("{}  {}", item.cue.header().number, item.cue.header().name);
                 let gutter = Rect::from_min_max(r.min, Pos2::new(r.left() + GUTTER - 10.0, r.bottom()));
-                p.with_clip_rect(gutter).text(Pos2::new(r.left() + 8.0, r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), theme::TEXT);
+                p.with_clip_rect(gutter).text(Pos2::new(r.left() + 8.0, r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), theme::text());
                 let dur = item.cue.duration().map(|d| d.as_secs_f32());
                 let b = block(lane, item.offset.as_secs_f32(), dur);
                 let color = theme::kind_color(item.cue.kind());
                 let fired = item.cue.state().is_active();
-                p.rect_filled(b, 3.0, if fired { color } else { color.gamma_multiply(0.6) });
+                let fill = if fired { color } else { color.gamma_multiply(0.75) };
+                p.rect_filled(b, theme::RADIUS as f32, fill);
                 if selected {
-                    p.rect_stroke(b, 3.0, Stroke::new(1.5_f32, Color32::WHITE), egui::StrokeKind::Outside);
+                    p.rect_stroke(b, theme::RADIUS as f32, Stroke::new(theme::FOCUS_RING, theme::accent()), egui::StrokeKind::Outside);
                 }
-                if b.width() > 34.0 {
+                // Grip: the re-timing handle at the start of the block.
+                let grip = Rect::from_min_size(b.min, egui::vec2(8.0_f32.min(b.width()), b.height()));
+                if editable {
+                    p.rect_filled(grip, egui::CornerRadius { nw: theme::RADIUS, sw: theme::RADIUS, ne: 0, se: 0 }, theme::on(fill).gamma_multiply(0.25));
+                    for dy in [-4.0, 0.0, 4.0] {
+                        p.circle_filled(Pos2::new(grip.center().x, grip.center().y + dy), 1.1, theme::on(fill));
+                    }
+                }
+                if b.width() > 40.0 {
                     p.with_clip_rect(b.shrink(2.0)).text(
-                        b.left_center() + egui::vec2(5.0, 0.0),
+                        b.left_center() + egui::vec2(12.0, 0.0),
                         Align2::LEFT_CENTER,
                         item.cue.kind().label(),
                         FontId::proportional(11.0),
-                        Color32::BLACK,
+                        theme::on(fill),
                     );
                 }
 
-                let resp = ui
-                    .interact(b, ui.id().with(("tl-item", id)), Sense::click_and_drag())
-                    .on_hover_text(format!("{} @ {}", item.cue.header().name, item.offset.to_clock_string()));
+                let sense = if editable { Sense::click_and_drag() } else { Sense::click() };
+                let resp = ui.interact(b, ui.id().with(("tl-item", id)), sense).on_hover_text(format!(
+                    "{} @ {}{}",
+                    item.cue.header().name,
+                    item.offset.to_clock_string(),
+                    if editable { " · drag to re-time" } else { "" }
+                ));
+                let resp = if editable { resp.on_hover_cursor(egui::CursorIcon::ResizeHorizontal) } else { resp };
                 if resp.clicked() || resp.drag_started() {
                     st.selected = Some(id);
                 }
@@ -159,12 +192,21 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                     if let Some((did, raw)) = &mut st.tl_drag {
                         if *did == id {
                             *raw = (*raw + resp.drag_delta().x / zoom).max(0.0);
-                            let grid = if st.tl_snap { beat.unwrap_or(0.1) } else { 0.0 };
                             let snapped = if grid > 0.0 { (*raw / grid).round() * grid } else { *raw };
                             item.offset = ShowTime::from_secs_f64(snapped as f64);
                             changed = true;
                         }
                     }
+                }
+                if resp.dragged() {
+                    // Guide line and the new start time.
+                    let x = x_of(item.offset.as_secs_f32());
+                    p.line_segment([Pos2::new(x, area.top() + RULER), Pos2::new(x, area.bottom())], Stroke::new(1.0_f32, theme::accent()));
+                    let label = format!("@ {}", &item.offset.to_clock_string()[3..]);
+                    let g = p.layout_no_wrap(label, FontId::monospace(11.0), theme::on(theme::accent()));
+                    let tag = Rect::from_min_size(Pos2::new(x + 4.0, b.top() - g.size().y - 6.0), g.size() + egui::vec2(8.0, 4.0));
+                    p.rect_filled(tag, 3.0, theme::accent());
+                    p.galley(tag.min + egui::vec2(4.0, 2.0), g, theme::on(theme::accent()));
                 }
                 if resp.drag_stopped() {
                     st.tl_drag = None;
@@ -182,7 +224,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             }
             // Gutter divider.
             let gx = area.left() + GUTTER - 4.0;
-            p.line_segment([Pos2::new(gx, area.top()), Pos2::new(gx, area.bottom())], Stroke::new(1.0_f32, theme::BORDER));
+            p.line_segment([Pos2::new(gx, area.top()), Pos2::new(gx, area.bottom())], Stroke::new(1.0_f32, theme::border()));
         });
     }
     if playhead.is_some() {

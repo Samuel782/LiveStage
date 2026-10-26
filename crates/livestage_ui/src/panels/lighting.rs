@@ -43,8 +43,8 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     if rt.bundle.project.dmx.patch.is_empty() {
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
-            ui.label(RichText::new("No fixtures patched").size(18.0).color(theme::TEXT_DIM));
-            ui.label(RichText::new("Patch fixtures in the DMX tab, or load a demo rig to try the console.").color(theme::TEXT_DIM));
+            ui.label(RichText::new("No fixtures patched").size(18.0).color(theme::text_dim()));
+            ui.label(RichText::new("Patch fixtures in the DMX tab, or load a demo rig to try the console.").color(theme::text_dim()));
             ui.add_space(8.0);
             if ui.button(RichText::new("Patch a demo rig").strong()).on_hover_text("4 spots, 6 RGBW washes, 4 RGB floor pars, 2 blinders, with palettes, faders and effects").clicked() {
                 crate::demo::lighting_rig(&mut rt.bundle.project);
@@ -76,6 +76,8 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                 encoders(ui, rt, st);
                 ui.add_space(8.0);
                 palettes(ui, rt, st);
+                ui.add_space(8.0);
+                output_heatmaps(ui, rt);
             });
         });
         column(ui, right.shrink2(Vec2::new(4.0, 0.0)), "lx-right", |ui| {
@@ -110,6 +112,21 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             ui.separator();
             submasters(ui, rt, st);
         });
+    }
+}
+
+/// The output of every patched universe as a heatmap.
+fn output_heatmaps(ui: &mut Ui, rt: &UiRuntime) {
+    section(ui, "OUTPUT");
+    let mut used: Vec<u16> = rt.bundle.project.dmx.patch.iter().map(|f| f.universe).collect();
+    used.sort_unstable();
+    used.dedup();
+    let width = ui.available_width().min(32.0 * 12.0);
+    for index in used {
+        if let Some(u) = rt.dmx.universe(index) {
+            ui.label(RichText::new(format!("Universe {}", index + 1)).size(theme::type_scale::SMALL).color(theme::text_dim()));
+            super::widgets::dmx_heatmap(ui, &u.data, width);
+        }
     }
 }
 
@@ -152,7 +169,7 @@ fn toolbar(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         }
         ui.separator();
         let n = rt.dmx.console.programmer.len();
-        let label = RichText::new(format!("Programmer · {n}")).color(if n > 0 { theme::accent() } else { theme::TEXT_DIM });
+        let label = RichText::new(format!("Programmer · {n}")).color(if n > 0 { theme::accent() } else { theme::text_dim() });
         ui.label(label).on_hover_text("Live values (they override cues until cleared)");
         if ui.add_enabled(n > 0, egui::Button::new("Clear")).on_hover_text("Release every programmer value").clicked() {
             rt.dmx.console.programmer.clear();
@@ -166,7 +183,7 @@ fn toolbar(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let dbo = rt.dmx.console.blackout;
-            let b = egui::Button::new(RichText::new("DBO").strong().color(if dbo { Color32::WHITE } else { theme::TEXT })).fill(if dbo { theme::stop() } else { theme::PANEL_RAISED });
+            let b = egui::Button::new(RichText::new("DBO").strong().color(if dbo { Color32::WHITE } else { theme::text() })).fill(if dbo { theme::stop() } else { theme::control() });
             if ui.add(b).on_hover_text("Desk blackout: intensities to zero (positions and colours hold)").clicked() {
                 rt.dmx.console.blackout = !dbo;
             }
@@ -234,10 +251,10 @@ fn stage(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState, height: f32) {
     });
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::click_and_drag());
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, 8.0, theme::PANEL_RECESSED);
+    p.rect_filled(rect, 8.0, theme::recessed());
     let deck = rect.shrink2(Vec2::new(14.0, 14.0));
-    p.rect_stroke(deck, 4.0, Stroke::new(1.0_f32, theme::BORDER), egui::StrokeKind::Inside);
-    p.text(Pos2::new(deck.center().x, deck.bottom() - 4.0), Align2::CENTER_BOTTOM, "AUDIENCE ▾", FontId::proportional(10.0), theme::TEXT_DIM);
+    p.rect_stroke(deck, 4.0, Stroke::new(1.0_f32, theme::border()), egui::StrokeKind::Inside);
+    p.text(Pos2::new(deck.center().x, deck.bottom() - 4.0), Align2::CENTER_BOTTOM, "AUDIENCE ▾", FontId::proportional(10.0), theme::text_dim());
     let to_screen = |s: [f32; 2]| Pos2::new(deck.left() + s[0] * deck.width(), deck.top() + s[1] * deck.height());
     let to_stage = |q: Pos2| [((q.x - deck.left()) / deck.width()).clamp(0.0, 1.0), ((q.y - deck.top()) / deck.height()).clamp(0.0, 1.0)];
     let r = (deck.width().min(deck.height()) * 0.035).clamp(6.0, 13.0);
@@ -255,12 +272,12 @@ fn stage(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState, height: f32) {
             let lit = color.iter().cloned().fold(0.0, f32::max);
             p.line_segment([c, tip], Stroke::new(3.0_f32, rgb(color).gamma_multiply(0.35 + 0.65 * lit).linear_multiply(0.8)));
         }
-        p.circle_filled(c, r, Color32::from_gray(30));
+        p.circle_filled(c, r, theme::bg_deep());
         p.circle_filled(c, r * 0.82, rgb(color));
         let selected = selection.contains(id);
-        p.circle_stroke(c, r + 2.0, Stroke::new(if selected { 2.5_f32 } else { 1.0_f32 }, if selected { theme::accent() } else { theme::BORDER }));
+        p.circle_stroke(c, r + 2.0, Stroke::new(if selected { 2.5_f32 } else { 1.0_f32 }, if selected { theme::accent() } else { theme::border() }));
         if r >= 9.0 {
-            p.text(c + Vec2::new(0.0, r + 3.0), Align2::CENTER_TOP, name, FontId::proportional(9.5), theme::TEXT_DIM);
+            p.text(c + Vec2::new(0.0, r + 3.0), Align2::CENTER_TOP, name, FontId::proportional(9.5), theme::text_dim());
         }
     }
 
@@ -325,15 +342,15 @@ fn fixture_tiles(ui: &mut Ui, rt: &mut UiRuntime, _st: &mut UiState) {
                 let selected = selected_set.contains(id);
                 let programmed = programmed_set.contains(id);
                 let p = ui.painter_at(rect);
-                p.rect(rect, 6.0, if selected { theme::accent_dim() } else { theme::PANEL_RAISED }, Stroke::new(if selected { 2.0_f32 } else { 1.0_f32 }, if selected { theme::accent() } else { theme::BORDER }), egui::StrokeKind::Inside);
+                p.rect(rect, 6.0, if selected { theme::accent_dim() } else { theme::raised() }, Stroke::new(if selected { 2.0_f32 } else { 1.0_f32 }, if selected { theme::accent() } else { theme::border() }), egui::StrokeKind::Inside);
                 let color = rt.dmx.fixture_color(*id).unwrap_or([0.0; 3]);
                 p.rect_filled(Rect::from_min_size(rect.left_top() + Vec2::new(6.0, 6.0), Vec2::new(10.0, 10.0)), 2.0, rgb(color));
-                p.text(rect.left_top() + Vec2::new(22.0, 4.0), Align2::LEFT_TOP, (i + 1).to_string(), FontId::monospace(11.0), theme::TEXT_DIM);
+                p.text(rect.left_top() + Vec2::new(22.0, 4.0), Align2::LEFT_TOP, (i + 1).to_string(), FontId::monospace(11.0), theme::text_dim());
                 if programmed {
                     p.text(rect.right_top() + Vec2::new(-6.0, 4.0), Align2::RIGHT_TOP, "P", FontId::monospace(11.0), theme::accent());
                 }
-                let g = p.layout(name.clone(), FontId::proportional(12.0), theme::TEXT, rect.width() - 12.0);
-                p.galley(rect.left_top() + Vec2::new(6.0, 20.0), g, theme::TEXT);
+                let g = p.layout(name.clone(), FontId::proportional(12.0), theme::text(), rect.width() - 12.0);
+                p.galley(rect.left_top() + Vec2::new(6.0, 20.0), g, theme::text());
                 // Intensity bar (dimmer output).
                 let level = rt.dmx.output(*id, "intensity").unwrap_or_else(|| color.iter().cloned().fold(0.0, f32::max));
                 let bar = Rect::from_min_size(rect.left_bottom() + Vec2::new(6.0, -8.0), Vec2::new((rect.width() - 12.0) * level, 3.0));
@@ -378,22 +395,18 @@ fn shown_value(rt: &UiRuntime, attribute: &str) -> (f32, bool) {
 }
 
 fn encoders(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
-    ui.horizontal(|ui| {
-        for k in PaletteKind::ALL {
-            if ui.selectable_label(st.light_tab == k, k.label()).clicked() {
-                st.light_tab = k;
-            }
-        }
-    });
+    let tabs: Vec<(PaletteKind, &str)> = PaletteKind::ALL.iter().map(|k| (*k, k.label())).collect();
+    super::widgets::inputs::segmented(ui, &mut st.light_tab, &tabs);
+    ui.add_space(4.0);
     let n = rt.dmx.console.programmer.selection.len();
     if n == 0 {
-        ui.label(RichText::new("Select fixtures on the stage plot or the tiles.").color(theme::TEXT_DIM));
+        ui.label(RichText::new("Select fixtures on the stage plot or the tiles.").color(theme::text_dim()));
         return;
     }
     let attrs = selection_attributes(rt, st.light_tab);
-    ui.label(RichText::new(format!("{n} fixture(s) selected")).size(12.0).color(theme::TEXT_DIM));
+    ui.label(RichText::new(format!("{n} fixture(s) selected")).size(12.0).color(theme::text_dim()));
     if attrs.is_empty() {
-        ui.label(RichText::new(format!("The selection has no {} attributes.", st.light_tab.label().to_lowercase())).color(theme::TEXT_DIM));
+        ui.label(RichText::new(format!("The selection has no {} attributes.", st.light_tab.label().to_lowercase())).color(theme::text_dim()));
         return;
     }
     ui.horizontal_wrapped(|ui| {
@@ -410,17 +423,35 @@ fn encoders(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         }
     });
     if st.light_tab == PaletteKind::Color && attrs.iter().any(|a| a == "red") {
+        color_tile(ui, rt, attrs.iter().any(|a| a == "white"));
+    }
+}
+
+/// RGB / RGBW colour tile: an inline hue × saturation / value picker for
+/// the red, green and blue mix (white stays its own encoder on RGBW
+/// fixtures) and one-click primaries.
+fn color_tile(ui: &mut Ui, rt: &mut UiRuntime, rgbw: bool) {
+    let frame = egui::Frame::default().fill(theme::recessed()).stroke(theme::hairline()).corner_radius(theme::RADIUS + 2).inner_margin(egui::Margin::same(8));
+    frame.show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label("Mix");
-            let mut c = [shown_value(rt, "red").0, shown_value(rt, "green").0, shown_value(rt, "blue").0];
-            if egui::color_picker::color_edit_button_rgb(ui, &mut c).changed() {
-                rt.dmx.programmer_set("red", c[0]);
-                rt.dmx.programmer_set("green", c[1]);
-                rt.dmx.programmer_set("blue", c[2]);
+            ui.label(super::widgets::caption_text(if rgbw { "RGBW mix" } else { "RGB mix" }));
+            if rgbw {
+                ui.label(RichText::new("white: its own encoder").size(theme::type_scale::SMALL).color(theme::text_dim()));
             }
-            for (name, col) in [("Red", [1.0, 0.0, 0.0]), ("Green", [0.0, 1.0, 0.0]), ("Blue", [0.0, 0.0, 1.0]), ("White", [1.0, 1.0, 1.0])] {
-                let (r, resp) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
-                ui.painter().circle_filled(r.center(), 7.0, rgb(col));
+        });
+        let rgb_now = [shown_value(rt, "red").0, shown_value(rt, "green").0, shown_value(rt, "blue").0];
+        let mut hsva = egui::ecolor::Hsva::from_rgb(rgb_now);
+        ui.spacing_mut().slider_width = 200.0;
+        if egui::color_picker::color_picker_hsva_2d(ui, &mut hsva, egui::color_picker::Alpha::Opaque) {
+            let c = hsva.to_rgb();
+            rt.dmx.programmer_set("red", c[0]);
+            rt.dmx.programmer_set("green", c[1]);
+            rt.dmx.programmer_set("blue", c[2]);
+        }
+        ui.horizontal(|ui| {
+            for (name, col) in [("Red", [1.0, 0.0, 0.0]), ("Amber", [1.0, 0.5, 0.0]), ("Green", [0.0, 1.0, 0.0]), ("Cyan", [0.0, 1.0, 1.0]), ("Blue", [0.0, 0.0, 1.0]), ("Magenta", [1.0, 0.0, 1.0]), ("White", [1.0, 1.0, 1.0])] {
+                let (r, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+                ui.painter().circle(r.center(), 8.0, rgb(col), Stroke::new(1.0, theme::border_hi()));
                 if resp.on_hover_text(name).clicked() {
                     rt.dmx.programmer_set("red", col[0]);
                     rt.dmx.programmer_set("green", col[1]);
@@ -428,16 +459,25 @@ fn encoders(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                 }
             }
         });
-    }
+    });
 }
 
-/// Pan (x) / tilt (y) pad for the selection.
+/// Pan (x) / tilt (y) grid for the selection: quarter lines, the
+/// selection's beams as dots, crosshair while dragging.
 fn xy_pad(ui: &mut Ui, rt: &mut UiRuntime) {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(150.0, 150.0), Sense::click_and_drag());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(168.0, 168.0), Sense::click_and_drag());
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, 6.0, theme::PANEL_RECESSED);
-    p.line_segment([rect.center_top(), rect.center_bottom()], Stroke::new(1.0_f32, theme::BORDER));
-    p.line_segment([rect.left_center(), rect.right_center()], Stroke::new(1.0_f32, theme::BORDER));
+    p.rect(rect, theme::RADIUS as f32 + 2.0, theme::recessed(), theme::hairline(), egui::StrokeKind::Inside);
+    for k in 1..4 {
+        let f = k as f32 / 4.0;
+        let s = if k == 2 { Stroke::new(1.0_f32, theme::border_hi()) } else { Stroke::new(1.0_f32, theme::border()) };
+        p.line_segment([Pos2::new(rect.left() + rect.width() * f, rect.top()), Pos2::new(rect.left() + rect.width() * f, rect.bottom())], s);
+        p.line_segment([Pos2::new(rect.left(), rect.top() + rect.height() * f), Pos2::new(rect.right(), rect.top() + rect.height() * f)], s);
+    }
+    if let Some(q) = resp.hover_pos() {
+        p.line_segment([Pos2::new(q.x, rect.top()), Pos2::new(q.x, rect.bottom())], Stroke::new(1.0_f32, theme::wash(theme::accent(), 0.5)));
+        p.line_segment([Pos2::new(rect.left(), q.y), Pos2::new(rect.right(), q.y)], Stroke::new(1.0_f32, theme::wash(theme::accent(), 0.5)));
+    }
     let sel = rt.dmx.console.programmer.selection.clone();
     for f in &sel {
         if let (Some(pan), Some(tilt)) = (rt.dmx.output(*f, "pan"), rt.dmx.output(*f, "tilt")) {
@@ -445,7 +485,7 @@ fn xy_pad(ui: &mut Ui, rt: &mut UiRuntime) {
             p.circle_filled(q, 4.0, theme::accent());
         }
     }
-    p.text(rect.left_top() + Vec2::new(4.0, 2.0), Align2::LEFT_TOP, "PAN / TILT", FontId::proportional(9.0), theme::TEXT_DIM);
+    p.text(rect.left_top() + Vec2::new(4.0, 2.0), Align2::LEFT_TOP, "PAN / TILT", FontId::proportional(9.0), theme::text_dim());
     if let Some(q) = resp.interact_pointer_pos().filter(|_| resp.dragged() || resp.clicked()) {
         let pan = ((q.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
         let tilt = ((rect.bottom() - q.y) / rect.height()).clamp(0.0, 1.0);
@@ -482,12 +522,12 @@ fn palettes(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             let (rect, resp) = ui.allocate_exact_size(Vec2::new(86.0, 40.0), Sense::click());
             let p = ui.painter_at(rect);
             let hover = resp.hovered();
-            p.rect(rect, 6.0, if hover { theme::PANEL_RAISED.gamma_multiply(1.4) } else { theme::PANEL_RAISED }, Stroke::new(1.0_f32, theme::BORDER), egui::StrokeKind::Inside);
+            p.rect(rect, 6.0, if hover { theme::raised().gamma_multiply(1.4) } else { theme::raised() }, Stroke::new(1.0_f32, theme::border()), egui::StrokeKind::Inside);
             if let Some(c) = pal.swatch {
                 p.rect_filled(Rect::from_min_size(rect.left_top() + Vec2::new(5.0, 5.0), Vec2::new(rect.width() - 10.0, 6.0)), 2.0, theme::rgb(c));
             }
-            let g = p.layout(pal.name.clone(), FontId::proportional(12.0), theme::TEXT, rect.width() - 10.0);
-            p.galley(rect.left_top() + Vec2::new(6.0, 16.0), g, theme::TEXT);
+            let g = p.layout(pal.name.clone(), FontId::proportional(12.0), theme::text(), rect.width() - 10.0);
+            p.galley(rect.left_top() + Vec2::new(6.0, 16.0), g, theme::text());
             if resp.clicked() {
                 apply = Some(i);
             }
@@ -522,7 +562,7 @@ fn palettes(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         rt.bundle.project.lighting.palettes.remove(i);
         rt.palettes_edited();
     }
-    ui.label(RichText::new("Click applies to the selection · cues keep palettes by reference").size(11.0).color(theme::TEXT_DIM));
+    ui.label(RichText::new("Click applies to the selection · cues keep palettes by reference").size(11.0).color(theme::text_dim()));
 }
 
 fn swatch_of(p: &Palette) -> Option<Rgb> {
@@ -570,7 +610,7 @@ fn effects(ui: &mut Ui, rt: &mut UiRuntime, _st: &mut UiState) {
     let mut changed = false;
     for (i, e) in rt.bundle.project.lighting.effects.iter_mut().enumerate() {
         let running = rt.dmx.console.effect_running(e.id);
-        egui::Frame::new().fill(if running { theme::accent_dim() } else { theme::PANEL_RAISED }).corner_radius(6).inner_margin(6).show(ui, |ui| {
+        egui::Frame::new().fill(if running { theme::accent_dim() } else { theme::raised() }).corner_radius(6).inner_margin(6).show(ui, |ui| {
             ui.horizontal(|ui| {
                 let b = egui::Button::new(RichText::new(if running { "Stop" } else { "Run" }).strong()).min_size(Vec2::new(40.0, 22.0));
                 if ui.add(b).on_hover_text(if running { "Stop" } else { "Run" }).clicked() {
@@ -608,7 +648,7 @@ fn effects(ui: &mut Ui, rt: &mut UiRuntime, _st: &mut UiState) {
         rt.mark_changed();
     }
     if rt.bundle.project.lighting.effects.is_empty() {
-        ui.label(RichText::new("Select fixtures, then + FX.").color(theme::TEXT_DIM));
+        ui.label(RichText::new("Select fixtures, then + FX.").color(theme::text_dim()));
     }
 }
 
@@ -669,17 +709,24 @@ fn fader(ui: &mut Ui, name: &str, kind: &str, level: &mut f32, color: Color32, l
         let (top, _) = ui.allocate_exact_size(Vec2::new(66.0, 4.0), Sense::hover());
         ui.painter().rect_filled(top, 2.0, color);
         ui.add(egui::Label::new(RichText::new(name).size(11.0).strong()).truncate());
-        ui.label(RichText::new(format!("{kind} · {:.0}%", *level * 100.0)).size(10.0).color(theme::TEXT_DIM));
+        ui.label(RichText::new(format!("{kind} · {:.0}%", *level * 100.0)).size(10.0).color(theme::text_dim()));
         // Fader track.
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(66.0, 120.0), Sense::click_and_drag());
         let p = ui.painter_at(rect);
         let track = Rect::from_center_size(rect.center(), Vec2::new(8.0, rect.height() - 16.0));
-        p.rect_filled(track, 4.0, theme::PANEL_RECESSED);
+        p.rect_filled(track, 4.0, theme::recessed());
         let filled = Rect::from_min_max(Pos2::new(track.left(), track.bottom() - track.height() * *level), track.max);
         p.rect_filled(filled, 4.0, color.gamma_multiply(0.7));
         let y = track.bottom() - track.height() * *level;
-        p.rect(Rect::from_center_size(Pos2::new(track.center().x, y), Vec2::new(40.0, 14.0)), 3.0, Color32::from_gray(200), Stroke::new(1.0_f32, Color32::from_gray(60)), egui::StrokeKind::Inside);
-        p.line_segment([Pos2::new(track.center().x - 14.0, y), Pos2::new(track.center().x + 14.0, y)], Stroke::new(1.5_f32, Color32::from_gray(40)));
+        let hot = resp.hovered() || resp.dragged();
+        p.rect(
+            Rect::from_center_size(Pos2::new(track.center().x, y), Vec2::new(40.0, 14.0)),
+            3.0,
+            if hot { theme::control_hover() } else { theme::control() },
+            Stroke::new(1.0_f32, if hot { theme::accent() } else { theme::border_hi() }),
+            egui::StrokeKind::Inside,
+        );
+        p.line_segment([Pos2::new(track.center().x - 14.0, y), Pos2::new(track.center().x + 14.0, y)], Stroke::new(1.5_f32, theme::text()));
         if let Some(q) = resp.interact_pointer_pos().filter(|_| resp.dragged() || resp.clicked()) {
             *level = ((track.bottom() - q.y) / track.height()).clamp(0.0, 1.0);
             moved = true;
@@ -693,9 +740,9 @@ fn fader(ui: &mut Ui, name: &str, kind: &str, level: &mut f32, color: Color32, l
         }
         // Flash button: momentary.
         let (b, bresp) = ui.allocate_exact_size(Vec2::new(66.0, 26.0), Sense::click_and_drag());
-        ui.painter().rect(b, 5.0, if lit { color } else { theme::PANEL_RAISED }, Stroke::new(1.0_f32, color.gamma_multiply(0.8)), egui::StrokeKind::Inside);
+        ui.painter().rect(b, theme::RADIUS as f32, if lit { color } else { theme::control() }, Stroke::new(1.0_f32, color.gamma_multiply(0.8)), egui::StrokeKind::Inside);
         let label = if kind == "DBO" || name == "Grand master" { "DBO" } else { "FLASH" };
-        ui.painter().text(b.center(), Align2::CENTER_CENTER, label, FontId::proportional(11.0), if lit { Color32::BLACK } else { theme::TEXT });
+        ui.painter().text(b.center(), Align2::CENTER_CENTER, label, FontId::proportional(11.0), if lit { theme::on(color) } else { theme::text() });
         let down = bresp.is_pointer_button_down_on();
         let key = ui.id().with(id);
         let was = ui.data(|d| d.get_temp::<bool>(key).unwrap_or(false));

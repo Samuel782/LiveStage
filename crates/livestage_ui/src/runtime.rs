@@ -116,6 +116,10 @@ pub struct ShowStats {
     pub max_late_us: AtomicU64,
     /// Scheduling class obtained by the show thread.
     pub scheduling: Mutex<String>,
+    /// Commands received per remote source (the status bar's activity lights).
+    pub osc_rx: AtomicU64,
+    pub ws_rx: AtomicU64,
+    pub midi_rx: AtomicU64,
 }
 
 impl ShowStats {
@@ -179,6 +183,10 @@ pub struct CueRow {
     pub duration: Option<ShowTime>,
     pub elapsed: ShowTime,
     pub progress: Option<f32>,
+    /// Time left (cues with a known length, while active).
+    pub remaining: Option<ShowTime>,
+    /// Pre-wait countdown (0 → 1) while the cue waits to start.
+    pub prewait_progress: Option<f32>,
     pub follow: livestage_core::cue::FollowMode,
     pub armed: bool,
     pub offset: Option<ShowTime>,
@@ -736,6 +744,15 @@ impl ShowRuntime {
     }
 
     fn execute(&mut self, ev: ControlEvent) {
+        let counter = match &ev.source {
+            ControlSource::Osc { .. } => Some(&self.show_stats.osc_rx),
+            ControlSource::WebSocket { .. } => Some(&self.show_stats.ws_rx),
+            ControlSource::Midi { .. } => Some(&self.show_stats.midi_rx),
+            _ => None,
+        };
+        if let Some(c) = counter {
+            c.fetch_add(1, Ordering::Relaxed);
+        }
         let cmd = self.panic.filter(ev.command, Instant::now());
         if !matches!(cmd, ShowCommand::RequestStatus) {
             tracing::debug!(source = ?ev.source, ?cmd, "command");
@@ -1358,6 +1375,10 @@ pub fn cue_rows(project: &livestage_core::Project, ctx: &dyn CueContext) -> Vec<
             duration: c.duration(),
             elapsed: c.elapsed(ctx),
             progress: c.progress(ctx),
+            remaining: c.state().is_active().then(|| c.remaining(ctx)).flatten(),
+            prewait_progress: (c.state() == livestage_core::CueState::PreWait && !h.pre_wait.is_zero()).then(|| {
+                (ctx.now().saturating_sub(h.runtime.go_at).as_secs_f64() / h.pre_wait.as_secs_f64()).clamp(0.0, 1.0) as f32
+            }),
             follow: h.follow,
             armed: h.armed,
             offset,

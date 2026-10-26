@@ -1,4 +1,10 @@
-//! Distraction-free cue execution table.
+//! The cue list: a high-legibility execution table.
+//!
+//! Each row shows a state icon, the number, a category badge, the name,
+//! pre-wait (a progress bar while counting down), the action column
+//! (elapsed and remaining time, a scrub bar while running), post-wait,
+//! follow and state. The selection moves with Shift+↑/↓ and follows the
+//! standby cue when ↑/↓ move it. Structure edits are locked in Live mode.
 
 use super::widgets::{fmt_dur, menu_heading, menu_item, menu_item_danger, menu_item_enabled, menu_separator, shortcut};
 use super::UiState;
@@ -30,6 +36,7 @@ const CHILD_H: f32 = 32.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Col {
+    Status,
     Number,
     Kind,
     Name,
@@ -43,6 +50,7 @@ enum Col {
 impl Col {
     fn title(self) -> &'static str {
         match self {
+            Col::Status => "",
             Col::Number => "#",
             Col::Kind => "TYPE",
             Col::Name => "NAME",
@@ -56,7 +64,8 @@ impl Col {
     /// Fixed width; `None` = takes the remaining space.
     fn width(self) -> Option<f32> {
         match self {
-            Col::Number => Some(84.0),
+            Col::Status => Some(30.0),
+            Col::Number => Some(76.0),
             Col::Kind => Some(86.0),
             Col::Name => None,
             Col::Pre => Some(88.0),
@@ -70,7 +79,7 @@ impl Col {
 
 /// Columns that fit `width`; secondary columns drop out on narrow panels.
 fn columns(width: f32) -> Vec<(Col, Rect)> {
-    let mut cols = vec![Col::Number, Col::Kind, Col::Name, Col::Pre, Col::Action, Col::Post, Col::Follow, Col::State];
+    let mut cols = vec![Col::Status, Col::Number, Col::Kind, Col::Name, Col::Pre, Col::Action, Col::Post, Col::Follow, Col::State];
     let min_name = 160.0;
     for drop in [Col::Follow, Col::Post, Col::Kind, Col::Pre] {
         let fixed: f32 = cols.iter().filter_map(|c| c.width()).sum();
@@ -81,7 +90,7 @@ fn columns(width: f32) -> Vec<(Col, Rect)> {
     }
     let fixed: f32 = cols.iter().filter_map(|c| c.width()).sum();
     let flex = (width - fixed - 12.0).max(min_name);
-    let mut x = 12.0;
+    let mut x = 8.0;
     cols.into_iter()
         .map(|c| {
             let w = c.width().unwrap_or(flex);
@@ -101,6 +110,44 @@ fn cell(p: &egui::Painter, row: Rect, col: Rect, text: impl ToString, font: Font
 /// Letter-spaced uppercase for painted captions.
 fn spaced(text: &str) -> String {
     text.to_uppercase().chars().map(|c| c.to_string()).collect::<Vec<_>>().join("\u{200A}")
+}
+
+/// The state icon: ▶ running, ❚❚ paused, ◔ pre-wait, ● standby,
+/// ■ stopped, ✓ completed (vector shapes, so no glyph depends on the font).
+fn state_icon(p: &egui::Painter, c: egui::Pos2, state: CueState, standby: bool, t: f64) {
+    use egui::{pos2, vec2, Stroke};
+    let r = 6.0;
+    match state {
+        CueState::Running => {
+            let col = theme::active();
+            p.add(egui::Shape::convex_polygon(vec![pos2(c.x - r * 0.7, c.y - r), pos2(c.x + r, c.y), pos2(c.x - r * 0.7, c.y + r)], col, Stroke::NONE));
+        }
+        CueState::Paused => {
+            let col = theme::active();
+            for dx in [-3.5, 2.0] {
+                p.rect_filled(Rect::from_min_size(pos2(c.x + dx - 0.5, c.y - r), vec2(3.0, 2.0 * r)), 1.0, col);
+            }
+        }
+        CueState::PreWait => {
+            let col = theme::active();
+            p.circle_stroke(c, r, Stroke::new(1.5, col));
+            // A sweeping hand.
+            let a = (t * 4.0) as f32;
+            p.line_segment([c, c + vec2(a.cos(), a.sin()) * (r - 2.0)], Stroke::new(1.5, col));
+        }
+        CueState::Stopped => {
+            p.rect_filled(Rect::from_center_size(c, vec2(9.0, 9.0)), 1.5, theme::stop());
+        }
+        CueState::Completed => {
+            let col = theme::text_faint();
+            p.line_segment([pos2(c.x - 5.0, c.y), pos2(c.x - 1.5, c.y + 4.0)], Stroke::new(1.8, col));
+            p.line_segment([pos2(c.x - 1.5, c.y + 4.0), pos2(c.x + 5.5, c.y - 4.5)], Stroke::new(1.8, col));
+        }
+        CueState::Standby | CueState::Idle if standby => {
+            p.circle_filled(c, 5.0, theme::standby());
+        }
+        CueState::Standby | CueState::Idle => {}
+    }
 }
 
 fn secs(t: ShowTime) -> String {
@@ -142,13 +189,17 @@ fn list_tabs(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                 }
             }
             let label = if *running { RichText::new(format!("{name}  (running)")).color(theme::active()) } else { RichText::new(name) };
-            let r = ui.selectable_label(active == Some(*id), label).on_hover_text("Double-click to rename");
+            let r = ui.selectable_label(active == Some(*id), label);
+            let r = if st.live_mode { r } else { r.on_hover_text("Double-click to rename") };
             if r.clicked() && active != Some(*id) {
                 rt.bundle.project.active_cue_list = Some(*id);
                 st.selected = None;
             }
-            if r.double_clicked() {
+            if r.double_clicked() && !st.live_mode {
                 st.renaming_list = Some((*id, name.clone()));
+            }
+            if st.live_mode {
+                continue;
             }
             r.context_menu(|ui| {
                 if ui.button("Rename").clicked() {
@@ -167,7 +218,7 @@ fn list_tabs(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                 }
             });
         }
-        if ui.small_button("+ List").clicked() {
+        if !st.live_mode && ui.small_button("+ List").clicked() {
             let n = lists.len() + 1;
             rt.add_cue_list(&format!("Cue List {n}"));
             st.selected = None;
@@ -176,22 +227,29 @@ fn list_tabs(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
 }
 
 pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
-    list_tabs(ui, rt, st);
-    toolbar(ui, rt, st);
+    ui.horizontal(|ui| {
+        list_tabs(ui, rt, st);
+    });
+    if !st.live_mode {
+        toolbar(ui, rt, st);
+    }
     ui.add_space(4.0);
+    let rows = rt.cue_rows();
+    keyboard_selection(rt, st, &rows);
 
     // Header.
     let (hdr, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), Sense::hover());
     let cols = columns(hdr.width());
     let p = ui.painter();
-    p.rect_filled(hdr, egui::CornerRadius { nw: 4, ne: 4, sw: 0, se: 0 }, theme::BG_DEEP);
-    p.hline(hdr.x_range(), hdr.bottom() - 0.5, egui::Stroke::new(1.0_f32, theme::BORDER));
+    p.rect_filled(hdr, egui::CornerRadius { nw: 4, ne: 4, sw: 0, se: 0 }, theme::bg_deep());
+    p.hline(hdr.x_range(), hdr.bottom() - 0.5, egui::Stroke::new(1.0_f32, theme::border()));
     for (c, r) in &cols {
-        cell(p, hdr, *r, spaced(c.title()), FontId::proportional(9.5), theme::TEXT_FAINT, 0.0);
+        cell(p, hdr, *r, spaced(c.title()), FontId::proportional(9.5), theme::text_faint(), 0.0);
     }
 
-    let rows = rt.cue_rows();
     let mut actions: Vec<RowAction> = Vec::new();
+    let time = ui.input(|i| i.time);
+    let mut any_waiting = false;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         // Every row spans the full width, so the columns are the same for all.
@@ -208,9 +266,9 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                 let selected = st.selected == Some(row.id);
                 let running = row.state.is_active();
                 // Alternating contrast by top-level cue (children share their parent's band).
-                let mut bg = if top_index.is_multiple_of(2) { theme::ROW_ALT } else { theme::PANEL_RAISED };
+                let mut bg = if top_index.is_multiple_of(2) { theme::row_alt() } else { theme::raised() };
                 if row.depth > 0 {
-                    bg = bg.lerp_to_gamma(theme::BG_DEEP, 0.45);
+                    bg = bg.lerp_to_gamma(theme::bg_deep(), 0.45);
                 }
                 let signal = if row.is_standby && !running { Some(theme::standby()) } else if running { Some(theme::active()) } else { None };
                 if let Some(c) = signal {
@@ -220,14 +278,14 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                 }
                 let p = ui.painter_at(rect);
                 p.rect_filled(rect, 0.0, bg);
-                p.hline(rect.x_range(), rect.bottom() - 0.5, egui::Stroke::new(1.0_f32, theme::BORDER.gamma_multiply(0.7)));
+                p.hline(rect.x_range(), rect.bottom() - 0.5, egui::Stroke::new(1.0_f32, theme::border().gamma_multiply(0.7)));
                 if let Some(c) = signal.or_else(|| theme::state_color(row.state)) {
                     let bar = Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
                     p.rect_filled(bar.expand2(egui::vec2(3.0, 0.0)).translate(egui::vec2(3.0, 0.0)), 0.0, c.gamma_multiply(0.12));
                     p.rect_filled(bar, 0.0, c);
                 }
                 if selected {
-                    p.rect_stroke(rect.shrink(0.5), 2.0, egui::Stroke::new(1.0_f32, theme::accent()), egui::StrokeKind::Inside);
+                    p.rect_stroke(rect.shrink(1.0), 2.0, egui::Stroke::new(theme::FOCUS_RING, theme::accent()), egui::StrokeKind::Inside);
                 }
                 // Running: a thin progress trace along the bottom of the row.
                 if let Some(pr) = row.progress.filter(|_| running) {
@@ -235,16 +293,20 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                     p.hline(rect.left()..=rect.left() + rect.width() * pr.clamp(0.0, 1.0), y, egui::Stroke::new(2.0_f32, theme::active().gamma_multiply(0.8)));
                 }
 
-                let text = if row.armed { theme::TEXT } else { theme::TEXT_FAINT };
+                let text = if row.armed { theme::text() } else { theme::text_faint() };
                 let indent = row.depth as f32 * 16.0;
                 for (c, r) in &cols {
                     match c {
+                        Col::Status => {
+                            any_waiting |= row.state == CueState::PreWait;
+                            state_icon(&p, egui::pos2(rect.left() + r.center().x, rect.center().y), row.state, row.is_standby && !running, time);
+                        }
                         Col::Number => {
                             if row.depth > 0 {
                                 let x = rect.left() + r.left() + indent - 9.0;
-                                p.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.center().y)], egui::Stroke::new(1.0_f32, theme::BORDER_HI));
-                                p.line_segment([egui::pos2(x, rect.center().y), egui::pos2(x + 6.0, rect.center().y)], egui::Stroke::new(1.0_f32, theme::BORDER_HI));
-                                cell(&p, rect, *r, &row.number, FontId::monospace(12.0), theme::TEXT_DIM, indent);
+                                p.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.center().y)], egui::Stroke::new(1.0_f32, theme::border_hi()));
+                                p.line_segment([egui::pos2(x, rect.center().y), egui::pos2(x + 6.0, rect.center().y)], egui::Stroke::new(1.0_f32, theme::border_hi()));
+                                cell(&p, rect, *r, &row.number, FontId::monospace(12.0), theme::text_dim(), indent);
                             } else {
                                 cell(&p, rect, *r, &row.number, FontId::monospace(16.0), text, 0.0);
                             }
@@ -253,17 +315,31 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                             let kind = [CueKind::Audio, CueKind::Video, CueKind::Timer, CueKind::Slides, CueKind::Dmx, CueKind::Control, CueKind::Timeline]
                                 .into_iter()
                                 .find(|k| k.label() == row.kind);
-                            let color = kind.map_or(theme::TEXT_DIM, theme::kind_color);
+                            let color = kind.map_or(theme::text_dim(), theme::kind_color);
                             let clip = Rect::from_min_max(egui::pos2(rect.left() + r.left(), rect.top()), egui::pos2(rect.left() + r.right() - 4.0, rect.bottom()));
-                            super::widgets::pill(&p.with_clip_rect(clip), egui::pos2(clip.left(), rect.center().y), row.kind, color.gamma_multiply(if row.armed { 1.0 } else { 0.5 }));
+                            super::widgets::badge(&p.with_clip_rect(clip), egui::pos2(clip.left(), rect.center().y), row.kind, if row.armed { color } else { color.gamma_multiply(0.45) });
                         }
                         Col::Name => cell(&p, rect, *r, &row.name, FontId::proportional(if row.depth > 0 { 13.5 } else { 15.5 }), text, indent),
+                        Col::Pre if row.prewait_progress.is_some() => {
+                            // Counting down: a bar that fills, and the time left.
+                            let f = row.prewait_progress.unwrap_or(0.0);
+                            let bar = Rect::from_min_max(
+                                egui::pos2(rect.left() + r.left(), rect.center().y - 9.0),
+                                egui::pos2(rect.left() + r.right() - 8.0, rect.center().y + 9.0),
+                            );
+                            p.rect(bar, 3.0, theme::bg_deep(), egui::Stroke::new(1.0_f32, theme::border()), egui::StrokeKind::Inside);
+                            let mut fill = bar.shrink(1.0);
+                            fill.set_width(fill.width() * f);
+                            p.rect_filled(fill, 2.0, theme::wash(theme::active(), 0.45));
+                            let left = row.pre_wait.saturating_sub(ShowTime::from_secs_f64(row.pre_wait.as_secs_f64() * f as f64));
+                            p.text(bar.center(), Align2::CENTER_CENTER, format!("-{:.1}", left.as_secs_f64()), FontId::monospace(11.5), theme::text());
+                        }
                         Col::Pre => {
                             let (v, c) = match (row.offset, row.timecode) {
-                                (Some(o), _) => (format!("@ {}", &o.to_clock_string()[3..]), theme::TEXT_DIM),
+                                (Some(o), _) => (format!("@ {}", &o.to_clock_string()[3..]), theme::text_dim()),
                                 // Timecode-triggered: the trigger replaces the pre-wait.
                                 (None, Some(tc)) => (tc.to_string(), theme::accent()),
-                                (None, None) => (secs(row.pre_wait), theme::TEXT_DIM),
+                                (None, None) => (secs(row.pre_wait), theme::text_dim()),
                             };
                             cell(&p, rect, *r, v, FontId::monospace(12.0), c, 0.0);
                         }
@@ -273,7 +349,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                                 egui::pos2(rect.left() + r.right() - 8.0, rect.center().y + 11.0),
                             );
                             if let Some(pr) = row.progress.filter(|_| running) {
-                                p.rect(ar, 3.0, theme::BG_DEEP, egui::Stroke::new(1.0_f32, theme::BORDER), egui::StrokeKind::Inside);
+                                p.rect(ar, 3.0, theme::bg_deep(), egui::Stroke::new(1.0_f32, theme::border()), egui::StrokeKind::Inside);
                                 let mut fill = ar.shrink(1.0);
                                 fill.set_width(fill.width() * pr.clamp(0.0, 1.0));
                                 p.rect_filled(fill, 2.0, theme::active().gamma_multiply(0.30));
@@ -286,24 +362,36 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                             }
                             let dur = row.detail.clone().unwrap_or_else(|| fmt_dur(row.duration));
                             let (txt, c) = if running && row.detail.is_some() {
-                                (dur, theme::TEXT)
+                                (dur, theme::text())
                             } else if running {
-                                (format!("{} / {dur}", &row.elapsed.to_clock_string()[3..]), theme::TEXT)
+                                (row.elapsed.to_clock_string()[3..].to_string(), theme::text())
                             } else if matches!(row.state, CueState::Completed | CueState::Stopped) {
-                                (format!("{} / {dur}", &row.elapsed.to_clock_string()[3..]), theme::TEXT_DIM)
+                                (format!("{} / {dur}", &row.elapsed.to_clock_string()[3..]), theme::text_dim())
                             } else {
-                                (dur, theme::TEXT_DIM)
+                                (dur, theme::text_dim())
                             };
                             cell(&p, rect, *r, txt, FontId::monospace(13.0), c, 7.0);
+                            // Running with a known length: the countdown on the right.
+                            if let Some(rem) = row.remaining.filter(|_| running && row.detail.is_none()) {
+                                let x = rect.left() + r.right() - 14.0;
+                                let warn = rem.as_secs_f64() < 10.0;
+                                p.text(
+                                    egui::pos2(x, rect.center().y),
+                                    Align2::RIGHT_CENTER,
+                                    format!("-{}", &rem.to_clock_string()[3..]),
+                                    FontId::monospace(13.0),
+                                    if warn { theme::standby() } else { theme::active() },
+                                );
+                            }
                         }
-                        Col::Post => cell(&p, rect, *r, secs(row.post_wait), FontId::monospace(12.0), theme::TEXT_DIM, 0.0),
+                        Col::Post => cell(&p, rect, *r, secs(row.post_wait), FontId::monospace(12.0), theme::text_dim(), 0.0),
                         Col::Follow => {
                             let f = match row.follow {
                                 FollowMode::None => "",
                                 FollowMode::AutoContinue => "→ cont",
                                 FollowMode::AutoFollow => "⇥ follow",
                             };
-                            cell(&p, rect, *r, f, FontId::proportional(12.0), theme::TEXT_DIM, 0.0);
+                            cell(&p, rect, *r, f, FontId::proportional(12.0), theme::text_dim(), 0.0);
                         }
                         Col::State => {
                             let (label, c) = if row.is_standby && !running {
@@ -316,7 +404,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                                 Some(c) => {
                                     super::widgets::pill(&p, at, label, c);
                                 }
-                                None => cell(&p, rect, *r, spaced(label), FontId::proportional(10.0), theme::TEXT_FAINT, 0.0),
+                                None => cell(&p, rect, *r, spaced(label), FontId::proportional(10.0), theme::text_faint(), 0.0),
                             }
                         }
                     }
@@ -326,22 +414,56 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             if resp.clicked() || resp.secondary_clicked() {
                 st.selected = Some(row.id);
             }
+            if st.grid_scroll_to == Some(row.id) {
+                ui.scroll_to_rect(rect, None);
+                st.grid_scroll_to = None;
+            }
             if resp.double_clicked() && row.depth == 0 {
                 actions.push(RowAction::Standby(row.number.clone()));
             }
             let resp = resp.on_hover_text("Click: select · Double-click: set as next · Right-click: actions");
-            resp.context_menu(|ui| row_menu(ui, row, &mut actions));
+            let live = st.live_mode;
+            resp.context_menu(|ui| row_menu(ui, row, live, &mut actions));
         }
         if rows.is_empty() {
             ui.add_space(30.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new("No cues yet. Use \"+ Add cue\" or drop media files onto the window.").color(theme::TEXT_DIM));
+                ui.label(RichText::new("No cues yet. Use \"+ Add cue\" or drop media files onto the window.").color(theme::text_dim()));
             });
         }
     });
+    if any_waiting {
+        ui.ctx().request_repaint();
+    }
     for a in actions {
         apply(rt, st, a);
     }
+}
+
+/// Shift+↑/↓ move the selection through the rows; when ↑/↓ moved the
+/// standby cue (shortcuts), the selection follows it.
+fn keyboard_selection(rt: &UiRuntime, st: &mut UiState, rows: &[CueRow]) {
+    let step = std::mem::take(&mut st.select_step);
+    if step != 0 && !rows.is_empty() {
+        let at = st.selected.and_then(|id| rows.iter().position(|r| r.id == id));
+        let next = match at {
+            None => 0,
+            Some(i) => (i as i64 + step as i64).clamp(0, rows.len() as i64 - 1) as usize,
+        };
+        if let Some(r) = rows.get(next) {
+            st.selected = Some(r.id);
+            st.grid_scroll_to = Some(r.id);
+        }
+    }
+    let standby = rt.bundle.project.active_list().and_then(|l| l.standby_cue()).map(|c| c.header().id);
+    if st.select_follows_standby && standby != st.last_standby {
+        st.select_follows_standby = false;
+        if let Some(id) = standby {
+            st.selected = Some(id);
+            st.grid_scroll_to = Some(id);
+        }
+    }
+    st.last_standby = standby;
 }
 
 /// Click / drag on a running cue's progress bar to seek. Throttled like the
@@ -351,9 +473,9 @@ fn scrub_cell(ui: &mut Ui, p: &egui::Painter, bar: Rect, row: &CueRow, duration:
     let resp = ui.interact(bar, id, Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
     let to_time = |x: f32| ShowTime::from_secs_f64(((x - bar.left()) / bar.width()).clamp(0.0, 1.0) as f64 * duration.as_secs_f64());
     if let Some(h) = resp.hover_pos() {
-        p.line_segment([egui::pos2(h.x, bar.top()), egui::pos2(h.x, bar.bottom())], egui::Stroke::new(1.5_f32, theme::TEXT));
+        p.line_segment([egui::pos2(h.x, bar.top()), egui::pos2(h.x, bar.bottom())], egui::Stroke::new(1.5_f32, theme::text()));
         let t = to_time(h.x);
-        p.text(egui::pos2(h.x + 4.0, bar.top() - 1.0), Align2::LEFT_BOTTOM, &t.to_clock_string()[3..], FontId::monospace(11.0), theme::TEXT);
+        p.text(egui::pos2(h.x + 4.0, bar.top() - 1.0), Align2::LEFT_BOTTOM, &t.to_clock_string()[3..], FontId::monospace(11.0), theme::text());
     }
     let pos = resp.interact_pointer_pos().map(|q| to_time(q.x))?;
     let now = ui.input(|i| i.time);
@@ -366,7 +488,7 @@ fn scrub_cell(ui: &mut Ui, p: &egui::Painter, bar: Rect, row: &CueRow, duration:
 }
 
 /// Right-click menu of a cue row.
-fn row_menu(ui: &mut Ui, row: &CueRow, actions: &mut Vec<RowAction>) {
+fn row_menu(ui: &mut Ui, row: &CueRow, live: bool, actions: &mut Vec<RowAction>) {
     ui.set_min_width(230.0);
     menu_heading(ui, &format!("Cue {} · {}", row.number, row.kind));
     let top = row.depth == 0;
@@ -407,6 +529,12 @@ fn row_menu(ui: &mut Ui, row: &CueRow, actions: &mut Vec<RowAction>) {
         }
     }
     menu_separator(ui);
+    if live {
+        if menu_item(ui, "Copy cue number", None).clicked() {
+            ui.ctx().copy_text(row.number.clone());
+        }
+        return;
+    }
     if menu_item(ui, if row.armed { "Disarm (skip on GO)" } else { "Arm" }, None).clicked() {
         actions.push(RowAction::ToggleArm(row.id));
     }

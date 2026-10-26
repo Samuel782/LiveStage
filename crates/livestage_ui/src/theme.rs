@@ -1,47 +1,241 @@
-//! "Obsidian Telemetry" theme: carbon / obsidian surfaces, hairline
-//! structure, tabular readouts and three meaningful signal colours
-//! (Cyberpunk Amber = standby, Laser Emerald = active, Deep Crimson =
-//! panic / errors). Everything else stays neutral so those three read
-//! instantly from across a dark booth.
+//! Design system: native-feeling dark and light appearances (macOS HIG /
+//! Windows Fluent), one set of tokens for every panel.
+//!
+//! * **Appearance** follows the OS by default ([`Appearance::System`]) and
+//!   switches live when the OS does; Dark and Light can be forced.
+//! * **Colours** are read through functions ([`text`], [`border`], ...) so
+//!   they follow the appearance. Nothing outside this module hard-codes a
+//!   surface or text colour.
+//! * **Signals** keep their meaning in both appearances: standby amber,
+//!   active / GO green, stop red. Cue categories have fixed badge colours
+//!   (audio blue, video purple, DMX amber, control green).
+//! * **Geometry**: 4 px control radius, 1 px hairlines, an 8 px spacing
+//!   grid, 2 px focus rings in the accent colour.
+//! * **Type**: the platform UI face (SF Pro on macOS, Segoe UI on Windows)
+//!   and its monospace companion for every clock and meter readout, so
+//!   figures never jitter.
 
 use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Visuals};
 use livestage_core::state::{palette, CueState, Rgb};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-// ---------------------------------------------------------------- surfaces --
+// ------------------------------------------------------------------ tokens --
 
-/// Deepest well: command deck, tab bar, text fields, meters.
-pub const BG_DEEP: Color32 = Color32::from_rgb(0x0A, 0x0A, 0x0C);
-/// Application background behind panels.
-pub const BG: Color32 = Color32::from_rgb(0x0D, 0x0D, 0x10);
-/// Recessed surfaces inside panels (grid header, tracks, wells).
-pub const PANEL_RECESSED: Color32 = Color32::from_rgb(0x0F, 0x0F, 0x12);
-/// Panel bodies.
-pub const PANEL_RAISED: Color32 = Color32::from_rgb(0x14, 0x14, 0x18);
-/// Alternate grid rows and raised controls.
-pub const ROW_ALT: Color32 = Color32::from_rgb(0x18, 0x18, 0x1D);
-/// Control faces (keys, buttons).
-pub const CONTROL: Color32 = Color32::from_rgb(0x1C, 0x1C, 0x23);
-pub const CONTROL_HOVER: Color32 = Color32::from_rgb(0x25, 0x25, 0x2E);
-pub const CONTROL_ACTIVE: Color32 = Color32::from_rgb(0x2D, 0x2D, 0x38);
+/// Control corner radius (buttons, fields, badges' boxes).
+pub const RADIUS: u8 = 4;
+/// Window and popup corner radius.
+pub const WINDOW_RADIUS: u8 = 8;
+/// Base spacing unit: layouts use multiples of it.
+pub const GRID: f32 = 8.0;
+/// Hairline width.
+pub const HAIRLINE: f32 = 1.0;
+/// Keyboard focus ring width.
+pub const FOCUS_RING: f32 = 2.0;
+/// Standard control height.
+pub const CONTROL_HEIGHT: f32 = 28.0;
 
-// ------------------------------------------------------------------- lines --
+// -------------------------------------------------------------- appearance --
 
-/// Hairline structure.
-pub const BORDER: Color32 = Color32::from_rgb(0x26, 0x26, 0x2F);
-/// Brighter hairline: module brackets, focused edges.
-pub const BORDER_HI: Color32 = Color32::from_rgb(0x3A, 0x3A, 0x47);
+/// Light / dark choice (per machine, in the preferences).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum Appearance {
+    /// Follow the operating system.
+    #[default]
+    System,
+    Dark,
+    Light,
+}
 
-// -------------------------------------------------------------------- text --
+impl Appearance {
+    pub const ALL: [Appearance; 3] = [Appearance::System, Appearance::Dark, Appearance::Light];
+    pub fn label(self) -> &'static str {
+        match self {
+            Appearance::System => "Match system",
+            Appearance::Dark => "Dark",
+            Appearance::Light => "Light",
+        }
+    }
+}
 
-pub const TEXT: Color32 = Color32::from_rgb(0xEC, 0xEE, 0xF4);
-pub const TEXT_DIM: Color32 = Color32::from_rgb(0x8C, 0x8F, 0x9E);
-pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x58, 0x5B, 0x69);
+static APPEARANCE: AtomicU8 = AtomicU8::new(0);
+/// The palette in force (resolved from the appearance and the OS).
+static LIGHT: AtomicBool = AtomicBool::new(false);
+
+pub fn set_appearance(a: Appearance) {
+    let i = Appearance::ALL.iter().position(|x| *x == a).unwrap_or(0) as u8;
+    APPEARANCE.store(i, Ordering::Relaxed);
+}
+
+pub fn appearance() -> Appearance {
+    Appearance::ALL[APPEARANCE.load(Ordering::Relaxed) as usize % Appearance::ALL.len()]
+}
+
+/// The light palette is in force.
+pub fn is_light() -> bool {
+    LIGHT.load(Ordering::Relaxed)
+}
+
+fn wants_light(ctx: &egui::Context) -> bool {
+    match appearance() {
+        Appearance::Light => true,
+        Appearance::Dark => false,
+        Appearance::System => ctx.system_theme() == Some(egui::Theme::Light),
+    }
+}
+
+/// Re-applies the theme when the OS appearance (or the preference) changed
+/// since the last frame. Cheap; call once per frame.
+pub fn sync(ctx: &egui::Context) {
+    if wants_light(ctx) != is_light() {
+        apply(ctx);
+    }
+}
+
+// ----------------------------------------------------------------- palette --
+
+struct Palette {
+    /// Deepest well: header deck, tab strip, text fields, meters.
+    bg_deep: Color32,
+    /// Window background behind panels.
+    bg: Color32,
+    /// Recessed surfaces inside panels (table header, tracks, wells).
+    recessed: Color32,
+    /// Panel bodies.
+    raised: Color32,
+    /// Alternate table rows.
+    row_alt: Color32,
+    /// Control faces.
+    control: Color32,
+    control_hover: Color32,
+    control_active: Color32,
+    border: Color32,
+    border_hi: Color32,
+    text: Color32,
+    text_dim: Color32,
+    text_faint: Color32,
+    menu_fill: Color32,
+    shadow: Color32,
+    standby: Color32,
+    active: Color32,
+    stop: Color32,
+    stop_text: Color32,
+}
+
+const DARK: Palette = Palette {
+    bg_deep: Color32::from_rgb(0x0B, 0x0B, 0x0E),
+    bg: Color32::from_rgb(0x10, 0x10, 0x13),
+    recessed: Color32::from_rgb(0x13, 0x13, 0x17),
+    raised: Color32::from_rgb(0x18, 0x18, 0x1C),
+    row_alt: Color32::from_rgb(0x1C, 0x1C, 0x21),
+    control: Color32::from_rgb(0x24, 0x24, 0x2A),
+    control_hover: Color32::from_rgb(0x2E, 0x2E, 0x36),
+    control_active: Color32::from_rgb(0x38, 0x38, 0x42),
+    border: Color32::from_rgb(0x2A, 0x2A, 0x32),
+    border_hi: Color32::from_rgb(0x44, 0x44, 0x50),
+    text: Color32::from_rgb(0xF2, 0xF2, 0xF7),
+    text_dim: Color32::from_rgb(0x9A, 0x9A, 0xA4),
+    text_faint: Color32::from_rgb(0x63, 0x63, 0x6E),
+    menu_fill: Color32::from_rgb(0x1F, 0x1F, 0x25),
+    shadow: Color32::from_black_alpha(160),
+    standby: Color32::from_rgb(palette::STANDBY.0, palette::STANDBY.1, palette::STANDBY.2),
+    active: Color32::from_rgb(palette::ACTIVE.0, palette::ACTIVE.1, palette::ACTIVE.2),
+    stop: Color32::from_rgb(palette::STOP.0, palette::STOP.1, palette::STOP.2),
+    stop_text: Color32::from_rgb(0xFF, 0x4D, 0x6A),
+};
+
+const LIGHT_PALETTE: Palette = Palette {
+    bg_deep: Color32::from_rgb(0xE8, 0xE8, 0xEC),
+    bg: Color32::from_rgb(0xEF, 0xEF, 0xF2),
+    recessed: Color32::from_rgb(0xF4, 0xF4, 0xF6),
+    raised: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+    row_alt: Color32::from_rgb(0xF6, 0xF6, 0xF8),
+    control: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+    control_hover: Color32::from_rgb(0xF2, 0xF2, 0xF5),
+    control_active: Color32::from_rgb(0xE4, 0xE4, 0xE9),
+    border: Color32::from_rgb(0xD4, 0xD4, 0xDA),
+    border_hi: Color32::from_rgb(0xB0, 0xB0, 0xBA),
+    text: Color32::from_rgb(0x1C, 0x1C, 0x1E),
+    text_dim: Color32::from_rgb(0x5E, 0x5E, 0x66),
+    text_faint: Color32::from_rgb(0x96, 0x96, 0x9E),
+    menu_fill: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+    shadow: Color32::from_black_alpha(60),
+    // Deeper signal shades: the dark-mode neons are unreadable on white.
+    standby: Color32::from_rgb(0xB4, 0x5F, 0x06),
+    active: Color32::from_rgb(0x04, 0x84, 0x5C),
+    stop: Color32::from_rgb(0xC8, 0x10, 0x34),
+    stop_text: Color32::from_rgb(0xB9, 0x1C, 0x1C),
+};
+
+fn p() -> &'static Palette {
+    if is_light() {
+        &LIGHT_PALETTE
+    } else {
+        &DARK
+    }
+}
+
+pub fn bg_deep() -> Color32 {
+    p().bg_deep
+}
+pub fn bg() -> Color32 {
+    p().bg
+}
+pub fn recessed() -> Color32 {
+    p().recessed
+}
+pub fn raised() -> Color32 {
+    p().raised
+}
+pub fn row_alt() -> Color32 {
+    p().row_alt
+}
+pub fn control() -> Color32 {
+    p().control
+}
+pub fn control_hover() -> Color32 {
+    p().control_hover
+}
+pub fn control_active() -> Color32 {
+    p().control_active
+}
+pub fn border() -> Color32 {
+    p().border
+}
+pub fn border_hi() -> Color32 {
+    p().border_hi
+}
+pub fn text() -> Color32 {
+    p().text
+}
+pub fn text_dim() -> Color32 {
+    p().text_dim
+}
+pub fn text_faint() -> Color32 {
+    p().text_faint
+}
+pub fn menu_fill() -> Color32 {
+    p().menu_fill
+}
+/// Scrim over content (disabled meters, inactive channels).
+pub fn scrim() -> Color32 {
+    if is_light() {
+        Color32::from_white_alpha(170)
+    } else {
+        Color32::from_black_alpha(160)
+    }
+}
+/// Hairline stroke.
+pub fn hairline() -> Stroke {
+    Stroke::new(HAIRLINE, border())
+}
+
+// ------------------------------------------------------------------ accent --
 
 /// Operator-selectable UI accent (selection, focus, menu highlight). Cue
 /// state colours (standby / active / GO / stop) never change: they carry meaning.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Accent {
-    /// Telemetry cyan: distinct from every state colour.
+    /// Cyan: distinct from every state colour.
     #[default]
     Ice,
     Emerald,
@@ -63,97 +257,167 @@ impl Accent {
             Accent::Rose => "Rose",
         }
     }
-    /// (bright, menu highlight, dim selection)
-    fn colors(self) -> (Color32, Color32, Color32) {
+    /// (bright, deep) shades.
+    fn shades(self) -> (Color32, Color32) {
         match self {
-            Accent::Ice => (Color32::from_rgb(0x38, 0xC8, 0xFF), Color32::from_rgb(0x15, 0x6E, 0x96), Color32::from_rgb(0x10, 0x31, 0x44)),
-            Accent::Emerald => (Color32::from_rgb(0x00, 0xC8, 0x80), Color32::from_rgb(0x0B, 0x6A, 0x48), Color32::from_rgb(0x0B, 0x36, 0x28)),
-            Accent::Blue => (Color32::from_rgb(0x4C, 0x8D, 0xFF), Color32::from_rgb(0x1E, 0x4F, 0xB0), Color32::from_rgb(0x15, 0x29, 0x55)),
-            Accent::Violet => (Color32::from_rgb(0xA2, 0x7B, 0xFF), Color32::from_rgb(0x5E, 0x3F, 0xB4), Color32::from_rgb(0x2F, 0x22, 0x55)),
-            Accent::Amber => (Color32::from_rgb(0xFF, 0xB0, 0x20), Color32::from_rgb(0x9A, 0x66, 0x00), Color32::from_rgb(0x48, 0x33, 0x08)),
-            Accent::Rose => (Color32::from_rgb(0xFF, 0x5C, 0x8A), Color32::from_rgb(0xA8, 0x2E, 0x55), Color32::from_rgb(0x4E, 0x1A, 0x2D)),
+            Accent::Ice => (Color32::from_rgb(0x38, 0xC8, 0xFF), Color32::from_rgb(0x0A, 0x7A, 0xB0)),
+            Accent::Emerald => (Color32::from_rgb(0x00, 0xC8, 0x80), Color32::from_rgb(0x05, 0x7A, 0x55)),
+            Accent::Blue => (Color32::from_rgb(0x4C, 0x8D, 0xFF), Color32::from_rgb(0x1D, 0x5B, 0xD8)),
+            Accent::Violet => (Color32::from_rgb(0xA2, 0x7B, 0xFF), Color32::from_rgb(0x6D, 0x3F, 0xD0)),
+            Accent::Amber => (Color32::from_rgb(0xFF, 0xB0, 0x20), Color32::from_rgb(0xA3, 0x5E, 0x00)),
+            Accent::Rose => (Color32::from_rgb(0xFF, 0x5C, 0x8A), Color32::from_rgb(0xBE, 0x2A, 0x58)),
         }
+    }
+    /// The swatch shown in Settings.
+    pub fn swatch(self) -> Color32 {
+        self.shades().0
     }
 }
 
-static ACCENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static ACCENT: AtomicU8 = AtomicU8::new(0);
 
 pub fn set_accent(a: Accent) {
     let i = Accent::ALL.iter().position(|x| *x == a).unwrap_or(0) as u8;
-    ACCENT.store(i, std::sync::atomic::Ordering::Relaxed);
+    ACCENT.store(i, Ordering::Relaxed);
 }
 pub fn current_accent() -> Accent {
-    Accent::ALL[ACCENT.load(std::sync::atomic::Ordering::Relaxed) as usize % Accent::ALL.len()]
+    Accent::ALL[ACCENT.load(Ordering::Relaxed) as usize % Accent::ALL.len()]
 }
-/// Bright accent (focus outlines, active tab marker, links).
+/// Focus rings, active tab marker, links.
 pub fn accent() -> Color32 {
-    current_accent().colors().0
+    let (bright, deep) = current_accent().shades();
+    if is_light() {
+        deep
+    } else {
+        bright
+    }
 }
-/// Menu row highlight.
+/// Menu row highlight (white text on it).
 pub fn accent_menu() -> Color32 {
-    current_accent().colors().1
+    current_accent().shades().1
 }
 /// Selected rows / text selection.
 pub fn accent_dim() -> Color32 {
-    current_accent().colors().2
+    let (bright, deep) = current_accent().shades();
+    if is_light() {
+        Color32::WHITE.lerp_to_gamma(bright, 0.22)
+    } else {
+        Color32::BLACK.lerp_to_gamma(deep, 0.45)
+    }
 }
-/// Popup menus: slightly lifted from panels, hairline border.
-pub const MENU_FILL: Color32 = Color32::from_rgb(0x17, 0x17, 0x1D);
-pub const MENU_SEPARATOR: Color32 = BORDER;
+
+// ----------------------------------------------------------------- signals --
 
 pub fn rgb(c: Rgb) -> Color32 {
     Color32::from_rgb(c.0, c.1, c.2)
 }
-/// Cyberpunk Amber.
+/// Standby amber.
 pub fn standby() -> Color32 {
-    rgb(palette::STANDBY)
+    p().standby
 }
-/// Laser Emerald.
+/// Active green.
 pub fn active() -> Color32 {
-    rgb(palette::ACTIVE)
+    p().active
 }
+/// The GO key's face (the same in both appearances: it is a lit key).
 pub fn go() -> Color32 {
     rgb(palette::GO)
 }
-/// Deep Crimson.
+/// Stop / panic / errors.
 pub fn stop() -> Color32 {
-    rgb(palette::STOP)
+    p().stop
 }
-/// Crimson lifted for text on dark surfaces (the fill colour is too deep to read small).
+/// Stop red for small text (the fill shade is too deep to read small on dark).
 pub fn stop_text() -> Color32 {
-    Color32::from_rgb(0xFF, 0x4D, 0x6A)
+    p().stop_text
 }
 
-/// Cue-type colours: distinct from each other and from the three state
-/// signals, so a type tag never reads as standby / active / panic.
+/// Cue-category badge colours.
+pub mod category {
+    use egui::Color32;
+    /// Deep blue `#2563EB`.
+    pub const AUDIO: Color32 = Color32::from_rgb(0x25, 0x63, 0xEB);
+    /// Vivid purple `#9333EA`.
+    pub const VIDEO: Color32 = Color32::from_rgb(0x93, 0x33, 0xEA);
+    /// Amber `#D97706`.
+    pub const DMX: Color32 = Color32::from_rgb(0xD9, 0x77, 0x06);
+    /// Emerald `#059669`.
+    pub const CONTROL: Color32 = Color32::from_rgb(0x05, 0x96, 0x69);
+    /// Presentations: pink, next to video.
+    pub const SLIDES: Color32 = Color32::from_rgb(0xDB, 0x27, 0x77);
+    /// Timers: slate.
+    pub const TIMER: Color32 = Color32::from_rgb(0x64, 0x74, 0x8B);
+    /// Timelines: cyan.
+    pub const TIMELINE: Color32 = Color32::from_rgb(0x08, 0x91, 0xB2);
+}
+
+/// Badge colour of a cue category.
 pub fn kind_color(k: livestage_core::cue::CueKind) -> Color32 {
     use livestage_core::cue::CueKind;
     match k {
-        CueKind::Audio => Color32::from_rgb(0x4C, 0x8D, 0xFF),
-        CueKind::Video => Color32::from_rgb(0xA2, 0x7B, 0xFF),
-        CueKind::Slides => Color32::from_rgb(0xE0, 0x7B, 0xD0),
-        CueKind::Timer => Color32::from_rgb(0xC9, 0xD1, 0xDE),
-        CueKind::Dmx => Color32::from_rgb(0x47, 0xC2, 0xB5),
-        CueKind::Control => Color32::from_rgb(0x8A, 0x8F, 0xA3),
-        CueKind::Timeline => Color32::from_rgb(0xD4, 0xA3, 0x73),
+        CueKind::Audio => category::AUDIO,
+        CueKind::Video => category::VIDEO,
+        CueKind::Slides => category::SLIDES,
+        CueKind::Timer => category::TIMER,
+        CueKind::Dmx => category::DMX,
+        CueKind::Control => category::CONTROL,
+        CueKind::Timeline => category::TIMELINE,
     }
 }
 
-pub fn state_color(s: CueState) -> Option<Color32> {
-    s.color().map(rgb)
+/// Text colour with the most contrast on `fill` (black or white).
+pub fn on(fill: Color32) -> Color32 {
+    let lin = |c: u8| {
+        let c = c as f32 / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let l = 0.2126 * lin(fill.r()) + 0.7152 * lin(fill.g()) + 0.0722 * lin(fill.b());
+    // Contrast against white vs black: (1.05) / (l + 0.05) vs (l + 0.05) / 0.05.
+    if 1.05 / (l + 0.05) >= (l + 0.05) / 0.05 {
+        Color32::WHITE
+    } else {
+        Color32::from_rgb(0x11, 0x11, 0x14)
+    }
 }
 
-/// A signal colour as a translucent wash over a dark surface.
+/// Colour of a cue state (none for idle / completed).
+pub fn state_color(s: CueState) -> Option<Color32> {
+    match s {
+        CueState::Standby => Some(standby()),
+        CueState::PreWait | CueState::Running | CueState::Paused => Some(active()),
+        CueState::Stopped => Some(stop()),
+        CueState::Idle | CueState::Completed => None,
+    }
+}
+
+/// A signal colour as a translucent wash over the current surfaces.
 pub fn wash(c: Color32, strength: f32) -> Color32 {
     c.gamma_multiply(strength)
 }
 
 // ------------------------------------------------------------------- fonts --
 
-/// Platform UI faces, tried in order (crisp system sans + monospace with
-/// tabular figures). egui's bundled faces stay as fallbacks.
-const SANS: &[&str] = &["/System/Library/Fonts/SFNS.ttf", "C:\\Windows\\Fonts\\segoeui.ttf", "/usr/share/fonts/truetype/inter/Inter-Regular.ttf"];
-const MONO: &[&str] = &["/System/Library/Fonts/SFNSMono.ttf", "C:\\Windows\\Fonts\\consola.ttf", "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf"];
+/// Platform UI faces, tried in order (Segoe UI Variable is Windows 11's).
+/// egui's bundled faces stay as fallbacks.
+const SANS: &[&str] = &[
+    "/System/Library/Fonts/SFNS.ttf",
+    "C:\\Windows\\Fonts\\SegUIVar.ttf",
+    "C:\\Windows\\Fonts\\segoeui.ttf",
+    "/usr/share/fonts/truetype/inter/Inter-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+];
+/// Fixed-width companions for clocks, meters and tabular figures.
+const MONO: &[&str] = &[
+    "/System/Library/Fonts/SFNSMono.ttf",
+    "C:\\Windows\\Fonts\\CascadiaMono.ttf",
+    "C:\\Windows\\Fonts\\consola.ttf",
+    "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+];
 
 fn first_font(paths: &[&str]) -> Option<Vec<u8>> {
     paths.iter().find_map(|p| std::fs::read(p).ok())
@@ -186,107 +450,204 @@ fn install_fonts(ctx: &egui::Context) {
     ctx.data_mut(|d| d.insert_temp(flag, true));
 }
 
+/// Type scale.
+pub mod type_scale {
+    pub const SMALL: f32 = 11.5;
+    pub const BODY: f32 = 13.0;
+    pub const SUBHEAD: f32 = 15.0;
+    pub const HEADING: f32 = 17.0;
+}
+
+// ------------------------------------------------------------------- apply --
+
+/// Builds and installs the visuals for the current appearance.
 pub fn apply(ctx: &egui::Context) {
     install_fonts(ctx);
-    let mut v = Visuals::dark();
-    v.override_text_color = Some(TEXT);
-    v.panel_fill = PANEL_RAISED;
-    v.window_fill = MENU_FILL;
-    v.extreme_bg_color = BG_DEEP;
-    v.faint_bg_color = ROW_ALT;
-    v.code_bg_color = BG_DEEP;
-    v.window_stroke = Stroke::new(1.0_f32, BORDER_HI);
-    v.window_corner_radius = CornerRadius::same(8);
-    v.window_shadow = egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: Color32::from_black_alpha(170) };
+    let light = wants_light(ctx);
+    LIGHT.store(light, Ordering::Relaxed);
+    let mut v = if light { Visuals::light() } else { Visuals::dark() };
+    v.override_text_color = Some(text());
+    v.panel_fill = raised();
+    v.window_fill = menu_fill();
+    v.extreme_bg_color = if light { Color32::WHITE } else { bg_deep() };
+    v.text_edit_bg_color = Some(if light { Color32::WHITE } else { bg_deep() });
+    v.faint_bg_color = row_alt();
+    v.code_bg_color = recessed();
+    v.window_stroke = Stroke::new(HAIRLINE, border_hi());
+    v.window_corner_radius = CornerRadius::same(WINDOW_RADIUS);
+    v.menu_corner_radius = CornerRadius::same(WINDOW_RADIUS);
+    v.window_shadow = egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: p().shadow };
+    v.popup_shadow = egui::Shadow { offset: [0, 6], blur: 18, spread: 0, color: p().shadow };
+    // Selection and keyboard focus: the accent, 2 px.
     v.selection.bg_fill = accent_dim();
-    v.selection.stroke = Stroke::new(1.0_f32, accent());
+    v.selection.stroke = Stroke::new(FOCUS_RING, accent());
     v.hyperlink_color = accent();
     v.warn_fg_color = standby();
     v.error_fg_color = stop_text();
     v.striped = true;
-    let r = CornerRadius::same(4);
+    v.slider_trailing_fill = true;
+    v.handle_shape = egui::style::HandleShape::Circle;
+    v.indent_has_left_vline = false;
+    let r = CornerRadius::same(RADIUS);
     for w in [&mut v.widgets.noninteractive, &mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
         w.corner_radius = r;
         w.expansion = 0.0;
     }
-    v.widgets.noninteractive.bg_fill = PANEL_RAISED;
-    v.widgets.noninteractive.weak_bg_fill = PANEL_RAISED;
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, BORDER);
-    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT_DIM);
-    // Controls: a defined face with a hairline edge, brightening on hover,
-    // accent edge while pressed.
-    v.widgets.inactive.bg_fill = CONTROL;
-    v.widgets.inactive.weak_bg_fill = CONTROL;
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, BORDER);
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT);
-    v.widgets.hovered.bg_fill = CONTROL_HOVER;
-    v.widgets.hovered.weak_bg_fill = CONTROL_HOVER;
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, BORDER_HI);
-    v.widgets.hovered.fg_stroke = Stroke::new(1.5_f32, TEXT);
-    v.widgets.active.bg_fill = CONTROL_ACTIVE;
-    v.widgets.active.weak_bg_fill = CONTROL_ACTIVE;
-    v.widgets.active.bg_stroke = Stroke::new(1.0_f32, accent());
-    v.widgets.active.fg_stroke = Stroke::new(1.5_f32, TEXT);
-    v.widgets.open.bg_fill = CONTROL_ACTIVE;
-    v.widgets.open.weak_bg_fill = CONTROL_ACTIVE;
-    v.widgets.open.bg_stroke = Stroke::new(1.0_f32, BORDER_HI);
-    v.menu_corner_radius = CornerRadius::same(8);
-    v.popup_shadow = egui::Shadow { offset: [0, 8], blur: 22, spread: 0, color: Color32::from_black_alpha(170) };
-    v.slider_trailing_fill = true;
-    v.handle_shape = egui::style::HandleShape::Rect { aspect_ratio: 0.55 };
-    ctx.set_visuals(v);
+    v.widgets.noninteractive.bg_fill = raised();
+    v.widgets.noninteractive.weak_bg_fill = raised();
+    v.widgets.noninteractive.bg_stroke = hairline();
+    v.widgets.noninteractive.fg_stroke = Stroke::new(HAIRLINE, text_dim());
+    // Controls: a defined face with a hairline edge, a lighter face on
+    // hover, and the accent edge while pressed.
+    v.widgets.inactive.bg_fill = control();
+    v.widgets.inactive.weak_bg_fill = control();
+    v.widgets.inactive.bg_stroke = Stroke::new(HAIRLINE, if light { border_hi() } else { border() });
+    v.widgets.inactive.fg_stroke = Stroke::new(HAIRLINE, text());
+    v.widgets.hovered.bg_fill = control_hover();
+    v.widgets.hovered.weak_bg_fill = control_hover();
+    v.widgets.hovered.bg_stroke = Stroke::new(HAIRLINE, border_hi());
+    v.widgets.hovered.fg_stroke = Stroke::new(1.5, text());
+    v.widgets.active.bg_fill = control_active();
+    v.widgets.active.weak_bg_fill = control_active();
+    v.widgets.active.bg_stroke = Stroke::new(HAIRLINE, accent());
+    v.widgets.active.fg_stroke = Stroke::new(1.5, text());
+    v.widgets.open.bg_fill = control_active();
+    v.widgets.open.weak_bg_fill = control_active();
+    v.widgets.open.bg_stroke = Stroke::new(HAIRLINE, border_hi());
+    ctx.set_visuals_of(if light { egui::Theme::Light } else { egui::Theme::Dark }, v);
+    // Crisp at any scale (Retina, 125 / 150 % Windows, mixed-DPI setups):
+    // text, rectangles and straight lines land on whole physical pixels and
+    // edges are anti-aliased over exactly one pixel. egui-winit feeds the
+    // window's scale factor (and its changes when the window moves between
+    // monitors), so everything is laid out in points and rasterised at the
+    // display's native resolution.
+    ctx.tessellation_options_mut(|t| {
+        t.feathering = true;
+        t.feathering_size_in_pixels = 1.0;
+        t.round_text_to_pixels = true;
+        t.round_rects_to_pixels = true;
+        t.round_line_segments_to_pixels = true;
+        t.prerasterized_discs = true;
+    });
+    ctx.set_theme(if light { egui::Theme::Light } else { egui::Theme::Dark });
 
+    use type_scale::*;
     ctx.all_styles_mut(|s| {
-        s.text_styles.insert(TextStyle::Small, FontId::new(11.0, FontFamily::Proportional));
-        s.text_styles.insert(TextStyle::Body, FontId::new(13.5, FontFamily::Proportional));
-        s.text_styles.insert(TextStyle::Button, FontId::new(13.0, FontFamily::Proportional));
-        s.text_styles.insert(TextStyle::Heading, FontId::new(17.0, FontFamily::Proportional));
-        s.text_styles.insert(TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace));
-        s.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        s.spacing.button_padding = egui::vec2(11.0, 5.0);
-        s.spacing.interact_size.y = 26.0;
-        s.spacing.menu_margin = egui::Margin::same(6);
+        s.text_styles.insert(TextStyle::Small, FontId::new(SMALL, FontFamily::Proportional));
+        s.text_styles.insert(TextStyle::Body, FontId::new(BODY, FontFamily::Proportional));
+        s.text_styles.insert(TextStyle::Button, FontId::new(BODY, FontFamily::Proportional));
+        s.text_styles.insert(TextStyle::Heading, FontId::new(HEADING, FontFamily::Proportional));
+        s.text_styles.insert(TextStyle::Monospace, FontId::new(BODY, FontFamily::Monospace));
+        s.spacing.item_spacing = egui::vec2(GRID, GRID * 0.75);
+        s.spacing.button_padding = egui::vec2(GRID * 1.5, GRID * 0.5);
+        s.spacing.interact_size.y = CONTROL_HEIGHT - 4.0;
+        s.spacing.menu_margin = egui::Margin::same(GRID as i8 * 3 / 4);
         s.spacing.menu_spacing = 2.0;
         s.spacing.slider_rail_height = 4.0;
-        s.spacing.window_margin = egui::Margin::same(14);
+        s.spacing.window_margin = egui::Margin::same(GRID as i8 * 2);
+        s.spacing.icon_width = 16.0;
+        s.spacing.combo_width = GRID * 20.0;
+        s.interaction.tooltip_delay = 0.4;
     });
 }
 
-/// Large tabular figures for clocks and timers.
+/// Fixed-width figures for clocks and timers.
 pub fn clock_font(size: f32) -> FontId {
     FontId::new(size, FontFamily::Monospace)
 }
 
-/// Dock styling: obsidian tab strip, panel bodies, accent bar over the active tab.
+/// Dock styling: tab strip on the deep surface, panel bodies raised, an
+/// accent bar under the active tab.
 pub fn dock_style(base: &egui::Style) -> egui_dock::Style {
     let mut s = egui_dock::Style::from_egui(base);
-    s.tab_bar.bg_fill = BG_DEEP;
-    s.tab_bar.height = 30.0;
-    s.tab_bar.hline_color = BORDER;
+    s.tab_bar.bg_fill = bg_deep();
+    s.tab_bar.height = 32.0;
+    s.tab_bar.hline_color = border();
     s.tab_bar.corner_radius = CornerRadius::ZERO;
     s.tab.hline_below_active_tab_name = true;
-    s.tab.minimum_width = Some(84.0);
-    s.tab.tab_body.bg_fill = PANEL_RAISED;
-    s.tab.tab_body.inner_margin = egui::Margin::same(10);
-    s.tab.tab_body.stroke = Stroke::new(1.0_f32, BORDER);
+    s.tab.minimum_width = Some(GRID * 11.0);
+    s.tab.tab_body.bg_fill = raised();
+    s.tab.tab_body.inner_margin = egui::Margin::same(GRID as i8 + 2);
+    s.tab.tab_body.stroke = hairline();
     s.tab.tab_body.corner_radius = CornerRadius::ZERO;
     for t in [&mut s.tab.active, &mut s.tab.focused, &mut s.tab.active_with_kb_focus, &mut s.tab.focused_with_kb_focus] {
-        t.bg_fill = PANEL_RAISED;
-        t.text_color = TEXT;
-        t.outline_color = BORDER;
+        t.bg_fill = raised();
+        t.text_color = text();
+        t.outline_color = border();
         t.corner_radius = CornerRadius::ZERO;
     }
     for t in [&mut s.tab.inactive, &mut s.tab.inactive_with_kb_focus, &mut s.tab.hovered] {
-        t.bg_fill = BG_DEEP;
-        t.text_color = TEXT_FAINT;
-        t.outline_color = BG_DEEP;
+        t.bg_fill = bg_deep();
+        t.text_color = text_faint();
+        t.outline_color = bg_deep();
         t.corner_radius = CornerRadius::ZERO;
     }
-    s.tab.hovered.text_color = TEXT_DIM;
-    s.separator.color_idle = BG_DEEP;
+    s.tab.hovered.text_color = text_dim();
+    s.separator.color_idle = bg_deep();
     s.separator.color_hovered = accent();
     s.separator.color_dragged = accent();
     s.separator.width = 4.0;
     s.main_surface_border_stroke = Stroke::NONE;
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WCAG contrast ratio.
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let l = |c: Color32| {
+            let lin = |v: u8| {
+                let v = v as f32 / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+        };
+        let (x, y) = (l(a), l(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    #[test]
+    fn both_palettes_keep_text_and_signals_legible() {
+        for pal in [&DARK, &LIGHT_PALETTE] {
+            for surface in [pal.raised, pal.bg_deep, pal.row_alt] {
+                assert!(contrast(pal.text, surface) >= 12.0, "body text");
+                assert!(contrast(pal.text_dim, surface) >= 4.5, "secondary text (WCAG AA)");
+                for signal in [pal.standby, pal.active, pal.stop_text] {
+                    assert!(contrast(signal, surface) >= 3.0, "signal colour {signal:?} on {surface:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn badge_text_picks_the_readable_ink() {
+        for c in [category::AUDIO, category::VIDEO, category::DMX, category::CONTROL, category::SLIDES, category::TIMER, category::TIMELINE] {
+            assert!(contrast(on(c), c) >= 4.5, "badge {c:?}");
+        }
+        assert_eq!(on(Color32::WHITE), Color32::from_rgb(0x11, 0x11, 0x14));
+        assert_eq!(on(Color32::BLACK), Color32::WHITE);
+    }
+
+    #[test]
+    fn appearance_follows_the_system_until_forced() {
+        let ctx = egui::Context::default();
+        set_appearance(Appearance::Light);
+        apply(&ctx);
+        assert!(is_light());
+        assert_eq!(ctx.style_of(egui::Theme::Light).visuals.panel_fill, Color32::WHITE);
+        assert_eq!(ctx.theme(), egui::Theme::Light);
+        set_appearance(Appearance::Dark);
+        sync(&ctx);
+        assert!(!is_light());
+        assert_eq!(ctx.style_of(egui::Theme::Dark).visuals.panel_fill, DARK.raised);
+        assert_eq!(ctx.theme(), egui::Theme::Dark);
+        ctx.tessellation_options(|t| assert!(t.round_text_to_pixels && t.round_rects_to_pixels && t.round_line_segments_to_pixels && t.feathering_size_in_pixels == 1.0));
+        set_appearance(Appearance::System);
+    }
 }

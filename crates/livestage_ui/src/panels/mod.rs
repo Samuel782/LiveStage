@@ -1,4 +1,6 @@
-//! Operator UI: transport bar + dockable panels.
+//! Operator UI: a fixed header (control deck), a dockable workspace (cue
+//! list, inspector and tools, all `egui_dock` tabs) and a fixed footer
+//! (status lights and the operator log).
 
 mod audio;
 pub mod cart;
@@ -7,12 +9,14 @@ mod control;
 mod cue_grid;
 mod displays;
 mod dmx;
-mod inspector;
+mod footer;
+mod header;
+pub mod inspector;
 mod multiview;
 pub mod settings;
 mod timeline;
 mod transport;
-pub mod widgets;
+pub(crate) use crate::widgets;
 
 use crate::view::UiRuntime;
 use egui_dock::{DockArea, DockState, TabViewer};
@@ -24,6 +28,8 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
+    CueList,
+    Inspector,
     Timeline,
     Multiview,
     Carts,
@@ -35,7 +41,9 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 10] = [
+        Tab::CueList,
+        Tab::Inspector,
         Tab::Timeline,
         Tab::Multiview,
         Tab::Carts,
@@ -48,23 +56,31 @@ impl Tab {
 
     pub fn title(self) -> &'static str {
         match self {
+            Tab::CueList => "Cue List",
+            Tab::Inspector => "Inspector",
             Tab::Timeline => "Timeline",
             Tab::Multiview => "Multiview",
             Tab::Carts => "Soundboard",
             Tab::Lighting => "Lighting",
             Tab::Displays => "Display Routing",
-            Tab::AudioPatch => "Audio Patch",
+            Tab::AudioPatch => "Audio Mixer",
             Tab::Dmx => "DMX",
             Tab::Control => "Control & Log",
         }
     }
 }
 
-/// Tool dock (the bottom workspace): every tool as a tab, splittable and
-/// re-arrangeable. The cue grid and the inspector sit above it and are
-/// not tabs.
+/// Default workspace: the cue list centre stage, the inspector on its
+/// right, and the tools in a tab group along the bottom. Every tab can be
+/// dragged, split and re-arranged (View ▸ Reset layout restores this).
 fn default_dock() -> DockState<Tab> {
-    DockState::new(vec![Tab::Timeline, Tab::Multiview, Tab::Carts, Tab::Lighting, Tab::Displays, Tab::AudioPatch, Tab::Dmx, Tab::Control])
+    use egui_dock::NodeIndex;
+    let mut dock = DockState::new(vec![Tab::CueList]);
+    let surface = dock.main_surface_mut();
+    let tools = vec![Tab::Timeline, Tab::Multiview, Tab::Carts, Tab::Lighting, Tab::Displays, Tab::AudioPatch, Tab::Dmx, Tab::Control];
+    let [top, _tools] = surface.split_below(NodeIndex::root(), 0.58, tools);
+    surface.split_right(top, 0.70, vec![Tab::Inspector]);
+    dock
 }
 
 /// A/V lock telemetry: timeline video layers following an audio master.
@@ -112,7 +128,7 @@ pub struct UiState {
     pub dock: DockState<Tab>,
     pub selected: Option<CueId>,
     pub import_path: String,
-    pub meters: Vec<f32>,
+    pub meters: Vec<widgets::meter::MeterState>,
     pub audio_devices: Vec<livestage_audio::OutputDeviceInfo>,
     pub midi_inputs: Vec<String>,
     pub midi_outputs: Vec<String>,
@@ -173,8 +189,38 @@ pub struct UiState {
     pub media_banner_dismissed: bool,
     /// The deck has room for the system module (else the status bar shows health).
     pub deck_shows_system: bool,
-    /// Inspector side panel expanded (else a thin rail).
-    pub inspector_open: bool,
+    /// Live mode: editing is locked (inspector, structure, timeline drags,
+    /// imports); only show operation works.
+    pub live_mode: bool,
+    /// Inspector page.
+    pub inspector_tab: inspector::Page,
+    /// Operator log drawer open, and its level filter.
+    pub log_open: bool,
+    pub log_filter: Option<crate::runtime::LogLevel>,
+    /// Status-bar activity lights.
+    pub activity: footer::Activity,
+    /// Output channel meters and the master (loudest channel) meter,
+    /// fed once per frame from the engine's peaks.
+    pub master_meter: widgets::meter::MeterState,
+    pub meter_clock: Option<f64>,
+    /// Cue list keyboard selection: the row to scroll into view, and
+    /// whether the selection should follow the next standby change.
+    pub grid_scroll_to: Option<CueId>,
+    pub select_follows_standby: bool,
+    /// Rows to move the selection by (Shift+↑/↓), applied by the cue list.
+    pub select_step: i32,
+    /// Mixer: stems soloed (audition only, not saved) and the routing matrix window.
+    pub soloed: std::collections::HashSet<livestage_core::id::StemId>,
+    pub routing_open: bool,
+    /// Display mapping: output being placed on a screen, editor mode, the
+    /// mask being edited and the mask point being dragged.
+    pub display_assign: Option<OutputId>,
+    pub map_mode: displays::MapMode,
+    pub mask_sel: Option<usize>,
+    pub dragging_mask: Option<(OutputId, usize, usize)>,
+    pub last_standby: Option<CueId>,
+    /// The About LiveStage box is open.
+    pub about_open: bool,
 }
 
 impl Default for UiState {
@@ -226,7 +272,24 @@ impl Default for UiState {
             light_flash: None,
             media_banner_dismissed: false,
             deck_shows_system: false,
-            inspector_open: true,
+            live_mode: false,
+            inspector_tab: inspector::Page::General,
+            log_open: false,
+            log_filter: None,
+            activity: Default::default(),
+            master_meter: Default::default(),
+            meter_clock: None,
+            grid_scroll_to: None,
+            select_follows_standby: false,
+            select_step: 0,
+            soloed: Default::default(),
+            routing_open: false,
+            display_assign: None,
+            map_mode: Default::default(),
+            mask_sel: None,
+            dragging_mask: None,
+            last_standby: None,
+            about_open: false,
         }
     }
 }
@@ -271,6 +334,8 @@ impl TabViewer for Viewer<'_> {
     }
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Tab) {
         match tab {
+            Tab::CueList => cue_grid::show(ui, self.rt, self.st),
+            Tab::Inspector => inspector_tab(ui, self.rt, self.st),
             Tab::Timeline => timeline::show(ui, self.rt, self.st),
             Tab::Multiview => multiview::show(ui, self.rt, self.st, self.previews, self.ndi),
             Tab::Carts => cart::show(ui, self.rt, self.st),
@@ -283,6 +348,13 @@ impl TabViewer for Viewer<'_> {
     }
     fn closeable(&mut self, _tab: &mut Tab) -> bool {
         false
+    }
+    fn scroll_bars(&self, tab: &Tab) -> [bool; 2] {
+        // These manage their own scrolling (sticky table header, canvases).
+        match tab {
+            Tab::CueList | Tab::Inspector | Tab::Timeline | Tab::Multiview | Tab::Displays | Tab::Lighting | Tab::Carts => [false, false],
+            _ => [true, true],
+        }
     }
 }
 
@@ -307,7 +379,7 @@ fn shortcuts(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
         if i.consume_key(Modifiers::NONE, Key::ArrowLeft) || i.consume_key(Modifiers::NONE, Key::PageUp) {
             rt.command(src(), ShowCommand::PrevSlide);
         }
-        if let Some(id) = selected_top {
+        if let Some(id) = selected_top.filter(|_| !st.live_mode) {
             if i.consume_key(Modifiers::COMMAND, Key::D) {
                 st.selected = rt.duplicate_cue(id).or(st.selected);
             }
@@ -325,11 +397,21 @@ fn shortcuts(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
         if i.consume_key(Modifiers::NONE, Key::Escape) {
             rt.command(src(), ShowCommand::Panic { hard: false });
         }
+        // Shift first: egui's matching ignores an extra Shift, so the plain
+        // arrows below would take these too.
+        if i.consume_key(Modifiers::SHIFT, Key::ArrowDown) {
+            st.select_step += 1;
+        }
+        if i.consume_key(Modifiers::SHIFT, Key::ArrowUp) {
+            st.select_step -= 1;
+        }
         if i.consume_key(Modifiers::NONE, Key::ArrowDown) {
             rt.command(src(), ShowCommand::StandbyNext);
+            st.select_follows_standby = true;
         }
         if i.consume_key(Modifiers::NONE, Key::ArrowUp) {
             rt.command(src(), ShowCommand::StandbyPrevious);
+            st.select_follows_standby = true;
         }
         if i.consume_key(Modifiers::NONE, Key::P) {
             rt.command(src(), ShowCommand::PauseAll);
@@ -352,13 +434,51 @@ fn shortcuts(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
     });
 }
 
+/// Title row of an alert: the app icon beside the heading (as macOS and
+/// Windows alerts do).
+fn alert_heading(ui: &mut egui::Ui, title: &str) {
+    ui.horizontal(|ui| {
+        crate::assets::icon_image(ui, 40.0);
+        ui.add_space(4.0);
+        ui.heading(title);
+    });
+    ui.add_space(4.0);
+}
+
+fn about_modal(ctx: &egui::Context, st: &mut UiState) {
+    if !st.about_open {
+        return;
+    }
+    let r = egui::Modal::new(egui::Id::new("about")).show(ctx, |ui| {
+        ui.set_width(360.0);
+        ui.vertical_centered(|ui| {
+            ui.add_space(8.0);
+            crate::assets::icon_image(ui, 112.0);
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("LiveStage").size(24.0).strong());
+            ui.label(egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(crate::theme::text_dim()));
+            ui.add_space(8.0);
+            ui.label("Show control for audio, video, lighting and timecode.");
+            let movies = livestage_video::capabilities::movie_support();
+            ui.label(egui::RichText::new(movies.summary()).small().color(crate::theme::text_dim()));
+            ui.add_space(10.0);
+            if ui.button("Close").clicked() {
+                st.about_open = false;
+            }
+        });
+    });
+    if r.should_close() {
+        st.about_open = false;
+    }
+}
+
 fn quit_modal(ctx: &egui::Context, st: &mut UiState) {
     if !st.confirm_quit {
         return;
     }
     egui::Modal::new(egui::Id::new("confirm-quit")).show(ctx, |ui| {
         ui.set_width(380.0);
-        ui.heading("Quit while outputs are live?");
+        alert_heading(ui, "Quit while outputs are live?");
         ui.label("Program outputs are on air. Quitting closes them and stops every cue.");
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -377,7 +497,7 @@ fn recovery_modal(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
     let Some(when) = st.recovery.clone() else { return };
     egui::Modal::new(egui::Id::new("recovery")).show(ctx, |ui| {
         ui.set_width(420.0);
-        ui.heading("Recover unsaved changes?");
+        alert_heading(ui, "Recover unsaved changes?");
         match &st.unclean_exit {
             Some(exit) => ui.label(format!("{exit} LiveStage found an autosave from {when} with changes that were never saved.")),
             None => ui.label(format!("LiveStage found an autosave from {when} that is newer than the saved show. It was probably left by a crash or a forced quit.")),
@@ -427,86 +547,61 @@ fn media_banner(root: &mut egui::Ui, st: &mut UiState) {
         });
 }
 
-/// The inspector: a resizable right-hand panel with a context header (cue
-/// type, number, name, state) that collapses to a thin rail.
-fn inspector_panel(host: &mut egui::Ui, rt: &mut UiRuntime, st: &mut UiState) {
+/// The inspector tab: a context header (cue type, number, name, state)
+/// over the paged editor. Locked in Live mode.
+fn inspector_tab(ui: &mut egui::Ui, rt: &mut UiRuntime, st: &mut UiState) {
     use crate::theme;
     use livestage_core::cue::{Cue, CueExt};
-    let frame = egui::Frame::default().fill(theme::PANEL_RAISED).stroke(egui::Stroke::new(1.0_f32, theme::BORDER));
-    if !st.inspector_open {
-        egui::Panel::right("inspector-rail").exact_size(30.0).resizable(false).show_separator_line(false).frame(frame.fill(theme::BG_DEEP)).show(host, |ui| {
-            let rect = ui.max_rect();
-            let r = ui.interact(rect, egui::Id::new("inspector-rail-hit"), egui::Sense::click()).on_hover_text("Show the inspector");
+    let context = st.selected.and_then(|id| rt.find_cue(id)).map(|c| (c.kind(), c.header().number.clone(), c.header().name.clone(), c.state()));
+    match &context {
+        Some((kind, number, name, state)) => {
+            let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::hover());
             let p = ui.painter();
-            if r.hovered() {
-                p.rect_filled(rect, 0.0, theme::CONTROL);
+            widgets::badge(p, row.left_center(), kind.label(), theme::kind_color(*kind));
+            if let Some(c) = theme::state_color(*state) {
+                let g = p.layout_no_wrap(state.label().to_uppercase(), egui::FontId::proportional(10.0), c);
+                widgets::pill(p, egui::pos2(row.right() - g.size().x - 16.0, row.center().y), state.label(), c);
             }
-            p.text(egui::pos2(rect.center().x, rect.top() + 16.0), egui::Align2::CENTER_CENTER, "◂", egui::FontId::proportional(13.0), theme::TEXT_DIM);
-            let text = egui::epaint::TextShape::new(
-                egui::pos2(rect.center().x - 6.0, rect.top() + 120.0),
-                ui.fonts_mut(|f| f.layout_no_wrap("I N S P E C T O R".into(), egui::FontId::proportional(10.0), theme::TEXT_DIM)),
-                theme::TEXT_DIM,
-            )
-            .with_angle(-std::f32::consts::FRAC_PI_2);
-            p.add(text);
-            if r.clicked() {
-                st.inspector_open = true;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(number).font(theme::clock_font(20.0)).color(theme::text()));
+                ui.add(egui::Label::new(egui::RichText::new(name).size(theme::type_scale::HEADING).strong()).truncate());
+            });
+            if st.live_mode {
+                ui.label(egui::RichText::new("Live mode: editing is locked. Switch to Edit in the header to change cues.").size(theme::type_scale::SMALL).color(theme::stop_text()));
             }
-        });
-        return;
+            ui.add_space(4.0);
+            ui.add_enabled_ui(!st.live_mode, |ui| inspector::show(ui, rt, st));
+        }
+        None => {
+            ui.add_space(theme::GRID * 2.0);
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new("No cue selected").size(theme::type_scale::SUBHEAD).color(theme::text_dim()));
+                ui.label(egui::RichText::new("Click a row in the cue list to inspect and edit it.").color(theme::text_faint()));
+            });
+        }
     }
-    egui::Panel::right("inspector")
-        .resizable(true)
-        .default_size(430.0)
-        .size_range(340.0..=760.0)
-        .show_separator_line(false)
-        .frame(frame.inner_margin(0.0))
-        .show(host, |ui| {
-            // Header strip.
-            let (bar, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::hover());
-            ui.painter().rect_filled(bar, 0.0, theme::BG_DEEP);
-            ui.painter().hline(bar.x_range(), bar.bottom() - 0.5, egui::Stroke::new(1.0_f32, theme::BORDER));
-            ui.painter().text(bar.left_center() + egui::vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, "I N S P E C T O R", egui::FontId::proportional(10.0), theme::TEXT_DIM);
-            let close = egui::Rect::from_center_size(bar.right_center() - egui::vec2(18.0, 0.0), egui::vec2(24.0, 22.0));
-            let r = ui.interact(close, egui::Id::new("inspector-collapse"), egui::Sense::click()).on_hover_text("Collapse the inspector");
-            if r.hovered() {
-                ui.painter().rect_filled(close, 4.0, theme::CONTROL_HOVER);
-            }
-            ui.painter().text(close.center(), egui::Align2::CENTER_CENTER, "▸", egui::FontId::proportional(13.0), theme::TEXT_DIM);
-            if r.clicked() {
-                st.inspector_open = false;
-            }
-            // Context: what is being edited.
-            let context = st.selected.and_then(|id| rt.find_cue(id)).map(|c| (c.kind(), c.header().number.clone(), c.header().name.clone(), c.state()));
-            egui::Frame::default().inner_margin(egui::Margin { left: 12, right: 12, top: 10, bottom: 8 }).show(ui, |ui| match &context {
-                Some((kind, number, name, state)) => {
-                    let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::hover());
-                    let p = ui.painter();
-                    let tag = widgets::pill(p, row.left_center(), kind.label(), theme::kind_color(*kind));
-                    let (label, c) = match state.color() {
-                        Some(_) => (state.label(), theme::state_color(*state).unwrap_or(theme::TEXT_DIM)),
-                        None => (state.label(), theme::TEXT_FAINT),
-                    };
-                    let g = p.layout_no_wrap(label.to_uppercase(), egui::FontId::proportional(10.0), c);
-                    widgets::pill(p, egui::pos2(row.right() - g.size().x - 14.0, row.center().y), label, c);
-                    let _ = tag;
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(number).font(theme::clock_font(22.0)).color(theme::TEXT));
-                        ui.add(egui::Label::new(egui::RichText::new(name).size(18.0).color(theme::TEXT)).truncate());
-                    });
-                }
-                None => {
-                    ui.label(egui::RichText::new("No cue selected").size(16.0).color(theme::TEXT_DIM));
-                    ui.label(egui::RichText::new("Click a row in the cue grid to inspect and edit it.").color(theme::TEXT_FAINT));
-                }
-            });
-            ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), egui::Stroke::new(1.0_f32, theme::BORDER));
-            egui::Frame::default().inner_margin(egui::Margin { left: 12, right: 8, top: 8, bottom: 8 }).show(ui, |ui| {
-                if context.is_some() {
-                    inspector::show(ui, rt, st);
-                }
-            });
-        });
+}
+
+/// Feeds the engine's peaks to the meters once per frame (the engine
+/// resets its peaks when read, so only this function reads them).
+fn sample_meters(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
+    let now = ctx.input(|i| i.time);
+    let dt = st.meter_clock.map_or(1.0 / 60.0, |t| (now - t) as f32);
+    st.meter_clock = Some(now);
+    let peaks = rt.audio.as_mut().map(|a| a.take_peaks()).unwrap_or_default();
+    if st.meters.len() < peaks.len() {
+        st.meters.resize(peaks.len(), Default::default());
+    }
+    let mut loudest = 0.0f32;
+    for (i, m) in st.meters.iter_mut().enumerate() {
+        let p = peaks.get(i).copied().unwrap_or(0.0);
+        loudest = loudest.max(p);
+        m.feed(p, now, dt);
+    }
+    st.master_meter.feed(loudest, now, dt);
+    if rt.audio.is_some() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(33));
+    }
 }
 
 /// Lays out the whole operator window inside egui's root `ui`.
@@ -519,6 +614,7 @@ pub fn draw(
     ndi: &NdiStatus,
 ) {
     let ctx = &root.ctx().clone();
+    crate::theme::sync(ctx);
     st.thumbs.poll(ctx);
     shortcuts(ctx, rt, st);
     // A pad held with the mouse is released even if its panel was hidden meanwhile.
@@ -539,71 +635,55 @@ pub fn draw(
     rt.commit_undo_when_idle(pointer_down);
     recovery_modal(ctx, rt, st);
     quit_modal(ctx, st);
+    about_modal(ctx, st);
     settings::window(ctx, rt, st);
 
-    // Files dropped on the window are imported into the bundle as cues.
+    // Files dropped on the window are imported into the bundle as cues
+    // (not in Live mode).
     let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
     for p in dropped {
-        rt.import_and_create_cue(&p);
+        if st.live_mode {
+            rt.log(crate::runtime::LogLevel::Warn, format!("not imported (Live mode): {}", p.display()));
+        } else {
+            rt.import_and_create_cue(&p);
+        }
     }
+    sample_meters(ctx, rt, st);
+    cart::poll_learn(ctx, rt, st);
 
     use crate::theme;
-    egui::Panel::top("menu")
+    egui::Panel::top("header")
+        .exact_size(header::HEIGHT + 2.0 * theme::GRID)
         .show_separator_line(false)
-        .frame(egui::Frame::default().fill(theme::BG_DEEP).inner_margin(egui::Margin::symmetric(8, 2)))
-        .show(root, |ui| transport::menu_bar(ui, rt, st));
-    egui::Panel::top("deck")
-        .exact_size(transport::HEIGHT + 20.0)
-        .show_separator_line(false)
-        .frame(
-            egui::Frame::default()
-                .fill(theme::BG_DEEP)
-                .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
-                .inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 12 }),
-        )
-        .show(root, |ui| transport::show(ui, rt, st));
+        .frame(egui::Frame::default().fill(theme::bg_deep()).stroke(theme::hairline()).inner_margin(egui::Margin::same(theme::GRID as i8)))
+        .show(root, |ui| header::show(ui, rt, st));
     media_banner(root, st);
     egui::Panel::bottom("status")
-        .exact_size(24.0)
+        .exact_size(footer::HEIGHT)
         .show_separator_line(false)
-        .frame(
-            egui::Frame::default()
-                .fill(theme::BG_DEEP)
-                .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
-                .inner_margin(egui::Margin::symmetric(10, 2)),
-        )
-        .show(root, |ui| transport::status_bar(ui, rt, st));
-    transport::import_window(ctx, rt, st);
-    // Workspace: tool dock along the bottom (full width), the inspector to
-    // the right of the cue grid, the cue grid in the remaining core area.
-    egui::CentralPanel::default().frame(egui::Frame::default().fill(theme::BG).inner_margin(6.0)).show(root, |ui| {
-        let h = ui.available_height();
-        egui::Panel::bottom("tools")
+        .frame(egui::Frame::default().fill(theme::bg_deep()).stroke(theme::hairline()).inner_margin(egui::Margin::symmetric(theme::GRID as i8 + 2, 0)))
+        .show(root, |ui| footer::status_bar(ui, rt, st));
+    if st.log_open {
+        egui::Panel::bottom("log-drawer")
             .resizable(true)
-            .default_size((h * 0.40).max(260.0))
-            .size_range(160.0..=(h - 200.0).max(200.0))
+            .default_size(220.0)
+            .size_range(120.0..=520.0)
             .show_separator_line(false)
-            .frame(egui::Frame::default().inner_margin(egui::Margin { left: 0, right: 0, top: 6, bottom: 0 }))
-            .show(ui, |ui| {
-                let style = crate::theme::dock_style(ui.style());
-                let mut dock = std::mem::replace(&mut st.dock, DockState::new(vec![]));
-                DockArea::new(&mut dock)
-                    .id(egui::Id::new("tool-dock"))
-                    .style(style)
-                    .show_close_buttons(false)
-                    .show_leaf_collapse_buttons(false)
-                    .show_leaf_close_all_buttons(false)
-                    .show_inside(ui, &mut Viewer { rt, st, physical, previews, ndi });
-                st.dock = dock;
-            });
-        inspector_panel(ui, rt, st);
-        egui::CentralPanel::default()
-            .frame(
-                egui::Frame::default()
-                    .fill(theme::PANEL_RAISED)
-                    .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
-                    .inner_margin(egui::Margin { left: 10, right: 10, top: 8, bottom: 4 }),
-            )
-            .show(ui, |ui| cue_grid::show(ui, rt, st));
+            .frame(egui::Frame::default().fill(theme::raised()).stroke(theme::hairline()).inner_margin(egui::Margin::same(theme::GRID as i8)))
+            .show(root, |ui| footer::log_drawer(ui, rt, st));
+    }
+    transport::import_window(ctx, rt, st);
+    // Workspace: every panel is a dock tab (cue list, inspector, tools).
+    egui::CentralPanel::default().frame(egui::Frame::default().fill(theme::bg()).inner_margin(theme::GRID * 0.75)).show(root, |ui| {
+        let style = theme::dock_style(ui.style());
+        let mut dock = std::mem::replace(&mut st.dock, DockState::new(vec![]));
+        DockArea::new(&mut dock)
+            .id(egui::Id::new("workspace-dock"))
+            .style(style)
+            .show_close_buttons(false)
+            .show_leaf_collapse_buttons(false)
+            .show_leaf_close_all_buttons(false)
+            .show_inside(ui, &mut Viewer { rt, st, physical, previews, ndi });
+        st.dock = dock;
     });
 }

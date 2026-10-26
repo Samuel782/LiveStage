@@ -120,7 +120,7 @@ impl ControlWindow {
         output.textures_delta = std::mem::take(&mut self.pending_textures);
         let view = frame.texture.create_view(&Default::default());
         let mut enc = gpu.device.create_command_encoder(&Default::default());
-        let bg = crate::theme::BG;
+        let bg = crate::theme::bg();
         let clear = wgpu::Color { r: bg.r() as f64 / 255.0, g: bg.g() as f64 / 255.0, b: bg.b() as f64 / 255.0, a: 1.0 };
         let ctx = self.ctx.clone();
         let mut cmds = paint_egui(gpu, &mut self.renderer, &ctx, &mut enc, &view, self.size, output, Some(clear));

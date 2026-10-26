@@ -68,8 +68,8 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     if rt.bundle.project.carts.is_empty() {
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
-            ui.label(RichText::new("No carts yet").size(18.0).color(theme::TEXT_DIM));
-            ui.label(RichText::new("A cart is a page of pads for stingers, one-shot videos and DMX flashes.").color(theme::TEXT_DIM));
+            ui.label(RichText::new("No carts yet").size(18.0).color(theme::text_dim()));
+            ui.label(RichText::new("A cart is a page of pads for stingers, one-shot videos and DMX flashes.").color(theme::text_dim()));
             ui.add_space(8.0);
             if ui.button(RichText::new("Create a 4 × 4 cart").strong()).clicked() {
                 st.cart_page = rt.add_cart(4, 4);
@@ -79,7 +79,6 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         return;
     }
     st.cart_page = st.cart_page.min(rt.bundle.project.carts.len() - 1);
-    poll_learn(ui.ctx(), rt, st);
 
     let avail = ui.available_rect_before_wrap();
     let editing = st.cart_edit && st.cart_slot.is_some();
@@ -99,7 +98,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     grid(ui, rt, st, grid_rect);
     if let Some(r) = editor_rect {
         ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
-            egui::Frame::new().fill(theme::PANEL_RAISED).corner_radius(8).inner_margin(10).show(ui, |ui| {
+            egui::Frame::new().fill(theme::raised()).corner_radius(8).inner_margin(10).show(ui, |ui| {
                 egui::ScrollArea::vertical().id_salt("pad-editor").show(ui, |ui| editor(ui, rt, st));
             });
         });
@@ -164,7 +163,7 @@ fn toolbar(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let playing: usize = rt.bundle.project.carts.iter().map(|k| k.playing()).sum();
-            let stop = egui::Button::new(RichText::new("Stop pads").strong().color(Color32::WHITE)).fill(if playing > 0 { theme::stop() } else { theme::PANEL_RAISED });
+            let stop = egui::Button::new(RichText::new("Stop pads").strong().color(Color32::WHITE)).fill(if playing > 0 { theme::stop() } else { theme::raised() });
             if ui.add(stop).on_hover_text("Stop every playing pad (cue fade-outs)").clicked() {
                 rt.command(ControlSource::Ui, ShowCommand::CartStopAll);
             }
@@ -232,11 +231,11 @@ fn paint_pad(ui: &Ui, rect: Rect, slot: usize, pad: Option<&CartPad>, elapsed: O
     let p = ui.painter_at(rect.expand(2.0));
     let small = (rect.height() * 0.12).clamp(9.0, 13.0);
     let Some(pad) = pad else {
-        let stroke = if selected { Stroke::new(2.0_f32, theme::accent()) } else { Stroke::new(1.0_f32, theme::BORDER) };
-        p.rect(rect, 8.0, theme::PANEL_RECESSED, stroke, egui::StrokeKind::Inside);
-        p.text(rect.left_top() + Vec2::new(8.0, 6.0), Align2::LEFT_TOP, (slot + 1).to_string(), FontId::monospace(small), theme::BORDER);
+        let stroke = if selected { Stroke::new(2.0_f32, theme::accent()) } else { Stroke::new(1.0_f32, theme::border()) };
+        p.rect(rect, 8.0, theme::recessed(), stroke, egui::StrokeKind::Inside);
+        p.text(rect.left_top() + Vec2::new(8.0, 6.0), Align2::LEFT_TOP, (slot + 1).to_string(), FontId::monospace(small), theme::border());
         if edit {
-            p.text(rect.center(), Align2::CENTER_CENTER, "+", FontId::proportional((rect.height() * 0.3).clamp(14.0, 34.0)), theme::TEXT_DIM);
+            p.text(rect.center(), Align2::CENTER_CENTER, "+", FontId::proportional((rect.height() * 0.3).clamp(14.0, 34.0)), theme::text_dim());
         }
         return;
     };
@@ -250,26 +249,32 @@ fn paint_pad(ui: &Ui, rect: Rect, slot: usize, pad: Option<&CartPad>, elapsed: O
         base.gamma_multiply(0.30)
     };
     let stroke = if selected {
-        Stroke::new(2.5_f32, theme::accent())
+        Stroke::new(theme::FOCUS_RING, theme::accent())
     } else if playing {
-        Stroke::new(2.0_f32, Color32::WHITE)
+        Stroke::new(2.0_f32, base.lerp_to_gamma(Color32::WHITE, 0.45))
     } else {
         Stroke::new(1.0_f32, base.gamma_multiply(0.7))
     };
-    p.rect(rect, 8.0, fill, stroke, egui::StrokeKind::Inside);
-    let text = if playing { Color32::BLACK } else { theme::TEXT };
-    let dim = if playing { Color32::from_black_alpha(170) } else { theme::TEXT_DIM };
+    p.rect(rect, 6.0, fill, stroke, egui::StrokeKind::Inside);
+    let text = if playing { theme::on(base) } else { theme::text() };
+    let dim = if playing { theme::on(base).gamma_multiply(0.7) } else { theme::text_dim() };
 
     // Corner labels: slot number, key / MIDI binding, mode.
     p.text(rect.left_top() + Vec2::new(8.0, 6.0), Align2::LEFT_TOP, (slot + 1).to_string(), FontId::monospace(small), dim);
-    let binding = match (&pad.key, pad.midi) {
-        (Some(k), Some(n)) => format!("{k} · {n}"),
-        (Some(k), None) => k.clone(),
-        (None, Some(n)) => n.to_string(),
-        (None, None) => String::new(),
-    };
-    p.text(rect.right_top() + Vec2::new(-8.0, 6.0), Align2::RIGHT_TOP, binding, FontId::monospace(small), dim);
-    p.text(rect.left_bottom() + Vec2::new(8.0, -6.0), Align2::LEFT_BOTTOM, format!("{} · {}", pad.mode.short(), pad.cue.kind().label()), FontId::proportional(small), dim);
+    // Bindings as keycap badges, right-aligned along the top.
+    let mut x = rect.right() - 6.0;
+    let chips: Vec<String> = [pad.midi.map(|n| format!("MIDI {n}")), pad.key.clone()].into_iter().flatten().collect();
+    for chip in chips.iter().filter(|_| rect.width() > 70.0) {
+        let g = p.layout_no_wrap(chip.clone(), FontId::monospace((small - 1.0).max(8.5)), text);
+        let r = Rect::from_min_size(Pos2::new(x - g.size().x - 10.0, rect.top() + 5.0), g.size() + Vec2::new(10.0, 4.0));
+        p.rect(r, 3.0, theme::wash(text, 0.10), Stroke::new(1.0_f32, theme::wash(text, 0.45)), egui::StrokeKind::Inside);
+        p.galley(r.min + Vec2::new(5.0, 2.0), g, text);
+        x = r.left() - 4.0;
+    }
+    // Mode and type (the level bar takes this corner while playing).
+    if !playing {
+        p.text(rect.left_bottom() + Vec2::new(8.0, -6.0), Align2::LEFT_BOTTOM, format!("{} · {}", pad.mode.short(), pad.cue.kind().label()), FontId::proportional(small), dim);
+    }
 
     // Progress ring with the remaining time.
     let ring_r = (rect.height().min(rect.width()) * 0.26).clamp(9.0, 34.0);
@@ -283,7 +288,7 @@ fn paint_pad(ui: &Ui, rect: Rect, slot: usize, pad: Option<&CartPad>, elapsed: O
     p.galley(Pos2::new(rect.left() + 10.0, top), galley, text);
 
     if show_ring {
-        p.circle_stroke(ring_c, ring_r, Stroke::new(3.0_f32, Color32::from_black_alpha(90)));
+        p.circle_stroke(ring_c, ring_r, Stroke::new(3.0_f32, theme::wash(text, 0.25)));
         let duration = pad.cue.duration().filter(|d| !d.is_zero());
         if let (Some(e), true) = (elapsed, playing) {
             let frac = duration.map_or(1.0, |d| (e.as_secs_f32() / d.as_secs_f32()).clamp(0.0, 1.0));
@@ -297,8 +302,22 @@ fn paint_pad(ui: &Ui, rect: Rect, slot: usize, pad: Option<&CartPad>, elapsed: O
             p.text(ring_c, Align2::CENTER_CENTER, short_time(d), FontId::monospace((ring_r * 0.42).clamp(8.0, 13.0)), dim);
         }
     }
+    // Playing: an animated level bar along the bottom edge.
+    if playing && rect.height() > 46.0 {
+        let t = ui.input(|i| i.time) as f32;
+        let bars = ((rect.width() - 20.0) / 6.0).floor().clamp(4.0, 40.0) as usize;
+        let base_y = rect.bottom() - 4.0;
+        let max_h = (rect.height() * 0.16).clamp(4.0, 14.0);
+        for i in 0..bars {
+            let k = i as f32;
+            let h = max_h * (0.35 + 0.65 * ((t * 7.0 + k * 0.9).sin() * 0.5 + 0.5) * ((t * 3.1 + k * 0.37).cos() * 0.35 + 0.65));
+            let x = rect.left() + 10.0 + k * 6.0;
+            p.rect_filled(Rect::from_min_max(Pos2::new(x, base_y - h), Pos2::new(x + 3.0, base_y)), 1.0, text.gamma_multiply(0.35));
+        }
+        ui.ctx().request_repaint();
+    }
     if pad.held {
-        p.rect_stroke(rect.shrink(3.0), 6.0, Stroke::new(2.0_f32, Color32::BLACK), egui::StrokeKind::Inside);
+        p.rect_stroke(rect.shrink(3.0), 5.0, Stroke::new(2.0_f32, theme::on(base)), egui::StrokeKind::Inside);
     }
 }
 
@@ -403,8 +422,23 @@ fn new_pad(rt: &mut UiRuntime, st: &mut UiState, page: usize, slot: usize, kind:
     }
 }
 
-/// Completes key / MIDI learn.
-fn poll_learn(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
+/// Starts (`Some`) or cancels (`None`) a key / MIDI learn. MIDI bindings
+/// are silenced while learning so the note does not also fire a command.
+pub fn set_learn(rt: &mut UiRuntime, st: &mut UiState, learn: Option<PadLearn>) {
+    st.pad_learn = learn;
+    match learn {
+        Some(PadLearn::Midi { .. }) => {
+            if let Some(m) = &rt.midi_in {
+                m.take_learned();
+            }
+            rt.silence_midi_bindings();
+        }
+        _ => rt.refresh_midi_bindings(),
+    }
+}
+
+/// Completes key / MIDI learn (every frame, wherever the learn started).
+pub fn poll_learn(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
     match st.pad_learn {
         Some(PadLearn::Key { cart, slot }) => {
             let key = ctx.input(|i| {
@@ -460,7 +494,7 @@ fn editor(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         });
     });
     let Some(pad) = rt.bundle.project.carts[page].pad(slot).cloned() else {
-        ui.label(RichText::new("Empty pad").color(theme::TEXT_DIM));
+        ui.label(RichText::new("Empty pad").color(theme::text_dim()));
         content_picker(ui, rt, st, page, slot);
         return;
     };
@@ -484,7 +518,7 @@ fn editor(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                 let (r, auto) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
                 ui.painter().circle_stroke(r.center(), 8.0, Stroke::new(1.5_f32, theme::kind_color(p.cue.kind())));
                 if p.color.is_none() {
-                    ui.painter().circle_filled(r.center(), 3.0, theme::TEXT);
+                    ui.painter().circle_filled(r.center(), 3.0, theme::text());
                 }
                 if auto.on_hover_text("By cue type").clicked() {
                     p.color = None;
@@ -494,7 +528,7 @@ fn editor(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                     let (r, resp) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
                     ui.painter().circle_filled(r.center(), 8.0, theme::rgb(c));
                     if p.color == Some(c) {
-                        ui.painter().circle_stroke(r.center(), 10.0, Stroke::new(1.5_f32, theme::TEXT));
+                        ui.painter().circle_stroke(r.center(), 10.0, Stroke::new(1.5_f32, theme::text()));
                     }
                     if resp.clicked() {
                         p.color = Some(c);
@@ -507,7 +541,7 @@ fn editor(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             ui.horizontal(|ui| {
                 let listening = learn == Some(PadLearn::Key { cart: page, slot });
                 let text = if listening { "Press a key…".to_string() } else { p.key.clone().unwrap_or_else(|| "—".into()) };
-                ui.label(RichText::new(text).font(FontId::monospace(14.0)).color(if listening { theme::standby() } else { theme::TEXT }));
+                ui.label(RichText::new(text).font(FontId::monospace(14.0)).color(if listening { theme::standby() } else { theme::text() }));
                 if ui.small_button(if listening { "Cancel" } else { "Set" }).clicked() {
                     st.pad_learn = if listening { None } else { Some(PadLearn::Key { cart: page, slot }) };
                 }
@@ -521,7 +555,7 @@ fn editor(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             ui.horizontal(|ui| {
                 let listening = learn == Some(PadLearn::Midi { cart: page, slot });
                 let text = if listening { "Play a note…".to_string() } else { p.midi.map_or("—".into(), |n| n.to_string()) };
-                ui.label(RichText::new(text).font(FontId::monospace(14.0)).color(if listening { theme::standby() } else { theme::TEXT }));
+                ui.label(RichText::new(text).font(FontId::monospace(14.0)).color(if listening { theme::standby() } else { theme::text() }));
                 if ui.small_button(if listening { "Cancel" } else { "Learn" }).clicked() {
                     st.pad_learn = if listening { None } else { Some(PadLearn::Midi { cart: page, slot }) };
                 }
@@ -570,7 +604,7 @@ fn editor(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         ui.label(RichText::new(format!("{} cue", pad.cue.kind().label())).strong());
         if ui.link("Open in Inspector").clicked() {
             st.selected = Some(pad.cue.header().id);
-            st.inspector_open = true;
+            st.focus_tab(super::Tab::Inspector);
         }
     });
     hint(ui, "Fades, gain, output, looks and the rest are set in the Inspector.");
@@ -587,7 +621,7 @@ fn editor(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
 }
 
 fn hint(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(12.0).color(theme::TEXT_DIM));
+    ui.label(RichText::new(text).size(12.0).color(theme::text_dim()));
 }
 
 /// Ways to put content on a pad: a media asset, the selected list cue, or a new cue.

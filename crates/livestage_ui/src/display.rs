@@ -128,7 +128,7 @@ pub fn open_program_window(
     opts: WindowOpts,
 ) -> anyhow::Result<(ProgramWindow, wgpu::Surface<'static>, wgpu::SurfaceConfiguration)> {
     let kiosk = monitor.is_some() && display.fullscreen;
-    let mut attrs = Window::default_attributes().with_title(format!("LiveStage — {}", display.name));
+    let mut attrs = Window::default_attributes().with_title(format!("LiveStage — {}", display.name)).with_window_icon(crate::assets::window_icon());
     match monitor.filter(|_| kiosk) {
         Some(m) => {
             let (pos, size) = kiosk_geometry(m);

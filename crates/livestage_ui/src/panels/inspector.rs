@@ -1,4 +1,6 @@
-//! Cue inspector: edits the selected cue (including timeline children).
+//! Cue inspector: edits the selected cue (including timeline children) on
+//! four pages — General, Timing, Action (the cue type's parameters) and
+//! Triggers (what fires it).
 
 use super::widgets::toggle;
 use super::widgets::{color_edit, opt_time_edit, scrub_bar, time_edit};
@@ -13,9 +15,27 @@ use livestage_core::id::{OutputId, StemId};
 use livestage_core::project::AssetRef;
 use livestage_core::ShowTime;
 
+/// Inspector page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Page {
+    General,
+    Timing,
+    Action,
+    Triggers,
+}
+
+/// A two-column form grid with the standard spacing.
+fn form(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
+    egui::Grid::new(id).num_columns(2).spacing([theme::GRID * 1.5, theme::GRID]).min_col_width(96.0).show(ui, add);
+}
+
+fn hint(ui: &mut Ui, text: &str) {
+    ui.label(RichText::new(text).size(theme::type_scale::SMALL).color(theme::text_dim()));
+}
+
 pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     let Some(id) = st.selected else {
-        ui.label(RichText::new("Select a cue to edit it.").color(theme::TEXT_DIM));
+        ui.label(RichText::new("Select a cue to edit it.").color(theme::text_dim()));
         return;
     };
     let outputs: Vec<(OutputId, String)> = rt.bundle.project.displays.iter().map(|d| (d.id, d.name.clone())).collect();
@@ -39,6 +59,14 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         .project
         .active_list()
         .map_or((false, false), |l| (l.index_of(id).is_some(), l.timecode.is_some()));
+    // The cue before this one, if it continues into it.
+    let follows_from = rt.bundle.project.active_list().and_then(|l| {
+        let i = l.index_of(id)?;
+        let prev = l.cues.get(i.checked_sub(1)?)?;
+        (prev.header().follow != FollowMode::None).then(|| (prev.header().number.clone(), prev.header().follow))
+    });
+    let osc_port = rt.osc_port();
+    let mut page = st.inspector_tab;
     let Some(cue) = rt.find_cue_mut(id) else {
         st.selected = None;
         return;
@@ -56,11 +84,11 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(elapsed.to_clock_string()).font(theme::clock_font(16.0)).color(theme::active()));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(RichText::new(format!("-{}", (d - elapsed).to_clock_string())).font(theme::clock_font(16.0)).color(theme::TEXT_DIM));
+                            ui.label(RichText::new(format!("-{}", (d - elapsed).to_clock_string())).font(theme::clock_font(16.0)).color(theme::text_dim()));
                         });
                     });
                     seek_to = scrub_bar(ui, ("insp-scrub", id), elapsed, d, 22.0, theme::active());
-                    ui.label(RichText::new("Drag the playhead to seek, even while playing.").size(12.0).color(theme::TEXT_DIM));
+                    ui.label(RichText::new("Drag the playhead to seek, even while playing.").size(12.0).color(theme::text_dim()));
                 }
                 None => {
                     ui.label(RichText::new(format!("Running {}", elapsed.to_clock_string())).font(theme::clock_font(16.0)).color(theme::active()));
@@ -68,74 +96,151 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             }
             ui.add_space(4.0);
         }
-        egui::Grid::new("hdr").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-            let h = cue.header_mut();
-            ui.label("Number");
-            changed |= ui.add(TextEdit::singleline(&mut h.number).desired_width(80.0)).changed();
-            ui.end_row();
-            ui.label("Name");
-            changed |= ui.add(TextEdit::singleline(&mut h.name).desired_width(f32::INFINITY)).changed();
-            ui.end_row();
-            ui.label("Notes");
-            changed |= ui.add(TextEdit::multiline(&mut h.notes).desired_rows(2).desired_width(f32::INFINITY)).changed();
-            ui.end_row();
-            ui.label("Pre-wait");
-            changed |= time_edit(ui, &mut h.pre_wait);
-            ui.end_row();
-            ui.label("Follow");
-            ComboBox::from_id_salt("follow").selected_text(format!("{:?}", h.follow)).show_ui(ui, |ui| {
-                for f in [FollowMode::None, FollowMode::AutoContinue, FollowMode::AutoFollow] {
-                    changed |= ui.selectable_value(&mut h.follow, f, format!("{f:?}")).changed();
-                }
-            });
-            ui.end_row();
-            ui.label("Post-wait");
-            changed |= time_edit(ui, &mut h.post_wait);
-            ui.end_row();
-            ui.label("Armed");
-            changed |= toggle(ui, &mut h.armed, "").changed();
-            ui.end_row();
-            if top_level {
-                ui.label("Timecode");
-                ui.horizontal(|ui| {
-                    let mut on = h.timecode.is_some();
-                    if toggle(ui, &mut on, "").on_hover_text("Fire when show timecode reaches this").changed() {
-                        h.timecode = on.then(|| h.timecode.unwrap_or_else(|| livestage_core::Timecode::new(1, 0, 0, 0, tc_rate).unwrap_or_default()));
-                        changed = true;
+        super::widgets::inputs::segmented(ui, &mut page, &[(Page::General, "General"), (Page::Timing, "Timing"), (Page::Action, "Action"), (Page::Triggers, "Triggers")]);
+        ui.add_space(theme::GRID);
+        let issues = cue.validate();
+        match page {
+            Page::General => {
+                form(ui, "insp-general", |ui| {
+                    let h = cue.header_mut();
+                    ui.label("Number");
+                    changed |= ui.add(TextEdit::singleline(&mut h.number).desired_width(96.0).font(theme::clock_font(theme::type_scale::BODY))).changed();
+                    ui.end_row();
+                    ui.label("Name");
+                    changed |= ui.add(TextEdit::singleline(&mut h.name).desired_width(f32::INFINITY)).changed();
+                    ui.end_row();
+                    ui.label("Notes");
+                    changed |= ui.add(TextEdit::multiline(&mut h.notes).desired_rows(3).desired_width(f32::INFINITY)).changed();
+                    ui.end_row();
+                    ui.label("Armed");
+                    ui.horizontal(|ui| {
+                        changed |= toggle(ui, &mut h.armed, "").changed();
+                        hint(ui, if h.armed { "fires on GO" } else { "skipped on GO" });
+                    });
+                    ui.end_row();
+                });
+                if !issues.is_empty() {
+                    ui.add_space(theme::GRID);
+                    for i in &issues {
+                        ui.colored_label(theme::stop_text(), format!("Problem: {i}"));
                     }
-                    match &mut h.timecode {
-                        Some(t) => {
-                            changed |= super::widgets::timecode_field(ui, ("cue-tc", id), t, tc_rate);
-                            if !list_tc {
-                                ui.label(RichText::new("list not in timecode mode").size(12.0).color(theme::standby()));
+                }
+            }
+            Page::Timing => {
+                form(ui, "insp-timing", |ui| {
+                    let h = cue.header_mut();
+                    ui.label("Pre-wait");
+                    ui.horizontal(|ui| {
+                        changed |= time_edit(ui, &mut h.pre_wait);
+                        hint(ui, "delay between GO and the start");
+                    });
+                    ui.end_row();
+                    ui.label("Follow");
+                    let label = |f: FollowMode| match f {
+                        FollowMode::None => "None",
+                        FollowMode::AutoContinue => "Auto-continue",
+                        FollowMode::AutoFollow => "Auto-follow",
+                    };
+                    ComboBox::from_id_salt("follow").width(theme::GRID * 20.0).selected_text(label(h.follow)).show_ui(ui, |ui| {
+                        for f in [FollowMode::None, FollowMode::AutoContinue, FollowMode::AutoFollow] {
+                            changed |= ui.selectable_value(&mut h.follow, f, label(f)).changed();
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("");
+                    hint(ui, match h.follow {
+                        FollowMode::None => "the next cue waits for GO",
+                        FollowMode::AutoContinue => "the next cue starts as this one starts (after the post-wait)",
+                        FollowMode::AutoFollow => "the next cue starts when this one ends (after the post-wait)",
+                    });
+                    ui.end_row();
+                    ui.label("Post-wait");
+                    changed |= time_edit(ui, &mut h.post_wait);
+                    ui.end_row();
+                });
+                if let Some(d) = cue.duration() {
+                    ui.add_space(theme::GRID);
+                    hint(ui, &format!("Length {}", d.to_clock_string()));
+                }
+            }
+            Page::Action => {
+                changed |= match cue {
+                    AnyCue::Audio(a) => audio(ui, a, &stems, &assets),
+                    AnyCue::Video(v) => video(ui, v, &outputs, &assets),
+                    AnyCue::Timer(t) => timer(ui, t, &outputs),
+                    AnyCue::Dmx(d) => dmx(ui, d, &lighting, &fixture_names),
+                    AnyCue::Control(c) => control(ui, c),
+                    AnyCue::Slides(sl) => slides(ui, sl, &outputs, &root, st, &mut slide_nav),
+                    AnyCue::Timeline(t) => match &project_snapshot {
+                        Some(p) => timeline(ui, t, p, &next_child, st),
+                        None => false,
+                    },
+                };
+                for i in &issues {
+                    ui.colored_label(theme::stop_text(), format!("Problem: {i}"));
+                }
+            }
+            Page::Triggers => {
+                let h = cue.header_mut();
+                form(ui, "insp-triggers", |ui| {
+                    ui.label("Manual");
+                    hint(ui, if top_level { "GO when this cue is on standby (Space)" } else { "fired by its timeline" });
+                    ui.end_row();
+                    if top_level {
+                        ui.label("Timecode");
+                        ui.horizontal(|ui| {
+                            let mut on = h.timecode.is_some();
+                            if toggle(ui, &mut on, "").on_hover_text("Fire when show timecode reaches this").changed() {
+                                h.timecode = on.then(|| h.timecode.unwrap_or_else(|| livestage_core::Timecode::new(1, 0, 0, 0, tc_rate).unwrap_or_default()));
+                                changed = true;
                             }
+                            match &mut h.timecode {
+                                Some(t) => {
+                                    changed |= super::widgets::timecode_field(ui, ("cue-tc", id), t, tc_rate);
+                                }
+                                None => hint(ui, "off"),
+                            }
+                        });
+                        ui.end_row();
+                        if h.timecode.is_some() && !list_tc {
+                            ui.label("");
+                            ui.label(RichText::new("The list is not in timecode mode: the trigger is ignored until it is.").size(theme::type_scale::SMALL).color(theme::standby()));
+                            ui.end_row();
                         }
-                        None => {
-                            ui.weak("manual GO");
-                        }
+                        ui.label("Previous cue");
+                        match &follows_from {
+                            Some((n, FollowMode::AutoContinue)) => hint(ui, &format!("starts with cue {n} (auto-continue)")),
+                            Some((n, _)) => hint(ui, &format!("starts when cue {n} ends (auto-follow)")),
+                            None => hint(ui, "does not start this cue"),
+                        };
+                        ui.end_row();
+                        ui.label("OSC");
+                        let addr = format!("/livestage/cue/{}/go", h.number);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&addr).font(theme::clock_font(12.0)));
+                            if ui.small_button("Copy").clicked() {
+                                ui.ctx().copy_text(addr.clone());
+                            }
+                            if osc_port.is_none() {
+                                hint(ui, "(OSC is off)");
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("WebSocket");
+                        let msg = format!("{{\"cmd\":\"go_cue\",\"number\":\"{}\"}}", h.number);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&msg).font(theme::clock_font(12.0)));
+                            if ui.small_button("Copy").clicked() {
+                                ui.ctx().copy_text(msg.clone());
+                            }
+                        });
+                        ui.end_row();
                     }
                 });
-                ui.end_row();
             }
-        });
-        ui.separator();
-        changed |= match cue {
-            AnyCue::Audio(a) => audio(ui, a, &stems, &assets),
-            AnyCue::Video(v) => video(ui, v, &outputs, &assets),
-            AnyCue::Timer(t) => timer(ui, t, &outputs),
-            AnyCue::Dmx(d) => dmx(ui, d, &lighting, &fixture_names),
-            AnyCue::Control(c) => control(ui, c),
-            AnyCue::Slides(sl) => slides(ui, sl, &outputs, &root, st, &mut slide_nav),
-            AnyCue::Timeline(t) => match &project_snapshot {
-                Some(p) => timeline(ui, t, p, &next_child, st),
-                None => false,
-            },
-        };
-        let issues = cue.validate();
-        for i in issues {
-            ui.colored_label(theme::stop(), format!("Problem: {i}"));
         }
     });
+    st.inspector_tab = page;
     if changed {
         rt.mark_changed();
     }
@@ -186,9 +291,9 @@ fn slides(
         ui.end_row();
     });
     let source = s.deck.source.as_ref().map_or("—".to_string(), |a| a.file_name().to_string());
-    ui.label(RichText::new(format!("{n} slides · {}×{} · {source}", s.deck.size[0], s.deck.size[1])).color(theme::TEXT_DIM));
+    ui.label(RichText::new(format!("{n} slides · {}×{} · {source}", s.deck.size[0], s.deck.size[1])).color(theme::text_dim()));
     if n == 0 {
-        ui.label(RichText::new("Import a PDF or PowerPoint file (File ▸ Import, or drop it on the window).").color(theme::TEXT_DIM));
+        ui.label(RichText::new("Import a PDF or PowerPoint file (File ▸ Import, or drop it on the window).").color(theme::text_dim()));
         return c;
     }
     ui.separator();
@@ -202,7 +307,7 @@ fn slides(
                 *nav = Some(SlideNav::Next);
             }
         });
-        ui.label(RichText::new("Right / Left arrow keys (or a clicker's PgDn / PgUp) step the running presentation.").size(12.0).color(theme::TEXT_DIM));
+        ui.label(RichText::new("Right / Left arrow keys (or a clicker's PgDn / PgUp) step the running presentation.").size(12.0).color(theme::text_dim()));
     }
     // Thumbnail strip: click to jump (running) or to choose the first slide.
     let marked = if running { s.current } else { s.start_slide };
@@ -223,16 +328,16 @@ fn slides(
                         p.image(tex.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
                     }
                 }
-                let border = if i == marked { theme::active() } else if resp.hovered() { theme::TEXT_DIM } else { theme::BORDER };
+                let border = if i == marked { theme::active() } else if resp.hovered() { theme::text_dim() } else { theme::border() };
                 p.rect_stroke(pic, 3.0, egui::Stroke::new(if i == marked { 2.0_f32 } else { 1.0 }, border), egui::StrokeKind::Inside);
-                p.text(egui::pos2(pic.left(), pic.bottom() + 2.0), egui::Align2::LEFT_TOP, format!("{}", i + 1), egui::FontId::proportional(12.0), theme::TEXT_DIM);
+                p.text(egui::pos2(pic.left(), pic.bottom() + 2.0), egui::Align2::LEFT_TOP, format!("{}", i + 1), egui::FontId::proportional(12.0), theme::text_dim());
                 let first_line = slide.text.lines().next().unwrap_or_default();
                 p.text(
                     egui::pos2(pic.left() + 22.0, pic.bottom() + 2.0),
                     egui::Align2::LEFT_TOP,
                     first_line.chars().take(22).collect::<String>(),
                     egui::FontId::proportional(12.0),
-                    theme::TEXT_DIM,
+                    theme::text_dim(),
                 );
                 let resp = if slide.text.is_empty() && slide.notes.is_empty() {
                     resp
@@ -419,7 +524,7 @@ fn video(ui: &mut Ui, v: &mut VideoCue, outputs: &[(OutputId, String)], assets: 
         }
         VisualContent::Image { asset } => c |= asset_combo(ui, "iasset", asset, assets),
         VisualContent::Slides { slides, .. } => {
-            ui.label(RichText::new(format!("{} slides — use a Slides cue to navigate them.", slides.len())).color(theme::TEXT_DIM));
+            ui.label(RichText::new(format!("{} slides — use a Slides cue to navigate them.", slides.len())).color(theme::text_dim()));
         }
         VisualContent::Text(t) => {
             c |= ui.add(TextEdit::multiline(&mut t.text).desired_rows(4).desired_width(f32::INFINITY)).changed();
@@ -550,7 +655,7 @@ fn dmx(ui: &mut Ui, d: &mut DmxCue, lighting: &livestage_core::lighting::Lightin
     }
     if !d.attributes.is_empty() {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{} fixture attribute values", d.attributes.len())).color(theme::TEXT_DIM));
+            ui.label(RichText::new(format!("{} fixture attribute values", d.attributes.len())).color(theme::text_dim()));
             if ui.small_button("Clear").clicked() {
                 d.attributes.clear();
                 c = true;
@@ -596,7 +701,7 @@ fn dmx(ui: &mut Ui, d: &mut DmxCue, lighting: &livestage_core::lighting::Lightin
             }
         });
     }
-    ui.label(RichText::new("Record looks from the Lighting tab (Record cue / Update cue).").size(12.0).color(theme::TEXT_DIM));
+    ui.label(RichText::new("Record looks from the Lighting tab (Record cue / Update cue).").size(12.0).color(theme::text_dim()));
     c
 }
 
@@ -689,7 +794,7 @@ fn timeline(ui: &mut Ui, t: &mut livestage_core::timeline::TimelineCue, p: &live
                 slave.follower.resyncs
             ))
             .size(12.0)
-            .color(theme::TEXT_DIM),
+            .color(theme::text_dim()),
         );
     }
     match &t.master {
@@ -702,7 +807,7 @@ fn timeline(ui: &mut Ui, t: &mut livestage_core::timeline::TimelineCue, p: &live
             });
         }
         None => {
-            ui.label(RichText::new("No master — runs on the show clock").color(theme::TEXT_DIM));
+            ui.label(RichText::new("No master — runs on the show clock").color(theme::text_dim()));
             if ui.button("Add audio master").clicked() {
                 t.master = Some(Box::new(crate::demo::new_cue(p, CueKind::Audio, &format!("{next}.0"))));
                 c = true;

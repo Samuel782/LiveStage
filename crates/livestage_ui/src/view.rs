@@ -609,6 +609,19 @@ impl UiRuntime {
     pub fn apply_audio_routing(&mut self) {
         self.defer(|rt| rt.apply_audio_routing());
     }
+    /// Pushes the routing with every stem outside `solo` muted (the mixer's
+    /// audition solo). The show's own mutes are not changed.
+    pub fn apply_audio_routing_with_solo(&mut self, solo: HashSet<livestage_core::id::StemId>) {
+        self.defer(move |rt| {
+            let mut routing = rt.bundle.project.audio.clone();
+            for s in routing.stems.iter_mut().filter(|s| !solo.contains(&s.id)) {
+                s.mute = true;
+            }
+            if let Some(a) = &mut rt.audio {
+                a.set_routing(&routing);
+            }
+        });
+    }
     pub fn apply_timecode_config(&mut self) {
         self.defer(|rt| rt.apply_timecode_config());
     }
@@ -654,12 +667,6 @@ impl UiRuntime {
     pub fn elapsed_of(&self, id: CueId) -> Option<ShowTime> {
         let cue = self.find_cue(id)?;
         cue.state().is_active().then(|| cue.elapsed(&self.ctx()))
-    }
-    /// The most recently started running cue: (number, name, elapsed, remaining).
-    pub fn running_summary(&self) -> Option<(String, String, ShowTime, Option<ShowTime>)> {
-        let (cue, elapsed) = self.program_cue()?;
-        let h = cue.header();
-        Some((h.number.clone(), h.name.clone(), elapsed, cue.remaining(&self.ctx())))
     }
     /// The program cue (most recently started running cue of the active list) and its elapsed time.
     pub fn program_cue(&self) -> Option<(&AnyCue, ShowTime)> {

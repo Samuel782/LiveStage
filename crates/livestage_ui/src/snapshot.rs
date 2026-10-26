@@ -38,6 +38,15 @@ pub struct SnapshotArgs {
     pub tab: Option<String>,
     /// Opens the Settings window on this section (general, audio, control, outputs, files).
     pub settings: Option<String>,
+    /// Opens the About LiveStage box.
+    pub about: bool,
+    /// `light` or `dark` (default: dark).
+    pub appearance: Option<String>,
+    /// Inspector page: general, timing, action or triggers.
+    pub inspector: Option<String>,
+    /// Live mode (editing locked), and the operator log drawer open.
+    pub live: bool,
+    pub log: bool,
     /// Files imported (and, for presentations, rendered) before the snapshot.
     pub import: Vec<PathBuf>,
     /// Cart pads pressed after the GOs (1-based `cart/pad`).
@@ -68,9 +77,14 @@ impl SnapshotArgs {
             tab: None,
             import: Vec::new(),
             settings: None,
+            appearance: None,
+            inspector: None,
+            live: args.iter().any(|a| a == "--live"),
+            log: args.iter().any(|a| a == "--log"),
             pads: Vec::new(),
             edit_pad: None,
             demo_rig: args.iter().any(|a| a == "--demo-rig"),
+            about: args.iter().any(|a| a == "--about"),
             select_all_fixtures: args.iter().any(|a| a == "--select-all-fixtures"),
             palettes: args.windows(2).filter(|w| w[0] == "--apply-palette").map(|w| w[1].clone()).collect(),
             fx: args.windows(2).filter(|w| w[0] == "--fx").filter_map(|w| w[1].parse().ok()).collect(),
@@ -92,6 +106,8 @@ impl SnapshotArgs {
         s.select = val("--select");
         s.tab = val("--tab");
         s.settings = val("--settings");
+        s.appearance = val("--appearance");
+        s.inspector = val("--inspector");
         s.pads = args.windows(2).filter(|w| w[0] == "--pad").filter_map(|w| cart_pad(&w[1])).collect();
         s.edit_pad = val("--edit-pad").and_then(|v| cart_pad(&v));
         s.import = args.windows(2).filter(|w| w[0] == "--import").map(|w| PathBuf::from(&w[1])).collect();
@@ -167,6 +183,18 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
         ui.cart_edit = true;
         ui.cart_slot = Some(pad.saturating_sub(1));
     }
+    ui.about_open = a.about;
+    ui.live_mode = a.live;
+    ui.log_open = a.log;
+    if let Some(p) = &a.inspector {
+        use crate::panels::inspector::Page;
+        ui.inspector_tab = match p.as_str() {
+            "timing" => Page::Timing,
+            "action" => Page::Action,
+            "triggers" => Page::Triggers,
+            _ => Page::General,
+        };
+    }
     if let Some(sec) = &a.settings {
         ui.settings_open = true;
         ui.settings_section = crate::panels::settings::Section::from_name(sec);
@@ -200,6 +228,10 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
     }
 
     let ctx = egui::Context::default();
+    crate::theme::set_appearance(match a.appearance.as_deref() {
+        Some("light") => crate::theme::Appearance::Light,
+        _ => crate::theme::Appearance::Dark,
+    });
     crate::theme::apply(&ctx);
     let mut renderer = egui_wgpu::Renderer::new(&gpu.device, CANVAS_FORMAT, egui_wgpu::RendererOptions::default());
     let mut previews = Previews::default();
@@ -259,7 +291,7 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
     });
     let view = target.create_view(&Default::default());
     let mut enc = gpu.device.create_command_encoder(&Default::default());
-    let bg = crate::theme::BG;
+    let bg = crate::theme::bg();
     let clear = wgpu::Color { r: bg.r() as f64 / 255.0, g: bg.g() as f64 / 255.0, b: bg.b() as f64 / 255.0, a: 1.0 };
     let mut cmds = crate::gfx::paint_egui(&gpu, &mut renderer, &ctx, &mut enc, &view, px, output, Some(clear));
     let row = (px[0] * 4).div_ceil(256) * 256;

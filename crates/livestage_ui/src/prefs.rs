@@ -9,7 +9,7 @@
 //! live in the show file so they travel with it; the Settings window edits
 //! both and says which is which.
 
-use crate::theme::Accent;
+use crate::theme::{Accent, Appearance};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -17,6 +17,8 @@ use std::path::PathBuf;
 #[serde(default)]
 pub struct Preferences {
     // Appearance
+    /// Light / dark, or follow the system.
+    pub appearance: Appearance,
     pub accent: Accent,
     /// UI zoom (egui points per pixel multiplier).
     pub ui_scale: f32,
@@ -48,6 +50,7 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
+            appearance: Appearance::System,
             accent: Accent::Ice,
             ui_scale: 1.0,
             outputs_on_launch: false,
@@ -125,6 +128,7 @@ mod tests {
     fn partial_files_fill_defaults() {
         let p: Preferences = serde_json::from_str(r#"{ "accent": "Blue", "ui_scale": 1.25 }"#).unwrap();
         assert_eq!(p.accent, Accent::Blue);
+        assert_eq!(p.appearance, Appearance::System, "older files follow the system");
         assert_eq!(p.autosave_secs, 30);
         assert!(p.hide_cursor_on_outputs);
         let json = serde_json::to_string(&p).unwrap();

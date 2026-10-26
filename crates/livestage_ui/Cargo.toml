@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+build = "build.rs"
+
 [[bin]]
 name = "livestage"
 path = "src/main.rs"
@@ -37,6 +39,14 @@ parking_lot.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2 = "0.4"
+# Dock icon (same versions egui-winit already uses).
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData"] }
+
+# Windows: the .exe icon resource (see build.rs).
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

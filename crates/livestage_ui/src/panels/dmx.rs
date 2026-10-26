@@ -3,7 +3,7 @@
 use super::UiState;
 use crate::view::UiRuntime;
 use crate::theme;
-use egui::{Align2, Color32, ComboBox, DragValue, FontId, Sense, Ui};
+use egui::{ComboBox, DragValue, Ui};
 use livestage_core::dmx_config::{DmxTransport, InputMerge, InputPatch, PatchedFixture};
 
 pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
@@ -288,22 +288,16 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         }
         ui.separator();
 
-        // Universe 1 live view.
-        super::widgets::caption(ui, "Universe 1 output");
-        if let Some(u) = rt.dmx.universe(0) {
-            let cols = 32;
-            let cell = ((ui.available_width() - 4.0) / cols as f32).floor().clamp(14.0, 28.0);
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(cell * cols as f32, cell * 16.0), Sense::hover());
-            let p = ui.painter_at(rect);
-            for i in 0..512usize {
-                let (x, y) = ((i % cols) as f32, (i / cols) as f32);
-                let r = egui::Rect::from_min_size(rect.min + egui::vec2(x * cell, y * cell), egui::vec2(cell - 1.0, cell - 1.0));
-                let v = u.data[i];
-                let fill = if v == 0 { egui::Color32::from_rgb(0x2A, 0x2A, 0x2A) } else { theme::active().gamma_multiply(0.25 + 0.75 * v as f32 / 255.0) };
-                p.rect_filled(r, 1.0, fill);
-                if cell >= 20.0 && v > 0 {
-                    p.text(r.center(), Align2::CENTER_CENTER, v.to_string(), FontId::monospace(8.0), Color32::BLACK);
-                }
+        // Live output of every universe.
+        super::widgets::caption(ui, "Output");
+        let width = (ui.available_width() - 4.0).min(32.0 * 28.0);
+        let universes: Vec<(u16, String)> = rt.bundle.project.dmx.universes.iter().map(|u| (u.index, u.name.clone())).collect();
+        for (index, name) in universes {
+            if let Some(u) = rt.dmx.universe(index) {
+                let active = u.data.iter().filter(|v| **v > 0).count();
+                ui.label(egui::RichText::new(format!("{name} · {active} channel(s) above zero")).size(theme::type_scale::SMALL).color(theme::text_dim()));
+                super::widgets::dmx_heatmap(ui, &u.data, width);
+                ui.add_space(theme::GRID);
             }
         }
     });

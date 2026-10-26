@@ -513,6 +513,7 @@ pub struct ProcStats {
 }
 
 pub fn proc_stats() -> ProcStats {
+    #[cfg_attr(not(unix), allow(unused_mut))] // nothing is measured elsewhere yet
     let mut s = ProcStats::default();
     #[cfg(target_os = "macos")]
     {
