@@ -584,6 +584,9 @@ impl UiRuntime {
         self.dirty = false;
         self.defer(|rt| rt.save());
     }
+    pub fn rotate_remote_key(&mut self) {
+        self.defer(|rt| rt.rotate_remote_key());
+    }
     pub fn recover_autosave(&mut self) {
         self.defer(|rt| rt.recover_autosave());
     }

@@ -5,6 +5,8 @@ use livestage_audio::{AudioEngine, EngineConfig};
 use livestage_control::midi::{MidiInputHandler, MidiOutputHandler};
 use livestage_control::osc::{OscSender, OscServer};
 use livestage_control::timecode::{ArtNetTimecodeListener, MtcInput, MtcOutput, TimecodeInput};
+use livestage_control::acl::IpAllowlist;
+use livestage_control::auth::RemoteAuth;
 use livestage_control::websocket::RemoteServer;
 use livestage_control::{ControlEvent, ControlHub, ControlSource, PanicController};
 use livestage_core::action::{AudioAction, ControlAction, EngineAction};
@@ -199,6 +201,8 @@ pub struct ShowRuntime {
     pub hub: ControlHub,
     osc: Option<OscServer>,
     remote: Option<RemoteServer>,
+    /// Signs and checks WebSocket session tokens (loaded from [`remote_key_path`]).
+    remote_auth: Option<std::sync::Arc<RemoteAuth>>,
     pub midi_in: Option<MidiInputHandler>,
     midi_out: Option<MidiOutputHandler>,
     osc_out: Option<OscSender>,
@@ -243,6 +247,21 @@ pub struct ShowRuntime {
     pub displays_rev: u64,
 }
 
+/// Where the remote API's token-signing key lives: the user's configuration
+/// folder, not the show (show files get copied to other machines).
+pub fn remote_key_path() -> Option<std::path::PathBuf> {
+    crate::prefs::config_dir().map(|d| d.join("remote.key"))
+}
+
+/// Interface the control servers listen on.
+pub fn control_bind(external: bool) -> std::net::IpAddr {
+    if external {
+        std::net::IpAddr::from([0, 0, 0, 0])
+    } else {
+        std::net::IpAddr::from([127, 0, 0, 1])
+    }
+}
+
 /// Source of display revisions, global so a newly opened show never reuses
 /// the revision a renderer cached for the previous one.
 static DISPLAYS_REV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -264,6 +283,7 @@ impl ShowRuntime {
             hub: ControlHub::default(),
             osc: None,
             remote: None,
+            remote_auth: None,
             midi_in: None,
             midi_out: None,
             osc_out: OscSender::new().ok(),
@@ -413,21 +433,66 @@ impl ShowRuntime {
         self.log(LogLevel::Info, format!("control services restarted (OSC {osc}, WebSocket {ws})"));
     }
 
+    /// Starts OSC and the WebSocket API on this computer only (127.0.0.1),
+    /// or on every interface when the show enables external access.
     fn start_control(&mut self) {
         let cfg = self.bundle.project.control.clone();
+        let bind = control_bind(cfg.external_access);
         if cfg.osc_enabled {
-            match OscServer::start(cfg.osc_listen_port, self.hub.sender()) {
+            let (allow, errors) = IpAllowlist::parse(&cfg.osc_allowlist);
+            for e in errors {
+                self.log(LogLevel::Warn, format!("OSC allowlist: {e} (ignored)"));
+            }
+            if cfg.external_access && allow.is_empty() {
+                self.log(LogLevel::Warn, "OSC: external access is on but the allowlist is empty; only this computer can send");
+            }
+            match OscServer::start(bind, cfg.osc_listen_port, self.hub.sender(), allow) {
                 Ok(s) => self.osc = Some(s),
                 Err(e) => self.log(LogLevel::Error, format!("OSC port {}: {e}", cfg.osc_listen_port)),
             }
         }
         if cfg.websocket_enabled {
-            match RemoteServer::start(cfg.websocket_port, self.hub.sender()) {
-                Ok(s) => self.remote = Some(s),
-                Err(e) => self.log(LogLevel::Error, format!("WebSocket port {}: {e}", cfg.websocket_port)),
+            // No key, no server: the API never runs without authentication.
+            match self.remote_auth() {
+                Some(auth) => match RemoteServer::start(bind, cfg.websocket_port, self.hub.sender(), auth) {
+                    Ok(s) => self.remote = Some(s),
+                    Err(e) => self.log(LogLevel::Error, format!("WebSocket port {}: {e}", cfg.websocket_port)),
+                },
+                None => self.log(LogLevel::Error, "WebSocket remote off: no remote key could be loaded"),
             }
         }
+        if cfg.external_access {
+            self.log(LogLevel::Warn, "remote control accepts connections from other computers (external access is on)");
+        }
         self.open_midi(cfg.midi_input.as_deref());
+    }
+
+    /// The token-signing key, loaded (or created) on first use.
+    fn remote_auth(&mut self) -> Option<std::sync::Arc<RemoteAuth>> {
+        if self.remote_auth.is_none() {
+            let loaded = remote_key_path()
+                .ok_or_else(|| "no configuration folder".to_string())
+                .and_then(|p| RemoteAuth::load_or_create(&p).map_err(|e| format!("{}: {e}", p.display())));
+            match loaded {
+                Ok(a) => self.remote_auth = Some(std::sync::Arc::new(a)),
+                Err(e) => self.log(LogLevel::Error, format!("remote key: {e}")),
+            }
+        }
+        self.remote_auth.clone()
+    }
+
+    /// Replaces the remote key, revoking every token issued so far, and
+    /// restarts the control services with it.
+    pub fn rotate_remote_key(&mut self) {
+        let Some(path) = remote_key_path() else { return self.log(LogLevel::Error, "remote key: no configuration folder") };
+        match RemoteAuth::rotate(&path) {
+            Ok(a) => {
+                self.remote_auth = Some(std::sync::Arc::new(a));
+                self.restart_control_requested = true;
+                self.log(LogLevel::Warn, "remote key replaced: every issued token is revoked");
+            }
+            Err(e) => self.log(LogLevel::Error, format!("remote key: {e}")),
+        }
     }
 
     pub fn open_midi(&mut self, port: Option<&str>) {

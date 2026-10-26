@@ -265,6 +265,27 @@ fn control(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             changed |= ui.add_enabled(c.websocket_enabled, DragValue::new(&mut c.websocket_port).range(1024..=65_535).prefix("TCP ")).changed();
         });
         ui.end_row();
+        ui.label("Network access");
+        ui.horizontal(|ui| {
+            changed |= toggle(ui, &mut c.external_access, "allow other computers").changed();
+            hint(ui, if c.external_access { "listening on all interfaces" } else { "this computer only (127.0.0.1)" });
+        });
+        ui.end_row();
+        ui.label("OSC allowlist");
+        ui.vertical(|ui| {
+            let mut text = c.osc_allowlist.join("\n");
+            let edit = egui::TextEdit::multiline(&mut text).desired_rows(2).desired_width(260.0).hint_text("192.168.1.20\n10.0.0.0/24");
+            if ui.add_enabled(c.external_access, edit).changed() {
+                c.osc_allowlist = text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
+                changed = true;
+            }
+            let (_, errors) = livestage_control::acl::IpAllowlist::parse(&c.osc_allowlist);
+            for e in errors {
+                ui.colored_label(theme::stop(), e);
+            }
+            hint(ui, "hosts allowed to send OSC from the network; OSC never runs panic, stop-all, masters, blackout or timecode commands");
+        });
+        ui.end_row();
         ui.label("MIDI input");
         ui.horizontal(|ui| {
             let current = c.midi_input.clone().unwrap_or_else(|| "First available".into());
@@ -305,6 +326,46 @@ fn control(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     hint(ui, "OSC: /livestage/go, /livestage/cue/<n>/seek <secs>, /livestage/slide/next … (see README).");
     if changed {
         rt.mark_changed();
+    }
+    remote_tokens(ui, rt, st);
+}
+
+/// Issuing WebSocket session tokens, and revoking them all.
+fn remote_tokens(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
+    use livestage_control::auth::RemoteAuth;
+    ui.add_space(10.0);
+    ui.label(RichText::new("Remote access tokens").strong());
+    hint(ui, "WebSocket clients must present a token: `Authorization: Bearer <token>`, or `ws://host:port/?token=<token>` from a browser.");
+    ui.horizontal(|ui| {
+        ui.add(egui::TextEdit::singleline(&mut st.token_label).desired_width(140.0).hint_text("client name"));
+        ui.add(DragValue::new(&mut st.token_days).range(1..=365).suffix(" days"));
+        if ui.button("Issue token").clicked() {
+            let issued = crate::runtime::remote_key_path()
+                .ok_or_else(|| "no configuration folder".to_string())
+                .and_then(|p| RemoteAuth::load_or_create(&p).map_err(|e| e.to_string()))
+                .map(|auth| auth.issue(&st.token_label, std::time::Duration::from_secs(st.token_days as u64 * 86_400), std::time::SystemTime::now()));
+            match issued {
+                Ok(t) => {
+                    rt.log(crate::runtime::LogLevel::Info, format!("remote token issued for `{}` ({} days)", st.token_label, st.token_days));
+                    st.issued_token = Some(t);
+                }
+                Err(e) => rt.log(crate::runtime::LogLevel::Error, format!("remote token: {e}")),
+            }
+        }
+        if ui.button("Revoke all tokens").on_hover_text("Replaces the key: every token issued so far stops working").clicked() {
+            rt.rotate_remote_key();
+            st.issued_token = None;
+        }
+    });
+    if let Some(token) = &st.issued_token {
+        ui.horizontal(|ui| {
+            let mut shown = token.clone();
+            ui.add(egui::TextEdit::singleline(&mut shown).desired_width(420.0).font(egui::TextStyle::Monospace));
+            if ui.button("Copy").clicked() {
+                ui.ctx().copy_text(token.clone());
+            }
+        });
+        hint(ui, "Copy it to the client now. Anyone holding it can run every command, panic included, until it expires or tokens are revoked.");
     }
 }
 

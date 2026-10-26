@@ -96,6 +96,16 @@ pub struct ControlConfig {
     pub midi_input: Option<String>,
     /// Accept MIDI Show Control messages for this device id (0x7F = all).
     pub msc_device_id: u8,
+    /// Listen on every network interface instead of this computer only
+    /// (127.0.0.1). Off by default: remote control from other machines is
+    /// an explicit choice.
+    #[serde(default)]
+    pub external_access: bool,
+    /// Hosts allowed to send OSC when `external_access` is on: IPv4/IPv6
+    /// addresses or CIDR ranges (`192.168.1.20`, `10.0.0.0/24`). This
+    /// computer is always allowed; an empty list allows no other host.
+    #[serde(default)]
+    pub osc_allowlist: Vec<String>,
 }
 
 impl Default for ControlConfig {
@@ -107,6 +117,8 @@ impl Default for ControlConfig {
             websocket_port: 8_765,
             midi_input: None,
             msc_device_id: 0x7F,
+            external_access: false,
+            osc_allowlist: Vec::new(),
         }
     }
 }

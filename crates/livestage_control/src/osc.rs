@@ -24,14 +24,27 @@
 //! | `/livestage/programmer/clear`    |                 | Clear programmer |
 //! | `/livestage/timecode/start|stop` |                 | Internal TC transport |
 //! | `/livestage/timecode/locate`     | `"HH:MM:SS:FF"` | Internal TC locate |
+//!
+//! ## Security
+//!
+//! OSC is unauthenticated UDP, so the server:
+//!
+//! - listens on 127.0.0.1 unless external access is enabled;
+//! - accepts packets only from this computer and the hosts on the
+//!   [`IpAllowlist`];
+//! - never runs [sensitive](ShowCommand::is_sensitive) commands (panic, stop
+//!   all, masters, blackout, submasters, output and timecode control): those
+//!   need the authenticated WebSocket API.
 
+use crate::acl::IpAllowlist;
 use crate::hub::{ControlEvent, ControlSource};
 use crate::ControlError;
 use crossbeam_channel::Sender;
 use livestage_core::action::OscArg;
 use livestage_core::{ShowCommand, ShowTime};
 use rosc::{OscMessage, OscPacket, OscType};
-use std::net::UdpSocket;
+use std::collections::HashSet;
+use std::net::{IpAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -117,16 +130,25 @@ pub struct OscServer {
 }
 
 impl OscServer {
-    pub fn start(port: u16, tx: Sender<ControlEvent>) -> Result<Self, ControlError> {
-        let socket = UdpSocket::bind(("0.0.0.0", port))?;
+    /// Listens on `bind:port` (127.0.0.1 unless external access is on),
+    /// taking packets from `allow`ed hosts only.
+    pub fn start(bind: IpAddr, port: u16, tx: Sender<ControlEvent>, allow: IpAllowlist) -> Result<Self, ControlError> {
+        let socket = UdpSocket::bind((bind, port))?;
         socket.set_read_timeout(Some(Duration::from_millis(200)))?;
         let port = socket.local_addr()?.port();
         let running = Arc::new(AtomicBool::new(true));
         let r = running.clone();
         let handle = std::thread::Builder::new().name("livestage-osc".into()).spawn(move || {
             let mut buf = [0u8; rosc::decoder::MTU];
+            let mut reported = Reported::default();
             while r.load(Ordering::Relaxed) {
                 let Ok((n, peer)) = socket.recv_from(&mut buf) else { continue };
+                if !allow.allows(peer.ip()) {
+                    if reported.first(peer.ip(), "denied") {
+                        tracing::warn!(%peer, "OSC from a host not on the allowlist ignored");
+                    }
+                    continue;
+                }
                 // Packets come from the network: one that trips a decoder bug
                 // is dropped, the server keeps listening.
                 let decoded = std::panic::catch_unwind(|| {
@@ -139,6 +161,12 @@ impl OscServer {
                 match decoded {
                     Ok(Ok(cmds)) => {
                         for command in cmds {
+                            if command.is_sensitive() {
+                                if reported.first(peer.ip(), "sensitive") {
+                                    tracing::warn!(%peer, ?command, "sensitive command refused over OSC; use the authenticated WebSocket API");
+                                }
+                                continue;
+                            }
                             let _ = tx.send(ControlEvent { source: ControlSource::Osc { peer: peer.to_string() }, command });
                         }
                     }
@@ -147,8 +175,22 @@ impl OscServer {
                 }
             }
         })?;
-        tracing::info!(port, "OSC server listening");
+        tracing::info!(%bind, port, "OSC server listening");
         Ok(Self { running, handle: Some(handle), port })
+    }
+}
+
+/// Logs a refusal once per host and kind (bounded, so a flood of spoofed
+/// sources cannot grow it without limit).
+#[derive(Default)]
+struct Reported(HashSet<(IpAddr, &'static str)>);
+
+impl Reported {
+    fn first(&mut self, ip: IpAddr, kind: &'static str) -> bool {
+        if self.0.len() >= 256 {
+            return false;
+        }
+        self.0.insert((ip, kind))
     }
 }
 
@@ -243,7 +285,7 @@ mod tests {
     #[test]
     fn udp_roundtrip() {
         let hub = crate::ControlHub::default();
-        let server = OscServer::start(0, hub.sender()).unwrap();
+        let server = OscServer::start(IpAddr::from([127, 0, 0, 1]), 0, hub.sender(), IpAllowlist::default()).unwrap();
         let sender = OscSender::new().unwrap();
         sender.send("127.0.0.1", server.port, "/livestage/go/7", &[]).unwrap();
         let ev = (0..50)
@@ -253,5 +295,51 @@ mod tests {
             })
             .expect("OSC event");
         assert_eq!(ev.command, ShowCommand::GoCue { number: "7".into() });
+    }
+
+    /// A real socket: from this computer GO gets through, a panic does not.
+    #[test]
+    fn server_refuses_sensitive_commands() {
+        let hub = crate::ControlHub::default();
+        let server = OscServer::start(IpAddr::from([127, 0, 0, 1]), 0, hub.sender(), IpAllowlist::default()).unwrap();
+        let tx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let send = |addr: &str, args: Vec<OscType>| {
+            let msg = rosc::encoder::encode(&OscPacket::Message(OscMessage { addr: addr.into(), args })).unwrap();
+            tx.send_to(&msg, ("127.0.0.1", server.port)).unwrap();
+        };
+        send("/livestage/panic", vec![OscType::Int(1)]);
+        send("/livestage/gm", vec![OscType::Float(0.0)]);
+        send("/livestage/go", vec![]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut got = Vec::new();
+        while got.is_empty() && std::time::Instant::now() < deadline {
+            got.extend(hub.drain());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        got.extend(hub.drain());
+        assert_eq!(got.iter().map(|e| e.command.clone()).collect::<Vec<_>>(), [ShowCommand::Go { list: None }]);
+    }
+
+    #[test]
+    fn sensitivity_classification() {
+        use livestage_core::ShowCommand as C;
+        for c in [C::Go { list: None }, C::GoCue { number: "1".into() }, C::StandbyNext, C::NextSlide, C::CartPad { cart: 0, pad: 0, down: true }, C::RequestStatus] {
+            assert!(!c.is_sensitive(), "{c:?}");
+        }
+        for c in [
+            C::Panic { hard: false },
+            C::StopAll { fade: None },
+            C::PauseAll,
+            C::SetMasterGain { db: -10.0 },
+            C::SetOutputsFullscreen { enabled: false },
+            C::SetSubmaster { sub: 0, level: 1.0 },
+            C::SetGrandMaster { level: 0.0 },
+            C::SetBlackout { enabled: true },
+            C::ClearProgrammer,
+            C::TimecodeStop,
+        ] {
+            assert!(c.is_sensitive(), "{c:?}");
+        }
     }
 }

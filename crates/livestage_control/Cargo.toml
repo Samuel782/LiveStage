@@ -19,3 +19,6 @@ crossbeam-channel.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+getrandom.workspace = true

@@ -60,3 +60,23 @@ pub enum ShowCommand {
     /// Request a state snapshot (remote API).
     RequestStatus,
 }
+
+impl ShowCommand {
+    /// Commands with a global or destructive effect: panics, stopping or
+    /// pausing everything, the master level, closing the outputs, lighting
+    /// overrides (grand master, submasters, blackout, effects, programmer)
+    /// and moving the show timecode. Unauthenticated control surfaces (OSC)
+    /// may not run them. Running cues forward (GO, standby, slides, cart
+    /// pads, seeks) and status requests are not sensitive.
+    pub fn is_sensitive(&self) -> bool {
+        use ShowCommand::*;
+        // Exhaustive on purpose: a new command must be classified here.
+        match self {
+            Go { .. } | GoCue { .. } | StandbyNext | StandbyPrevious | SetStandby { .. } | SeekCue { .. } => false,
+            NextSlide | PrevSlide | GotoSlide { .. } | CartPad { .. } | RequestStatus => false,
+            PauseAll | ResumeAll | StopAll { .. } | Panic { .. } | SetMasterGain { .. } | SetOutputsFullscreen { .. } => true,
+            CartStopAll | SetSubmaster { .. } | FlashSubmaster { .. } | SetGrandMaster { .. } | SetBlackout { .. } => true,
+            SetEffect { .. } | ClearProgrammer | TimecodeStart | TimecodeStop | TimecodeLocate { .. } => true,
+        }
+    }
+}

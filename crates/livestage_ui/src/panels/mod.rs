@@ -116,6 +116,10 @@ pub struct UiState {
     pub audio_devices: Vec<livestage_audio::OutputDeviceInfo>,
     pub midi_inputs: Vec<String>,
     pub midi_outputs: Vec<String>,
+    /// Remote token being issued: client label, validity, and the result.
+    pub token_label: String,
+    pub token_days: u32,
+    pub issued_token: Option<String>,
     /// Audio inputs (name, channels), for LTC.
     pub audio_inputs: Vec<(String, u16)>,
     /// Fixture file to import (GDTF / OFL), and the last import's result.
@@ -182,6 +186,9 @@ impl Default for UiState {
             audio_devices: Vec::new(),
             midi_inputs: Vec::new(),
             midi_outputs: Vec::new(),
+            token_label: "remote".into(),
+            token_days: 30,
+            issued_token: None,
             audio_inputs: Vec::new(),
             fixture_import_path: String::new(),
             fixture_import_result: None,

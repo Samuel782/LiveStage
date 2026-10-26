@@ -39,7 +39,7 @@ cargo run --release                        # opens ./shows/Demo Show.livestage (
 | **NDI streaming** | Receive any NDI source as a layer; publish any output's program feed at its own resolution (GPU-scaled, triple-buffered async readback). The NDI runtime is loaded at run time, never linked. |
 | **DMX** | Bit-exact Art-Net 4 and sACN (E1.31) output; **sACN input** merged by E1.31 priority / HTP and patched onto outputs (HTP or override); fixture library with a validated patch (16-bit attributes) and **GDTF / Open Fixture Library import**; timed crossfades; LED pixel mapper fed from output canvases. |
 | **Lighting console** | A live **programmer** (encoder wheels, pan/tilt XY pad, colour mixer) over cue playback. **Palettes** (colour, position, beam, intensity) are referenced by cues, so editing one updates every look that uses it, live. **Submaster** faders (additive looks such as blinders, software strobe, group inhibit) with flash buttons, plus a **grand master** and desk blackout. An **FX engine** runs pan/tilt sines and circles, colour chases and dimmer chases with phase spread. A **2D stage plot** shows live colour and beam direction, with lasso selection. |
-| **Control** | MIDI notes/CC/program change, MIDI Show Control, OSC in/out, WebSocket JSON API with live status push, two-stage panic (soft fade, then a hard cut on the second press). |
+| **Control** | MIDI notes/CC/program change, MIDI Show Control, OSC in/out, WebSocket JSON API with live status push and **HMAC-SHA256 session tokens**, two-stage panic (soft fade, then a hard cut on the second press). Remote control listens on this computer only unless external access is enabled; OSC from the network needs an IP allowlist and never runs sensitive commands. |
 | **Soundboard (cue carts)** | Pages of pads (4 × 4, 8 × 8 or any grid up to 16 × 16) for live busking: audio stingers, one-shot videos, DMX flash looks. Each pad is **Toggle**, **Retrigger** or **Hold / Gate**, has its own colour, and can be played from the mouse, a **keyboard key** or a **MIDI note** (with learn), or over OSC. Pads show a progress ring with the remaining time. |
 | **Timecode (SMPTE / MTC / Art-Net / LTC)** | 24, 25, 29.97 drop-frame, 29.97 and 30 fps with exact frame ↔ time math. Chase incoming **MIDI Time Code**, **Art-Net timecode** or **LTC** on an audio input through a lock with drift compensation, freewheel and jump detection, or run the **internal generator** on the audio sample clock and send it as **MTC and LTC** (LiveStage as master clock). Timeline cues can be **timecode slaves**, and whole cue lists can fire cues on timecode triggers, chasing jumps and pausing when timecode stops. |
 | **Editing safety** | Coalesced undo/redo that keeps running cues controllable, 30 s background autosave with crash recovery, multiple cue lists, drag-to-retime timeline editor. |
@@ -497,33 +497,57 @@ My Show.livestage/
 
 ## Remote control API
 
-**OSC** (UDP 53100; QLab-style unprefixed aliases accepted):
+**Security.**
+
+- **Listening:** both servers listen on **127.0.0.1** (this computer only). Other machines can reach
+  them only after *Settings → Control → Network access → allow other computers* is switched on for
+  the show.
+- **WebSocket:** every connection needs a **session token**, issued in *Settings → Control → Remote
+  access tokens*:
+  - A token is `v1.<expiry>.<label>.<HMAC-SHA256>`. It is signed with a 256-bit key kept in the
+    user's configuration folder (`remote.key`, mode 0600), never in the show file.
+  - Clients send it as `Authorization: Bearer <token>`, or as `?token=<token>` from a browser.
+  - Connections without a valid token are refused with HTTP 401 before any command is read.
+  - *Revoke all tokens* replaces the key.
+- **OSC:** OSC is unauthenticated UDP.
+  - From the network it is accepted only from hosts on the **OSC allowlist** (addresses or CIDR
+    ranges); this computer is always allowed.
+  - OSC never runs **sensitive commands**: panic, stop/pause/resume all, master level, closing the
+    outputs, cart stop-all, submasters, grand master, blackout, effects, clearing the programmer,
+    and timecode transport. They are refused and logged; send them over the authenticated
+    WebSocket API instead.
+
+The token travels in clear over `ws://`. On an untrusted network, put the API behind TLS (a reverse
+proxy) or a VPN.
+
+**OSC** (UDP 53100; QLab-style unprefixed aliases accepted; ⛔ = refused over OSC, use the
+WebSocket API):
 
 | Address | Args | Action |
 |---|---|---|
 | `/livestage/go` | | GO |
 | `/livestage/go/{n}`, `/livestage/cue/{n}/go` | | GO cue *n* |
-| `/livestage/stop` | `[fade s]` | Stop all |
-| `/livestage/panic` | `[1 = hard]` | Panic |
-| `/livestage/pause`, `/livestage/resume` | | Pause / resume all |
+| `/livestage/stop` | `[fade s]` | Stop all ⛔ |
+| `/livestage/panic` | `[1 = hard]` | Panic ⛔ |
+| `/livestage/pause`, `/livestage/resume` | | Pause / resume all ⛔ |
 | `/livestage/standby/next` · `previous` · `{n}` | | Move standby |
-| `/livestage/master` | `dB` | Master level |
+| `/livestage/master` | `dB` | Master level ⛔ |
 | `/livestage/cue/{n}/seek`, `/livestage/seek/{n}` | `seconds` | Seek cue *n* (in place if it is playing) |
 | `/livestage/slide/next` · `previous` | | Step the running presentation |
 | `/livestage/slide` | `slide number` | Go to a slide (1-based) |
-| `/livestage/outputs` | `[1 / 0]` | Open / close program outputs |
+| `/livestage/outputs` | `[1 / 0]` | Open / close program outputs ⛔ |
 | `/livestage/cart/{c}/pad/{p}` | `[1 / 0]` | Press (default) / release pad *p* of cart *c* (1-based, row by row) |
-| `/livestage/cart/stop` | | Stop every playing pad |
-| `/livestage/sub/{n}` | `level 0..1` | Submaster fader *n* |
-| `/livestage/sub/{n}/flash` | `[1 / 0]` | Hold / release a submaster's flash |
-| `/livestage/gm` | `level 0..1` | Grand master |
-| `/livestage/blackout` | `[1 / 0]` | Desk blackout |
-| `/livestage/fx/{n}` | `[1 / 0]` | Start / stop effect *n* |
-| `/livestage/programmer/clear` | | Clear the lighting programmer |
-| `/livestage/timecode/start` · `stop` | | Internal timecode generator transport |
-| `/livestage/timecode/locate` | `"HH:MM:SS:FF"` | Move the internal generator |
+| `/livestage/cart/stop` | | Stop every playing pad ⛔ |
+| `/livestage/sub/{n}` | `level 0..1` | Submaster fader *n* ⛔ |
+| `/livestage/sub/{n}/flash` | `[1 / 0]` | Hold / release a submaster's flash ⛔ |
+| `/livestage/gm` | `level 0..1` | Grand master ⛔ |
+| `/livestage/blackout` | `[1 / 0]` | Desk blackout ⛔ |
+| `/livestage/fx/{n}` | `[1 / 0]` | Start / stop effect *n* ⛔ |
+| `/livestage/programmer/clear` | | Clear the lighting programmer ⛔ |
+| `/livestage/timecode/start` · `stop` | | Internal timecode generator transport ⛔ |
+| `/livestage/timecode/locate` | `"HH:MM:SS:FF"` | Move the internal generator ⛔ |
 
-**WebSocket** (port 8765): send JSON commands such as `{"cmd":"go"}`, `{"cmd":"go_cue","number":"12"}`
+**WebSocket** (port 8765, token required): send JSON commands such as `{"cmd":"go"}`, `{"cmd":"go_cue","number":"12"}`
 `{"cmd":"panic","hard":false}`, `{"cmd":"seek_cue","number":"7","position":95000000}` (µs) or
 `{"cmd":"next_slide"}`, `{"cmd":"timecode_locate","timecode":"01:00:00:00@25"}`, `{"cmd":"cart_pad","cart":1,"pad":3,"down":true}`. Each one is answered with `{"type":"ack"}`, and connected clients
 receive a status document (standby cue, running cues with elapsed/remaining, timecode position and

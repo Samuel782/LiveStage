@@ -6,7 +6,17 @@
 //! [`ControlHub`] channel, so the show thread has exactly one input queue.
 //! Timecode (MTC, Art-Net) is a stream rather than commands and arrives on
 //! its own channel of time-stamped samples ([`timecode`]).
+//!
+//! ## Network security
+//!
+//! The OSC and WebSocket servers listen on 127.0.0.1 unless the show enables
+//! external access. The WebSocket API requires an HMAC-SHA256 session token
+//! ([`auth`]); OSC, being unauthenticated UDP, only takes packets from this
+//! computer and an IP allowlist ([`acl`]) and never runs sensitive commands
+//! ([`ShowCommand::is_sensitive`]).
 
+pub mod acl;
+pub mod auth;
 pub mod hub;
 pub mod midi;
 pub mod osc;
