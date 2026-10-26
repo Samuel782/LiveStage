@@ -270,7 +270,9 @@ pub fn create_demo(parent: &Path) -> CoreResult<ProjectBundle> {
         action: ControlAction::Command(livestage_core::ShowCommand::StopAll { fade: Some(ShowTime::from_secs(2)) }),
     }));
 
-    bundle.project.active_list_mut().expect("default list").cues = cues;
+    if let Some(list) = bundle.project.active_list_mut() {
+        list.cues = cues;
+    }
     bundle.save()?;
     Ok(bundle)
 }

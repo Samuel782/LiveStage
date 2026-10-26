@@ -244,11 +244,11 @@ impl OutputRenderer {
         for layer in layers.iter_mut().filter(|l| l.is_texture()) {
             let Some(frame) = layer.frame(now) else { continue };
             let size = (frame.width, frame.height);
-            if layer.gpu.as_ref().is_none_or(|g| !g.fits(&frame)) {
-                layer.gpu = Some(GpuLayer::new(&gpu.device, pipes, &frame));
-            }
             let opacity = layer.opacity.value(now);
-            let g = layer.gpu.as_mut().expect("created above");
+            let g = match &mut layer.gpu {
+                Some(g) if g.fits(&frame) => g,
+                entry => entry.insert(GpuLayer::new(&gpu.device, pipes, &frame)),
+            };
             g.upload(&gpu.queue, &frame);
             let u = LayerUniform { rect: fit_rect(size, self.canvas_size), tint: [1.0, 1.0, 1.0, opacity], yuv: g.yuv_rows() };
             gpu.queue.write_buffer(&g.uniform, 0, bytemuck::bytes_of(&u));
@@ -300,56 +300,61 @@ impl OutputRenderer {
     fn ensure_readback(&mut self, gpu: &GpuContext, pipes: &Pipelines, kind: ReadbackKind, size: (u32, u32)) -> &mut Readback {
         let slot = kind as usize;
         let size = (size.0.max(1), size.1.max(1));
-        if self.readbacks[slot].as_ref().is_none_or(|r| r.size != size) {
-            let device = &gpu.device;
-            let (w, h) = size;
-            let target = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("readback-target"),
-                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: CANVAS_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let target_view = target.create_view(&Default::default());
-            // Letterbox into the target when aspect ratios differ.
-            let rect = match kind {
-                ReadbackKind::PixelMap => [0.0, 0.0, 1.0, 1.0],
-                ReadbackKind::Stream => fit_rect(self.canvas_size, size),
-            };
-            let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("readback-uniform"),
-                contents: bytemuck::bytes_of(&LayerUniform::new(rect, [1.0; 4])),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-            let canvas_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("readback-bg"),
-                layout: &pipes.layer_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.canvas_view) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&pipes.sampler) },
-                ],
-            });
-            let padded_row = (w * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-            let ring = (0..RING)
-                .map(|_| Staging {
-                    buffer: device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("readback-staging"),
-                        size: (padded_row * h) as u64,
-                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                        mapped_at_creation: false,
-                    }),
-                    ready: Arc::new(AtomicBool::new(false)),
-                    state: ReadbackState::Idle,
-                    seq: 0,
-                })
-                .collect();
-            self.readbacks[slot] = Some(Readback { size, target, target_view, canvas_bind, padded_row, ring, next_seq: 0 });
-        }
-        self.readbacks[slot].as_mut().expect("initialised")
+        let readback = match self.readbacks[slot].take() {
+            Some(r) if r.size == size => r,
+            _ => self.new_readback(gpu, pipes, kind, size),
+        };
+        self.readbacks[slot].insert(readback)
+    }
+
+    fn new_readback(&self, gpu: &GpuContext, pipes: &Pipelines, kind: ReadbackKind, size: (u32, u32)) -> Readback {
+        let device = &gpu.device;
+        let (w, h) = size;
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("readback-target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: CANVAS_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target_view = target.create_view(&Default::default());
+        // Letterbox into the target when aspect ratios differ.
+        let rect = match kind {
+            ReadbackKind::PixelMap => [0.0, 0.0, 1.0, 1.0],
+            ReadbackKind::Stream => fit_rect(self.canvas_size, size),
+        };
+        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("readback-uniform"),
+            contents: bytemuck::bytes_of(&LayerUniform::new(rect, [1.0; 4])),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let canvas_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("readback-bg"),
+            layout: &pipes.layer_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.canvas_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&pipes.sampler) },
+            ],
+        });
+        let padded_row = (w * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let ring = (0..RING)
+            .map(|_| Staging {
+                buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("readback-staging"),
+                    size: (padded_row * h) as u64,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                }),
+                ready: Arc::new(AtomicBool::new(false)),
+                state: ReadbackState::Idle,
+                seq: 0,
+            })
+            .collect();
+        Readback { size, target, target_view, canvas_bind, padded_row, ring, next_seq: 0 }
     }
 
     /// Encodes a downscaled canvas copy for the pixel mapper.

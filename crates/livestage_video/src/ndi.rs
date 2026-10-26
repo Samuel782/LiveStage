@@ -327,7 +327,7 @@ impl NdiVideoSource {
 
 fn receive_loop(lib: &NdiLib, name: &str, out: &Mutex<Option<VideoFrame>>, running: &AtomicBool) {
     let Ok(c_name) = CString::new(name) else { return };
-    let recv_name = CString::new("LiveStage").expect("static");
+    let recv_name = c"LiveStage";
     let create = RawRecvCreateV3 {
         source_to_connect_to: RawSource { p_ndi_name: c_name.as_ptr(), p_url_address: std::ptr::null() },
         color_format: RECV_COLOR_RGBX_RGBA,

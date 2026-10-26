@@ -85,7 +85,7 @@ struct ClipCache {
 }
 
 impl ClipCache {
-    fn new(sample_rate: u32) -> Self {
+    fn new(sample_rate: u32) -> std::io::Result<Self> {
         let slots: Arc<Mutex<HashMap<PathBuf, ClipSlot>>> = Default::default();
         let (tx, rx) = mpsc::channel::<PathBuf>();
         let worker_slots = slots.clone();
@@ -93,12 +93,14 @@ impl ClipCache {
             .name("livestage-audio-loader".into())
             .spawn(move || {
                 for path in rx {
-                    let slot = load(&path, sample_rate);
+                    // A decoder panic on a damaged file fails that file only;
+                    // the loader keeps serving the others.
+                    let slot = std::panic::catch_unwind(|| load(&path, sample_rate))
+                        .unwrap_or_else(|_| ClipSlot::Failed("the decoder crashed on this file".into()));
                     worker_slots.lock().insert(path, slot);
                 }
-            })
-            .expect("spawn audio loader");
-        Self { slots, loader: tx }
+            })?;
+        Ok(Self { slots, loader: tx })
     }
 
     fn preload(&self, path: &Path) {
@@ -279,7 +281,7 @@ pub struct AudioEngine {
 }
 
 impl AudioEngine {
-    fn build(sample_rate: u32, channels: u16, routing: &AudioRouting, device_name: String) -> (Self, Renderer) {
+    fn build(sample_rate: u32, channels: u16, routing: &AudioRouting, device_name: String) -> AudioResult<(Self, Renderer)> {
         let (tx, rx) = HeapRb::<RtCommand>::new(COMMAND_QUEUE).split();
         let (gtx, grx) = HeapRb::<Garbage>::new(GARBAGE_QUEUE).split();
         let shared = Arc::new(EngineShared::default());
@@ -294,9 +296,9 @@ impl AudioEngine {
             waiting: Vec::new(),
             streamed: HashMap::new(),
             seeks: Vec::new(),
-            streamer: Streamer::spawn(),
+            streamer: Streamer::spawn()?,
             underruns_logged: 0,
-            cache: ClipCache::new(sample_rate),
+            cache: ClipCache::new(sample_rate)?,
             sample_rate,
             channels,
             device_name,
@@ -305,12 +307,12 @@ impl AudioEngine {
         };
         let mut engine = engine;
         engine.report_dropped(dropped);
-        (engine, renderer)
+        Ok((engine, renderer))
     }
 
     /// An engine without a device; the caller drives the [`Renderer`]
     /// (tests, offline bounce, or a custom backend such as JACK).
-    pub fn offline(sample_rate: u32, channels: u16, routing: &AudioRouting) -> (Self, Renderer) {
+    pub fn offline(sample_rate: u32, channels: u16, routing: &AudioRouting) -> AudioResult<(Self, Renderer)> {
         Self::build(sample_rate, channels, routing, "Offline".into())
     }
 
@@ -350,7 +352,7 @@ impl AudioEngine {
             .map_err(crate::AudioError::Io)?;
         let disconnected = || crate::AudioError::Device("audio host thread exited".into());
         let (rate, ch, name) = info_rx.recv().map_err(|_| disconnected())??;
-        let (mut engine, renderer) = Self::build(rate, ch, routing, name.clone());
+        let (mut engine, renderer) = Self::build(rate, ch, routing, name.clone())?;
         renderer_tx.send((renderer, engine.shared.clone())).map_err(|_| disconnected())?;
         ready_rx.recv().map_err(|_| disconnected())??;
         tracing::info!(device = %name, rate, channels = ch, "audio engine started");
@@ -640,6 +642,17 @@ impl AudioEngine {
         self.shared.underruns.load(Ordering::Relaxed)
     }
 
+    /// Errors the device stream has reported since the engine started.
+    pub fn device_errors(&self) -> u64 {
+        self.shared.device_errors.load(Ordering::Relaxed)
+    }
+
+    /// Time since the device last called back, for a running device stream;
+    /// `None` for offline engines and before the first callback.
+    pub fn callback_age(&self) -> Option<std::time::Duration> {
+        self.host.as_ref().and(self.shared.callback_age())
+    }
+
     /// Sample-clock position of a cue (drives timeline children).
     pub fn media_position(&self, cue: CueId) -> Option<ShowTime> {
         self.voice_clock(cue).map(|c| c.read().position)
@@ -737,7 +750,7 @@ mod tests {
     #[test]
     fn routes_stems_to_patched_outputs_only() {
         let routing = AudioRouting::default();
-        let (mut engine, mut rt) = AudioEngine::offline(48_000, 8, &routing);
+        let (mut engine, mut rt) = AudioEngine::offline(48_000, 8, &routing).unwrap();
         engine.insert_clip("/song.wav", sine(48_000, 2, 1.0));
         let backing = routing.stem_by_name("Backing Tracks").unwrap().id;
         let click = routing.stem_by_name("Click").unwrap().id;
@@ -772,7 +785,7 @@ mod tests {
     #[test]
     fn stop_fades_then_returns_garbage() {
         let routing = AudioRouting::default();
-        let (mut engine, mut rt) = AudioEngine::offline(48_000, 8, &routing);
+        let (mut engine, mut rt) = AudioEngine::offline(48_000, 8, &routing).unwrap();
         engine.insert_clip("/a.wav", sine(48_000, 2, 10.0));
         let stem = routing.stems[0].id;
         let cue = CueId::new();
@@ -803,7 +816,7 @@ mod tests {
     #[test]
     fn natural_end_reports_finished() {
         let routing = AudioRouting::default();
-        let (mut engine, mut rt) = AudioEngine::offline(48_000, 2, &routing);
+        let (mut engine, mut rt) = AudioEngine::offline(48_000, 2, &routing).unwrap();
         engine.insert_clip("/short.wav", sine(48_000, 1, 0.01)); // 480 frames
         let cue = CueId::new();
         engine.handle(
@@ -827,7 +840,7 @@ mod tests {
     #[test]
     fn live_seek_jumps_without_a_click() {
         let routing = AudioRouting::default();
-        let (mut engine, mut rt) = AudioEngine::offline(48_000, 2, &routing);
+        let (mut engine, mut rt) = AudioEngine::offline(48_000, 2, &routing).unwrap();
         // Mono ramp: the sample value encodes the position, so a jump is a step.
         let frames = 96_000;
         let data = (0..frames).map(|f| 0.5 * f as f32 / frames as f32).collect();
@@ -876,8 +889,8 @@ mod tests {
         let path = dir.join("song.wav");
         crate::decode::tests::write_wav(&path, 48_000, 2, &samples);
         let routing = AudioRouting::default();
-        let (mut streamed, mut s_rt) = AudioEngine::offline(48_000, 2, &routing);
-        let (mut resident, mut r_rt) = AudioEngine::offline(48_000, 2, &routing);
+        let (mut streamed, mut s_rt) = AudioEngine::offline(48_000, 2, &routing).unwrap();
+        let (mut resident, mut r_rt) = AudioEngine::offline(48_000, 2, &routing).unwrap();
         resident.insert_clip(path.clone(), crate::decode::decode_file(&path).unwrap());
         let wait = |e: &mut AudioEngine, done: &dyn Fn(&AudioEngine) -> bool| {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -950,7 +963,7 @@ mod tests {
         let samples: Vec<i16> = (0..48_000).map(|i| ((i % 100) * 300) as i16).collect();
         crate::decode::tests::write_wav(&dir.join("late.wav"), 48_000, 1, &samples);
         let routing = AudioRouting::default();
-        let (mut engine, mut rt) = AudioEngine::offline(48_000, 2, &routing);
+        let (mut engine, mut rt) = AudioEngine::offline(48_000, 2, &routing).unwrap();
         let resolve = |a: &AssetRef| Some(dir.join(a.as_str()));
         let play = |cue| AudioAction::Play {
             cue,

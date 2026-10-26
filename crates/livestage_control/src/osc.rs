@@ -100,7 +100,7 @@ pub fn parse_message(msg: &OscMessage) -> Option<ShowCommand> {
     Some(cmd)
 }
 
-fn walk(packet: OscPacket, out: &mut Vec<ShowCommand>) {
+pub(crate) fn walk(packet: OscPacket, out: &mut Vec<ShowCommand>) {
     match packet {
         OscPacket::Message(m) => match parse_message(&m) {
             Some(c) => out.push(c),
@@ -127,15 +127,23 @@ impl OscServer {
             let mut buf = [0u8; rosc::decoder::MTU];
             while r.load(Ordering::Relaxed) {
                 let Ok((n, peer)) = socket.recv_from(&mut buf) else { continue };
-                match rosc::decoder::decode_udp(&buf[..n]) {
-                    Ok((_, packet)) => {
+                // Packets come from the network: one that trips a decoder bug
+                // is dropped, the server keeps listening.
+                let decoded = std::panic::catch_unwind(|| {
+                    rosc::decoder::decode_udp(&buf[..n]).map(|(_, packet)| {
                         let mut cmds = Vec::new();
                         walk(packet, &mut cmds);
+                        cmds
+                    })
+                });
+                match decoded {
+                    Ok(Ok(cmds)) => {
                         for command in cmds {
                             let _ = tx.send(ControlEvent { source: ControlSource::Osc { peer: peer.to_string() }, command });
                         }
                     }
-                    Err(e) => tracing::debug!(%peer, "bad OSC packet: {e:?}"),
+                    Ok(Err(e)) => tracing::debug!(%peer, "bad OSC packet: {e:?}"),
+                    Err(_) => tracing::warn!(%peer, "OSC packet crashed the decoder; dropped"),
                 }
             }
         })?;

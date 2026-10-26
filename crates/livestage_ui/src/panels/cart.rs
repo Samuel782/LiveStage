@@ -467,7 +467,7 @@ fn editor(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
     let mut changed = false;
     let learn = st.pad_learn;
     {
-        let p = rt.bundle.project.carts[page].pad_mut(slot).expect("pad exists");
+        let Some(p) = rt.bundle.project.carts[page].pad_mut(slot) else { return };
         egui::Grid::new("pad-ed").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
             ui.label("Name");
             changed |= ui.add(egui::TextEdit::singleline(&mut p.cue.header_mut().name).desired_width(170.0)).changed();

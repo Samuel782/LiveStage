@@ -4,6 +4,8 @@
 //! MyShow.livestage/
 //! ├── project.json        master manifest (show tree, routing, DMX, control)
 //! ├── project.json.bak    previous manifest, rotated on every save
+//! ├── project.autosave.json  crash-recovery copy of unsaved edits
+//! ├── project.session     present while LiveStage has the show open
 //! └── assets/
 //!     ├── audio/          imported media is *copied* here for portability
 //!     ├── video/
@@ -15,7 +17,8 @@
 //!
 //! A folder (rather than a zip) lets engines stream / memory-map individual
 //! assets lazily and lets show files live in version control. Saves are
-//! atomic: the manifest is written to a temp file, fsynced and renamed.
+//! atomic: the manifest is written to a temp file, fsynced and renamed. A
+//! manifest that cannot be read falls back to the `.bak` copy.
 
 use crate::error::{CoreError, CoreResult};
 use crate::project::{unix_now, AssetKind, AssetRecord, AssetRef, Project};
@@ -31,11 +34,24 @@ pub const ASSETS_DIR: &str = "assets";
 pub const SLIDES_DIR: &str = "slides";
 /// Periodic crash-recovery copy of the manifest; removed on every real save.
 pub const AUTOSAVE_FILE: &str = "project.autosave.json";
+/// Session marker: written when a show is opened, removed on a clean quit.
+/// Finding one at startup means the last session crashed or was killed.
+pub const SESSION_FILE: &str = "project.session";
 
 #[derive(Debug)]
 pub struct ProjectBundle {
     root: PathBuf,
     pub project: Project,
+    /// Why the manifest was unreadable, when the show was opened from `.bak`.
+    backup_reason: Option<String>,
+}
+
+/// The process that has (or had) a show open.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionMarker {
+    pub pid: u32,
+    /// Unix seconds.
+    pub started_at: u64,
 }
 
 impl ProjectBundle {
@@ -46,7 +62,7 @@ impl ProjectBundle {
             return Err(CoreError::BundleExists(root));
         }
         fs::create_dir_all(&root).map_err(|e| CoreError::io(&root, e))?;
-        let mut bundle = Self { root, project: Project::new(name) };
+        let mut bundle = Self { root, project: Project::new(name), backup_reason: None };
         bundle.ensure_layout()?;
         bundle.save()?;
         Ok(bundle)
@@ -62,11 +78,22 @@ impl ProjectBundle {
         if !manifest.is_file() {
             return Err(CoreError::NotABundle(root));
         }
-        let bytes = fs::read(&manifest).map_err(|e| CoreError::io(&manifest, e))?;
-        let mut project: Project =
-            serde_json::from_slice(&bytes).map_err(|source| CoreError::Manifest { path: manifest.clone(), source })?;
-        project.migrate()?;
-        let bundle = Self { root, project };
+        let (project, backup_reason) = match read_manifest(&manifest) {
+            Ok(p) => (p, None),
+            // A newer schema is not damage: the backup would be just as new.
+            Err(e @ CoreError::UnsupportedSchema { .. }) => return Err(e),
+            Err(e) => {
+                let bak = root.join(format!("{MANIFEST_FILE}.bak"));
+                match read_manifest(&bak) {
+                    Ok(p) => {
+                        tracing::error!("{e}; opened the backup manifest instead");
+                        (p, Some(e.to_string()))
+                    }
+                    Err(_) => return Err(e),
+                }
+            }
+        };
+        let bundle = Self { root, project, backup_reason };
         bundle.ensure_layout()?;
         let missing = bundle.missing_assets();
         if !missing.is_empty() {
@@ -77,6 +104,11 @@ impl ProjectBundle {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+    /// Set when `project.json` was unreadable and the show was opened from
+    /// `project.json.bak`: the reason the manifest was rejected.
+    pub fn opened_from_backup(&self) -> Option<&str> {
+        self.backup_reason.as_deref()
     }
     pub fn manifest_path(&self) -> PathBuf {
         self.root.join(MANIFEST_FILE)
@@ -111,7 +143,38 @@ impl ProjectBundle {
         }
         fs::rename(&tmp, &manifest).map_err(|e| CoreError::io(&manifest, e))?;
         self.discard_autosave();
+        self.backup_reason = None;
         Ok(())
+    }
+
+    pub fn session_path(&self) -> PathBuf {
+        self.root.join(SESSION_FILE)
+    }
+
+    /// Marks the show as open by this process. Returns the marker a previous
+    /// session left behind: that session crashed or was killed, or another
+    /// LiveStage still has the show open.
+    pub fn begin_session(&self) -> Option<SessionMarker> {
+        let path = self.session_path();
+        let previous = fs::read(&path).ok().and_then(|b| serde_json::from_slice::<SessionMarker>(&b).ok());
+        let marker = SessionMarker { pid: std::process::id(), started_at: unix_now() };
+        let written = serde_json::to_vec(&marker).map_err(std::io::Error::other).and_then(|json| fs::write(&path, json));
+        if let Err(e) = written {
+            tracing::warn!("cannot write session marker {}: {e}", path.display());
+        }
+        previous.filter(|p| p.pid != marker.pid || p.started_at != marker.started_at)
+    }
+
+    /// Clears this process's session marker (a clean quit).
+    pub fn end_session(&self) {
+        let path = self.session_path();
+        let ours = fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<SessionMarker>(&b).ok())
+            .is_some_and(|m| m.pid == std::process::id());
+        if ours {
+            let _ = fs::remove_file(path);
+        }
     }
 
     pub fn autosave_path(&self) -> PathBuf {
@@ -215,14 +278,28 @@ impl ProjectBundle {
     }
 }
 
+/// Reads and migrates a manifest file.
+fn read_manifest(path: &Path) -> CoreResult<Project> {
+    let bytes = fs::read(path).map_err(|e| CoreError::io(path, e))?;
+    let mut project: Project =
+        serde_json::from_slice(&bytes).map_err(|source| CoreError::Manifest { path: path.to_path_buf(), source })?;
+    project.migrate()?;
+    Ok(project)
+}
+
 /// Atomically writes a crash-recovery copy of `project` into the bundle at
-/// `root`. Takes no `&ProjectBundle` so it can run on a background thread
-/// from a snapshot.
+/// `root` (fsynced, so a power cut leaves the old copy or the new one, never
+/// a torn file). Takes no `&ProjectBundle` so it can run on a background
+/// thread from a snapshot.
 pub fn write_autosave(root: &Path, project: &Project) -> CoreResult<()> {
     let path = root.join(AUTOSAVE_FILE);
     let tmp = root.join(format!("{AUTOSAVE_FILE}.tmp"));
     let json = serde_json::to_vec(project).map_err(|source| CoreError::Manifest { path: path.clone(), source })?;
-    fs::write(&tmp, json).map_err(|e| CoreError::io(&tmp, e))?;
+    {
+        let mut f = fs::File::create(&tmp).map_err(|e| CoreError::io(&tmp, e))?;
+        f.write_all(&json).map_err(|e| CoreError::io(&tmp, e))?;
+        f.sync_all().map_err(|e| CoreError::io(&tmp, e))?;
+    }
     fs::rename(&tmp, &path).map_err(|e| CoreError::io(&path, e))
 }
 
@@ -356,6 +433,46 @@ mod tests {
         assert_eq!(b.load_autosave().unwrap().name, "Show (edited)");
         b.save().unwrap();
         assert!(b.recovery_available().is_none(), "a real save clears the autosave");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn corrupt_manifest_opens_the_backup() {
+        let dir = temp_dir("corrupt");
+        let mut b = ProjectBundle::create(&dir, "Show").unwrap();
+        b.project.name = "Second save".into();
+        b.save().unwrap(); // the first save is now project.json.bak
+        let root = b.root().to_path_buf();
+        // A torn write (disk full, yanked drive) leaves half a manifest.
+        let json = fs::read(root.join(MANIFEST_FILE)).unwrap();
+        fs::write(root.join(MANIFEST_FILE), &json[..json.len() / 2]).unwrap();
+        let opened = ProjectBundle::open(&root).unwrap();
+        assert_eq!(opened.project.name, "Show");
+        assert!(opened.opened_from_backup().is_some_and(|r| r.contains("invalid project manifest")));
+        // Without a usable backup the original error comes back.
+        fs::write(root.join(format!("{MANIFEST_FILE}.bak")), b"{").unwrap();
+        assert!(matches!(ProjectBundle::open(&root), Err(CoreError::Manifest { .. })));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn session_marker_reports_an_unclean_exit() {
+        let dir = temp_dir("session");
+        let b = ProjectBundle::create(&dir, "Show").unwrap();
+        assert_eq!(b.begin_session(), None, "first open: nothing left behind");
+        b.end_session();
+        assert!(!b.session_path().exists(), "a clean quit removes the marker");
+        assert_eq!(b.begin_session(), None);
+        // Crash: the marker stays. A dead process left it behind.
+        let dead = SessionMarker { pid: u32::MAX - 1, started_at: 1_700_000_000 };
+        fs::write(b.session_path(), serde_json::to_vec(&dead).unwrap()).unwrap();
+        assert_eq!(b.begin_session(), Some(dead));
+        assert_eq!(b.begin_session(), None, "the new session replaced it");
+        // Only our own marker is removed on quit.
+        let other = SessionMarker { pid: std::process::id().wrapping_add(1), started_at: 1 };
+        fs::write(b.session_path(), serde_json::to_vec(&other).unwrap()).unwrap();
+        b.end_session();
+        assert!(b.session_path().exists());
         fs::remove_dir_all(&dir).ok();
     }
 

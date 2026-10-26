@@ -524,11 +524,19 @@ impl StreamJob {
             }
             self.pending.clear();
             self.pending_pos = 0;
-            match gen.produce(CHUNK_FRAMES, &mut self.pending) {
-                Ok(true) => worked = true,
-                Ok(false) => self.gen = None,
-                Err(e) => {
+            // A decoder that panics on a damaged file ends this stream only
+            // (it plays out what is buffered), not the streamer thread.
+            let pending = &mut self.pending;
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gen.produce(CHUNK_FRAMES, pending))) {
+                Ok(Ok(true)) => worked = true,
+                Ok(Ok(false)) => self.gen = None,
+                Ok(Err(e)) => {
                     tracing::error!(file = %self.path.display(), "stream decode failed: {e}");
+                    self.gen = None;
+                }
+                Err(_) => {
+                    tracing::error!(file = %self.path.display(), "stream decoder crashed; the rest of the file is skipped");
+                    self.pending.clear();
                     self.gen = None;
                 }
             }
@@ -599,7 +607,7 @@ pub struct Streamer {
 }
 
 impl Streamer {
-    pub fn spawn() -> Self {
+    pub fn spawn() -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel::<StreamJob>();
         std::thread::Builder::new()
             .name("livestage-audio-stream".into())
@@ -626,9 +634,8 @@ impl Streamer {
                         std::thread::sleep(IDLE);
                     }
                 }
-            })
-            .expect("spawn audio streamer");
-        Self { tx }
+            })?;
+        Ok(Self { tx })
     }
 
     pub fn submit(&self, job: StreamJob) {

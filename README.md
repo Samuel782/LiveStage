@@ -43,6 +43,7 @@ cargo run --release                        # opens ./shows/Demo Show.livestage (
 | **Soundboard (cue carts)** | Pages of pads (4 × 4, 8 × 8 or any grid up to 16 × 16) for live busking: audio stingers, one-shot videos, DMX flash looks. Each pad is **Toggle**, **Retrigger** or **Hold / Gate**, has its own colour, and can be played from the mouse, a **keyboard key** or a **MIDI note** (with learn), or over OSC. Pads show a progress ring with the remaining time. |
 | **Timecode (SMPTE / MTC / Art-Net)** | 24, 25, 29.97 drop-frame, 29.97 and 30 fps with exact frame ↔ time math. Chase incoming **MIDI Time Code** or **Art-Net timecode** through a lock with drift compensation, freewheel and jump detection, or run the **internal generator** on the audio sample clock. Timeline cues can be **timecode slaves**, and whole cue lists can fire cues on timecode triggers, chasing jumps and pausing when timecode stops. |
 | **Editing safety** | Coalesced undo/redo that keeps running cues controllable, 30 s background autosave with crash recovery, multiple cue lists, drag-to-retime timeline editor. |
+| **Live reliability** | Show / output / audio watchdogs, contained faults, unclean-exit detection, backup-manifest fallback, rotating logs with periodic health lines, 8-hour soak test. |
 | **Operator comfort** | Settings window (⌘,) for audio device / buffer / sample rate, control ports, output behaviour, accent colour, UI size and tool paths; macOS-style context menus with shortcut hints on cues and multiview cells. |
 
 ---
@@ -470,6 +471,7 @@ My Show.livestage/
 ├── project.json              full show: cue lists, displays, audio patch, DMX, control, multiview (schema v2)
 ├── project.json.bak          previous manifest, rotated on every atomic save
 ├── project.autosave.json     crash-recovery copy (only while there are unsaved changes)
+├── project.session           present while LiveStage has the show open (left behind by a crash)
 └── assets/
     ├── audio/   video/   images/   data/     imported media, copied in (originals never moved)
     ├── documents/                            imported PDF / PowerPoint originals
@@ -546,6 +548,27 @@ release on note-off; a pad takes precedence over a default note. MIDI Time Code 
     a full decode.
   - A drive too slow to keep up plays silence but keeps the track sample-aligned. The status bar
     reports it as **Disk underrun**.
+- **Live hardening.** No single fault is allowed to stop the show.
+  - **Contained panics.** A panic in a show tick or an output frame is caught and that tick or frame
+    is dropped, so the loop keeps running. The same applies to a decoder that crashes on a damaged
+    audio file or an OSC packet that trips the decoder. Each fault is logged once per code location,
+    with a backtrace to `crash.log`; repeats are counted.
+  - **Watchdog thread.** It watches the show thread (stall after 100 ms), the output thread (500 ms),
+    the UI (2 s, log only) and the audio device callbacks (1 s). Stalls, recoveries, contained faults
+    and device errors go to the operator log and show in the status bar. The watchdog never waits on
+    the runtime lock.
+  - **Autosave.** The watchdog writes autosaves on its own thread, fsynced, so they keep working
+    while the UI is frozen. A copy that lands after a real save is removed again.
+  - **Crash detection and recovery.**
+    - A session marker shows on the next launch that a run crashed or was killed.
+    - An unreadable `project.json` opens from `project.json.bak`.
+    - Ctrl+C or SIGTERM quits as cleanly as closing the window.
+  - **Logs.** They go to `~/Library/Logs/LiveStage/livestage.log` (other platforms: the config
+    folder's `logs/`). The file rotates at 16 MB and five old files are kept. Every 10 minutes a
+    health line records rates, worst gaps, stalls, faults, underruns, autosaves, memory, threads
+    and file descriptors.
+  - **Soak test.** It runs the real runtime with the watchdog and checks that resources stay bounded:
+    `LIVESTAGE_SOAK_SECS=28800 cargo test -p livestage_ui --release soak -- --ignored --nocapture`.
 - **Timelines.** A master cue (usually audio) acts as the clock. Starting mid-way *chases*: media
   starts part-way through, past DMX looks are re-applied, and past triggers are not re-fired.
 - **A/V lock.** Video and text layers started by a timeline with an audio master are frame-locked to

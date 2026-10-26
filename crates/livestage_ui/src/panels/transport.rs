@@ -232,7 +232,7 @@ fn timecode(ui: &mut Ui, rect: Rect, rt: &mut UiRuntime, st: &mut UiState) {
 fn system(ui: &mut Ui, rect: Rect, rt: &UiRuntime, st: &UiState) {
     let hlt = &st.health;
     let dsp = rt.audio.as_ref().map(|a| a.dsp_load());
-    let ok = hlt.hz > 900.0 && hlt.late_ms < 2.0 && dsp.is_none_or(|d| d < 0.7);
+    let ok = hlt.hz > 900.0 && hlt.late_ms < 2.0 && dsp.is_none_or(|d| d < 0.7) && !st.watch.alarm();
     let measured = hlt.hz > 0.0;
     let status = if !measured { ("starting", theme::TEXT_FAINT) } else if ok { ("nominal", theme::active()) } else { ("check", theme::standby()) };
     let inner = module(ui, rect, "System", Some(status));
@@ -258,8 +258,8 @@ fn system(ui: &mut Ui, rect: Rect, rt: &UiRuntime, st: &UiState) {
         format!("A/V lock: {} layer(s) on the audio clock, worst offset {:.1} ms, {} re-time(s)", av.layers, av.worst_ms, av.snaps)
     };
     ui.allocate_rect(rect, egui::Sense::hover()).on_hover_text(format!(
-        "Show thread: {:.0} Hz, worst lateness {:.1} ms, lock wait {:.1} ms, tick {:.2} ms (last second)\nScheduling: {sched}\n{av_line}",
-        hlt.hz, hlt.late_ms, hlt.lock_ms, hlt.tick_ms
+        "Show thread: {:.0} Hz, worst lateness {:.1} ms, lock wait {:.1} ms, tick {:.2} ms (last second)\nScheduling: {sched}\n{av_line}\n{}",
+        hlt.hz, hlt.late_ms, hlt.lock_ms, hlt.tick_ms, watch_detail(&st.watch)
     ));
 }
 
@@ -478,6 +478,23 @@ pub fn status_bar(ui: &mut Ui, rt: &UiRuntime, st: &mut UiState) {
             ));
             ui.separator();
         }
+        let w = st.watch;
+        if w.notable() {
+            let text = if w.show_stalled {
+                "Show thread stalled".to_string()
+            } else if w.audio_stalled {
+                "Audio device stalled".to_string()
+            } else if w.output_stalled {
+                "Outputs stalled".to_string()
+            } else if w.autosave_failures > 0 {
+                "Autosave failing".to_string()
+            } else {
+                format!("Watchdog: {} stall(s), {} fault(s)", w.stalls, w.faults)
+            };
+            let color = if w.alarm() { theme::stop() } else { theme::standby() };
+            ui.colored_label(color, text).on_hover_text(watch_detail(&w));
+            ui.separator();
+        }
         if !livestage_video::capabilities::movie_support().movies_available() {
             ui.colored_label(theme::stop(), "Movies off").on_hover_text(livestage_video::capabilities::movie_support().summary());
             ui.separator();
@@ -497,4 +514,25 @@ pub fn status_bar(ui: &mut Ui, rt: &UiRuntime, st: &mut UiState) {
             ui.add(egui::Label::new(RichText::new(&last.text).color(c)).truncate());
         }
     });
+}
+
+/// Watchdog findings for tooltips.
+fn watch_detail(w: &super::WatchView) -> String {
+    let mut lines = vec![format!(
+        "Watchdog: {} stall(s) and {} contained fault(s) since launch (details in the log).",
+        w.stalls, w.faults
+    )];
+    if w.show_stalled {
+        lines.push("The show thread has stopped ticking: cues, DMX and control are frozen.".into());
+    }
+    if w.output_stalled {
+        lines.push("The output thread has stopped rendering frames.".into());
+    }
+    if w.audio_stalled {
+        lines.push("The audio device stopped calling back: check the interface, then Restart audio.".into());
+    }
+    if w.autosave_failures > 0 {
+        lines.push(format!("Autosave failed {} time(s) in a row: check the disk, and save by hand.", w.autosave_failures));
+    }
+    lines.join("\n")
 }

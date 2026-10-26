@@ -28,6 +28,7 @@ shows/*/assets/*/*
 *.autosave.json.tmp
 project.json.tmp
 project.json.bak
+project.session
 
 # ── Logs / scratch ─────────────────────────────────────────────────
 *.log

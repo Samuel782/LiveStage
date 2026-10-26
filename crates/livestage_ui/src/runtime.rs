@@ -332,6 +332,11 @@ impl ShowRuntime {
             LogLevel::Warn => tracing::warn!("{text}"),
             LogLevel::Error => tracing::error!("{text}"),
         }
+        self.note(level, text);
+    }
+
+    /// Adds a line to the operator log only (the caller already traced it).
+    pub fn note(&mut self, level: LogLevel, text: String) {
         self.log.push_back(LogLine { at: self.now(), text, level });
         self.log_seq += 1;
         while self.log.len() > 500 {

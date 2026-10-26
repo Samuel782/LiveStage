@@ -5,7 +5,11 @@
 //! what it shows, lays out against the copy and folds edits back
 //! ([`crate::view`]), so a slow, stalled or vsync-blocked UI frame never
 //! delays a cue. macOS window drags no longer freeze the show either.
+//!
+//! Each tick beats the thread's [`Heartbeat`] for the watchdog, and a panic
+//! inside a tick is contained: that tick is lost, the show keeps running.
 
+use crate::health::{contain, Heartbeat};
 use crate::runtime::{ShowRuntime, ShowStats};
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +26,7 @@ pub const SHOW_RATE_HZ: u32 = 1_000;
 pub struct ShowThread {
     running: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+    pub heartbeat: Arc<Heartbeat>,
 }
 
 impl ShowThread {
@@ -29,8 +34,11 @@ impl ShowThread {
         let running = Arc::new(AtomicBool::new(true));
         let stats: Arc<ShowStats> = rt.lock().show_stats.clone();
         let r = running.clone();
+        let heartbeat = Heartbeat::new("show");
+        let hb = heartbeat.clone();
         let period = Duration::from_secs_f64(1.0 / rate_hz.max(1) as f64);
         let handle = std::thread::Builder::new().name("livestage-show".into()).spawn(move || {
+            let _running = hb.enter();
             let class = crate::priority::make_current_thread_realtime(period);
             tracing::info!(scheduling = %class, rate_hz, "show thread started");
             *stats.scheduling.lock() = class;
@@ -42,10 +50,11 @@ impl ShowThread {
                     let mut guard = rt.lock();
                     let locked = Instant::now();
                     ShowStats::record(&stats.max_wait_us, (locked - start).as_micros() as u64);
-                    guard.tick();
+                    contain(&hb, || guard.tick());
                     ShowStats::record(&stats.max_tick_us, locked.elapsed().as_micros() as u64);
                 }
                 stats.ticks.fetch_add(1, Ordering::Relaxed);
+                hb.beat();
                 next += period;
                 let now = Instant::now();
                 if next > now {
@@ -56,7 +65,7 @@ impl ShowThread {
                 }
             }
         })?;
-        Ok(Self { running, handle: Some(handle) })
+        Ok(Self { running, handle: Some(handle), heartbeat })
     }
 }
 

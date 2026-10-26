@@ -17,6 +17,7 @@
 //! outputs.
 
 use crate::gfx::OverlayPainter;
+use crate::health::{contain, Heartbeat};
 use crate::show_thread::SharedRuntime;
 use livestage_core::routing::{LogicalDisplay, PhysicalDisplayInfo, PhysicalDisplayKey};
 use livestage_audio::VoiceClock;
@@ -476,6 +477,8 @@ pub struct OutputThread {
     pub shared: Arc<OutputShared>,
     /// Windows released by the output thread, to be dropped on the main thread.
     pub returned: crossbeam_channel::Receiver<Arc<Window>>,
+    /// Beaten once per frame, for the watchdog.
+    pub heartbeat: Arc<Heartbeat>,
 }
 
 /// Frame period when no program window paces the loop with its vsync.
@@ -496,7 +499,10 @@ impl OutputThread {
         let running = Arc::new(AtomicBool::new(true));
         let shared = Arc::new(OutputShared::default());
         let (r, sh) = (running.clone(), shared.clone());
+        let heartbeat = Heartbeat::new("output");
+        let hb = heartbeat.clone();
         let handle = std::thread::Builder::new().name("livestage-output".into()).spawn(move || {
+            let _running = hb.enter();
             let mut engine = OutputEngine::new(gpu, canvas_format);
             let mut published: HashMap<OutputId, u64> = HashMap::new();
             let (mut frames, mut window_start) = (0u64, Instant::now());
@@ -506,63 +512,69 @@ impl OutputThread {
             let mut next = Instant::now();
             while r.load(Ordering::Relaxed) {
                 let frame_start = Instant::now();
-                // Video actions, applied at the show time they were dispatched.
-                let resolve = |a: &livestage_core::project::AssetRef| livestage_core::bundle::resolve_asset(&bundle_root, a).ok();
-                for (at, action) in video_rx.try_iter() {
-                    engine.compositor.handle(at, &action, &resolve);
-                }
-                // Snapshot what the render pass needs (short lock).
-                let masters = engine.compositor.sync_masters();
-                let (pixel_sources, clocks) = {
-                    let rt = rt.lock();
-                    if rt.displays_rev != displays_rev {
-                        displays_rev = rt.displays_rev;
-                        displays.clone_from(&rt.bundle.project.displays);
+                // One frame; a panic in it is contained (the frame is lost,
+                // the outputs keep running).
+                let presented = contain(&hb, || {
+                    // Video actions, applied at the show time they were dispatched.
+                    let resolve = |a: &livestage_core::project::AssetRef| livestage_core::bundle::resolve_asset(&bundle_root, a).ok();
+                    for (at, action) in video_rx.try_iter() {
+                        engine.compositor.handle(at, &action, &resolve);
                     }
-                    let pixel: Vec<_> = rt.bundle.project.dmx.pixel_maps.iter().filter(|m| m.enabled).map(|m| m.source).collect();
-                    (pixel, master_clocks(&rt, &masters))
-                };
-                for w in engine.sync_slots(&displays) {
-                    let _ = ret_tx.send(w);
-                }
-                for cmd in rx.try_iter() {
-                    let back = match cmd {
-                        OutputCmd::Open { output, window, surface, config } => engine.attach(output, window, surface, config),
-                        OutputCmd::Close(output) => engine.detach(output),
-                        OutputCmd::Resized { window, size } => {
-                            engine.resize(window, size);
-                            None
+                    // Snapshot what the render pass needs (short lock).
+                    let masters = engine.compositor.sync_masters();
+                    let (pixel_sources, clocks) = {
+                        let rt = rt.lock();
+                        if rt.displays_rev != displays_rev {
+                            displays_rev = rt.displays_rev;
+                            displays.clone_from(&rt.bundle.project.displays);
                         }
+                        let pixel: Vec<_> = rt.bundle.project.dmx.pixel_maps.iter().filter(|m| m.enabled).map(|m| m.source).collect();
+                        (pixel, master_clocks(&rt, &masters))
                     };
-                    if let Some(w) = back {
+                    for w in engine.sync_slots(&displays) {
                         let _ = ret_tx.send(w);
                     }
-                }
-                let now: ShowTime = epoch.elapsed().into();
-                // Timeline layers follow their audio master's sample clock.
-                let report = engine.compositor.follow_masters(now, |m| master_reading(&clocks, m));
-                sync_worst = sync_worst.max(report.worst_error);
-                sh.sync_layers.store(report.layers as u64, Ordering::Relaxed);
-                sh.sync_snaps.fetch_add(report.snaps as u64, Ordering::Relaxed);
-                engine.compositor.update(now);
-                video_finished.lock().clone_from(engine.compositor.finished_cues());
-
-                let (readbacks, presented) = engine.render(now, &displays, &pixel_sources);
-                if !readbacks.is_empty() {
-                    let mut rt = rt.lock();
-                    for (id, w, h, px) in readbacks {
-                        rt.dmx.feed_canvas(id, w, h, &px);
+                    for cmd in rx.try_iter() {
+                        let back = match cmd {
+                            OutputCmd::Open { output, window, surface, config } => engine.attach(output, window, surface, config),
+                            OutputCmd::Close(output) => engine.detach(output),
+                            OutputCmd::Resized { window, size } => {
+                                engine.resize(window, size);
+                                None
+                            }
+                        };
+                        if let Some(w) = back {
+                            let _ = ret_tx.send(w);
+                        }
                     }
-                }
-                // Publish canvases whose texture changed, and NDI state.
-                let generations: HashMap<OutputId, u64> =
-                    engine.slots.values().map(|s| (s.id, s.renderer.canvas_generation())).collect();
-                if generations != published {
-                    *sh.previews.lock() = engine.previews();
-                    published = generations;
-                }
-                *sh.ndi.lock() = engine.slots.values().filter_map(|s| s.ndi.as_ref().map(|n| (s.id, n.connections()))).collect();
+                    let now: ShowTime = epoch.elapsed().into();
+                    // Timeline layers follow their audio master's sample clock.
+                    let report = engine.compositor.follow_masters(now, |m| master_reading(&clocks, m));
+                    sync_worst = sync_worst.max(report.worst_error);
+                    sh.sync_layers.store(report.layers as u64, Ordering::Relaxed);
+                    sh.sync_snaps.fetch_add(report.snaps as u64, Ordering::Relaxed);
+                    engine.compositor.update(now);
+                    video_finished.lock().clone_from(engine.compositor.finished_cues());
 
+                    let (readbacks, presented) = engine.render(now, &displays, &pixel_sources);
+                    if !readbacks.is_empty() {
+                        let mut rt = rt.lock();
+                        for (id, w, h, px) in readbacks {
+                            rt.dmx.feed_canvas(id, w, h, &px);
+                        }
+                    }
+                    // Publish canvases whose texture changed, and NDI state.
+                    let generations: HashMap<OutputId, u64> =
+                        engine.slots.values().map(|s| (s.id, s.renderer.canvas_generation())).collect();
+                    if generations != published {
+                        *sh.previews.lock() = engine.previews();
+                        published = generations;
+                    }
+                    *sh.ndi.lock() = engine.slots.values().filter_map(|s| s.ndi.as_ref().map(|n| (s.id, n.connections()))).collect();
+                    presented
+                })
+                .unwrap_or(false);
+                hb.beat();
                 frames += 1;
                 sh.max_frame_us.fetch_max(frame_start.elapsed().as_micros() as u64, Ordering::Relaxed);
                 if window_start.elapsed() >= Duration::from_secs(1) {
@@ -592,7 +604,7 @@ impl OutputThread {
                 let _ = ret_tx.send(w);
             }
         })?;
-        Ok(Self { tx, running, handle: Some(handle), shared, returned })
+        Ok(Self { tx, running, handle: Some(handle), shared, returned, heartbeat })
     }
 
     pub fn send(&self, cmd: OutputCmd) {
@@ -628,7 +640,7 @@ mod av_sync_tests {
         const RATE: u32 = 48_000;
         const PPM: f64 = 2_000.0;
         let routing = AudioRouting::default();
-        let (mut engine, mut device) = AudioEngine::offline(RATE, 2, &routing);
+        let (mut engine, mut device) = AudioEngine::offline(RATE, 2, &routing).unwrap();
         engine.insert_clip("/song.wav", AudioClip { sample_rate: RATE, channels: 1, data: vec![0.0; RATE as usize * 40] });
         let master = CueId::new();
         let resolve = |a: &AssetRef| Some(PathBuf::from("/").join(a.as_str()));

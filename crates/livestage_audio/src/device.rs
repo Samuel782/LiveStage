@@ -117,7 +117,11 @@ where
     let rate = opened.config.sample_rate.0 as f64;
     // Scratch is allocated here, before the closure moves to the RT thread.
     let mut scratch = vec![0.0f32; 8192 * ch];
-    let on_error = |e| tracing::error!("audio stream error: {e}");
+    let errors = shared.clone();
+    let on_error = move |e| {
+        errors.device_errors.fetch_add(1, Ordering::Relaxed);
+        tracing::error!("audio stream error: {e}");
+    };
     let config = opened.config.clone();
 
     let callback = move |data: &mut [T], _: &cpal::OutputCallbackInfo| {

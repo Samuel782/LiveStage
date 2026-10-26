@@ -168,11 +168,11 @@ impl VideoSource for FfmpegSource {
             self.seek(want);
         }
         loop {
-            if let Some((pos, _)) = &self.next {
-                if *pos > want {
+            if let Some((pos, frame)) = self.next.take() {
+                if pos > want {
+                    self.next = Some((pos, frame));
                     break;
                 }
-                let (pos, frame) = self.next.take().unwrap();
                 self.current = Some((self.generation, pos, frame));
                 continue;
             }
@@ -495,8 +495,10 @@ impl Decoder {
 
     fn convert_rgba(&mut self, src: &ff::frame::Video) -> Result<VideoFrame, ff::Error> {
         let (fmt, w, h) = (src.format(), src.width(), src.height());
-        if !self.scaler.as_ref().is_some_and(|(f, sw, sh, _)| (*f, *sw, *sh) == (fmt, w, h)) {
-            let ctx = ff::software::scaling::Context::get(
+        let scaler = match &mut self.scaler {
+            Some((f, sw, sh, ctx)) if (*f, *sw, *sh) == (fmt, w, h) => ctx,
+            entry => {
+                let ctx = ff::software::scaling::Context::get(
                 fmt,
                 w,
                 h,
@@ -504,10 +506,10 @@ impl Decoder {
                 w,
                 h,
                 ff::software::scaling::Flags::BILINEAR,
-            )?;
-            self.scaler = Some((fmt, w, h, ctx));
-        }
-        let (_, _, _, scaler) = self.scaler.as_mut().unwrap();
+                )?;
+                &mut entry.insert((fmt, w, h, ctx)).3
+            }
+        };
         let mut rgba = ff::frame::Video::empty();
         scaler.run(src, &mut rgba)?;
 

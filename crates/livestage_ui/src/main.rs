@@ -10,6 +10,8 @@
 mod demo;
 mod display;
 mod gfx;
+mod health;
+mod logging;
 mod panels;
 mod prefs;
 mod priority;
@@ -24,6 +26,7 @@ mod thumbs;
 use anyhow::Context as _;
 use display::{CanvasPreview, Monitors, OutputCmd, OutputThread, ProgramWindow};
 use gfx::ControlWindow;
+use health::{Heartbeat, Watchdog, Watched};
 use livestage_control::{ControlSource, ShowCommand};
 use livestage_core::ProjectBundle;
 use livestage_core::OutputId;
@@ -61,11 +64,9 @@ fn load_bundle(launch: &Launch, startup_show: Option<&std::path::Path>) -> anyho
     Ok(match launch {
         Launch::Open(p) => ProjectBundle::open(p).with_context(|| format!("opening {}", p.display()))?,
         Launch::New { dir, name } => ProjectBundle::create(dir, name)?,
-        Launch::Default if startup_show.is_some_and(|p| p.join(livestage_core::bundle::MANIFEST_FILE).is_file()) => {
-            let p = startup_show.expect("checked");
-            ProjectBundle::open(p).with_context(|| format!("opening {}", p.display()))?
-        }
-        Launch::Default => {
+        Launch::Default => match startup_show.filter(|p| p.join(livestage_core::bundle::MANIFEST_FILE).is_file()) {
+            Some(p) => ProjectBundle::open(p).with_context(|| format!("opening {}", p.display()))?,
+            None => {
             let shows = std::env::current_dir()?.join("shows");
             let demo = shows.join("Demo Show.livestage");
             if demo.exists() {
@@ -75,7 +76,8 @@ fn load_bundle(launch: &Launch, startup_show: Option<&std::path::Path>) -> anyho
                 tracing::info!("creating demo show in {}", shows.display());
                 demo::create_demo(&shows)?
             }
-        }
+            }
+        },
     })
 }
 
@@ -104,8 +106,11 @@ struct App {
     /// Canvas generation each preview texture was registered for.
     registered: HashMap<OutputId, u64>,
     last_scan: Instant,
-    last_autosave: Instant,
-    autosaved_generation: u64,
+    /// Watches the show, output and UI loops and the audio device; autosaves.
+    watchdog: Option<Watchdog>,
+    /// Beaten by the event loop (UI freezes go to the log only).
+    ui_heartbeat: Arc<Heartbeat>,
+    _ui_running: Option<health::Running>,
 }
 
 impl App {
@@ -123,11 +128,28 @@ impl App {
         self.monitors.refresh(el);
         let bundle = load_bundle(&self.launch, self.ui.prefs.startup_show.as_deref())?;
         control.window.set_title(&format!("LiveStage — {}", bundle.project.name));
+        let previous = bundle.begin_session();
+        let other_instance = previous.as_ref().filter(|p| health::process_alive(p.pid));
+        if previous.is_some() && other_instance.is_none() {
+            let started = previous.as_ref().and_then(|p| chrono::DateTime::from_timestamp(p.started_at as i64, 0));
+            let started = started.map(|t| t.with_timezone(&chrono::Local).format(" (opened %H:%M on %d %b)").to_string());
+            self.ui.unclean_exit = Some(format!("The last session{} did not shut down cleanly.", started.unwrap_or_default()));
+        }
         if let Some(when) = bundle.recovery_available() {
             let when: chrono::DateTime<chrono::Local> = when.into();
             self.ui.recovery = Some(when.format("%H:%M:%S on %d %b %Y").to_string());
         }
+        let backup = bundle.opened_from_backup().map(str::to_string);
         let mut rt = ShowRuntime::new(bundle);
+        if let Some(p) = other_instance {
+            rt.log(LogLevel::Warn, format!("this show is also open in another LiveStage (pid {}): saves will overwrite each other", p.pid));
+        }
+        if let Some(exit) = &self.ui.unclean_exit {
+            rt.log(LogLevel::Warn, exit.clone());
+        }
+        if let Some(reason) = backup {
+            rt.log(LogLevel::Error, format!("project.json could not be read ({reason}); opened the backup from the save before. Save to repair it."));
+        }
         rt.office_path = self.ui.prefs.office_path.clone();
         let media = livestage_video::capabilities::movie_support();
         match media.warning() {
@@ -150,6 +172,13 @@ impl App {
             self.bundle_root.clone(),
             control.format,
         )?);
+        let watched = vec![
+            Watched::new(self.show_thread.as_ref().map(|s| s.heartbeat.clone()).unwrap_or_else(|| Heartbeat::new("show")), Duration::from_millis(100), true),
+            Watched::new(self.output_thread.as_ref().map(|o| o.heartbeat.clone()).unwrap_or_else(|| Heartbeat::new("output")), Duration::from_millis(500), true),
+            Watched::new(self.ui_heartbeat.clone(), Duration::from_secs(2), false),
+        ];
+        self._ui_running = Some(self.ui_heartbeat.enter());
+        self.watchdog = Some(Watchdog::spawn(shared.clone(), watched, Default::default())?);
         self.rt = Some(shared);
         self.gfx = Some(Gfx { gpu, control });
         Ok(())
@@ -188,10 +217,21 @@ impl App {
     }
 
     fn frame(&mut self, el: &ActiveEventLoop) {
-        if let Some(shared) = self.rt.clone() {
-            self.autosave(&shared);
-        }
         let Some(shared) = self.rt.clone() else { return };
+        if let Some(w) = &self.watchdog {
+            use std::sync::atomic::Ordering;
+            let st = &w.state;
+            st.autosave_secs.store(self.ui.prefs.autosave_secs, Ordering::Relaxed);
+            let (show, out) = (self.show_thread.as_ref().map(|s| &s.heartbeat), self.output_thread.as_ref().map(|o| &o.heartbeat));
+            self.ui.watch = panels::WatchView {
+                show_stalled: show.is_some_and(|h| h.is_stalled()),
+                output_stalled: out.is_some_and(|h| h.is_stalled()),
+                audio_stalled: st.audio_stalled.load(Ordering::Relaxed),
+                stalls: show.map_or(0, |h| h.stalls()) + out.map_or(0, |h| h.stalls()),
+                faults: show.map_or(0, |h| h.faults()) + out.map_or(0, |h| h.faults()),
+                autosave_failures: st.autosave_failures.load(Ordering::Relaxed),
+            };
+        }
 
         // 1. Program windows requested by commands (UI, OSC, MIDI, cues).
         let live_request = {
@@ -280,6 +320,9 @@ impl App {
 
     /// Saves, panics everything and shuts the threads down in order.
     fn quit(&mut self, el: &ActiveEventLoop) {
+        // First, so the shutdown itself is not reported as stalls (it logs a
+        // final health summary and finishes an autosave in progress).
+        self.watchdog = None;
         if let Some(shared) = self.rt.clone() {
             let mut rt = shared.lock();
             if rt.dirty {
@@ -287,6 +330,8 @@ impl App {
             }
             rt.command(ControlSource::Ui, ShowCommand::Panic { hard: true });
             rt.tick();
+            rt.bundle.end_session();
+            tracing::info!("clean shutdown");
         }
         // Joins the output thread (it hands its windows back), then the
         // show thread (engines stop when the runtime drops).
@@ -294,28 +339,6 @@ impl App {
         self.program_windows.clear();
         self.show_thread = None;
         el.exit();
-    }
-
-    /// Every 30 s, snapshots a dirty project and writes the recovery copy on a
-    /// background thread (disk I/O never runs on the show or UI thread).
-    fn autosave(&mut self, shared: &SharedRuntime) {
-        let every = self.ui.prefs.autosave_secs;
-        if every == 0 || self.last_autosave.elapsed() < Duration::from_secs(every) {
-            return;
-        }
-        self.last_autosave = Instant::now();
-        let snapshot = {
-            let rt = shared.lock();
-            (rt.dirty && rt.edit_generation != self.autosaved_generation).then(|| (rt.bundle.project.clone(), rt.edit_generation))
-        };
-        if let Some((project, generation)) = snapshot {
-            self.autosaved_generation = generation;
-            let root = self.bundle_root.clone();
-            std::thread::spawn(move || match livestage_core::bundle::write_autosave(&root, &project) {
-                Ok(()) => tracing::debug!("autosaved"),
-                Err(e) => tracing::warn!("autosave failed: {e}"),
-            });
-        }
     }
 
     fn output_window_event(&mut self, id: WindowId, event: WindowEvent) {
@@ -394,6 +417,11 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        self.ui_heartbeat.beat();
+        if health::stop_requested() {
+            tracing::info!("stop signal received");
+            return self.quit(el);
+        }
         if self.last_scan.elapsed() > Duration::from_secs(2) {
             self.monitors.refresh(el);
             self.last_scan = Instant::now();
@@ -426,12 +454,15 @@ fn check_media() -> i32 {
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,wgpu_core=warn,wgpu_hal=warn,naga=warn".into()),
-        )
-        .init();
+    let log_file = logging::init();
+    health::install_panic_hook(logging::log_dir());
+    health::install_stop_signals();
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        pid = std::process::id(),
+        log = %log_file.as_deref().map_or("(stdout only)".into(), |p| p.display().to_string()),
+        "LiveStage starting"
+    );
     let args: Vec<String> = std::env::args().collect();
     if let Some(snap) = snapshot::SnapshotArgs::parse(&args) {
         return snapshot::run(snap);
@@ -456,8 +487,9 @@ fn main() -> anyhow::Result<()> {
         previews: Previews::default(),
         registered: HashMap::new(),
         last_scan: Instant::now(),
-        last_autosave: Instant::now(),
-        autosaved_generation: 0,
+        watchdog: None,
+        ui_heartbeat: Heartbeat::new("ui"),
+        _ui_running: None,
     };
     event_loop.run_app(&mut app)?;
     Ok(())

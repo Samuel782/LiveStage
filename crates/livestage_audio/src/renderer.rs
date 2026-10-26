@@ -64,6 +64,8 @@ pub struct EngineShared {
     pub callback_at_ns: AtomicU64,
     /// Frames rendered by the last device callback.
     pub callback_frames: AtomicU32,
+    /// Errors reported by the device stream (unplugged, reconfigured, ...).
+    pub device_errors: AtomicU64,
 }
 
 impl Default for EngineShared {
@@ -80,6 +82,7 @@ impl Default for EngineShared {
             epoch: std::time::Instant::now(),
             callback_at_ns: AtomicU64::new(0),
             callback_frames: AtomicU32::new(0),
+            device_errors: AtomicU64::new(0),
         }
     }
 }
@@ -97,6 +100,14 @@ impl EngineShared {
         let since_ns = (self.epoch.elapsed().as_nanos() as u64).saturating_sub(at);
         let frames = since_ns * sample_rate as u64 / 1_000_000_000;
         Some(frames.min(self.callback_frames.load(Ordering::Relaxed) as u64))
+    }
+
+    /// Time since the last device callback; `None` until the first one.
+    /// A running device calls back every few milliseconds, so a long gap
+    /// means it stopped (unplugged, asleep, or taken by another app).
+    pub fn callback_age(&self) -> Option<std::time::Duration> {
+        let at = self.callback_at_ns.load(Ordering::Acquire);
+        (at != 0).then(|| std::time::Duration::from_nanos((self.epoch.elapsed().as_nanos() as u64).saturating_sub(at)))
     }
 
     /// Reads and resets the peak of an output.

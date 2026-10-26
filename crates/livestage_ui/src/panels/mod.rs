@@ -84,6 +84,30 @@ impl AvSync {
     }
 }
 
+/// Watchdog findings (see [`crate::health`]) for the status bar.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct WatchView {
+    pub show_stalled: bool,
+    pub output_stalled: bool,
+    pub audio_stalled: bool,
+    /// Show / output stalls and contained faults since launch.
+    pub stalls: u64,
+    pub faults: u64,
+    /// Consecutive failed autosaves.
+    pub autosave_failures: u64,
+}
+
+impl WatchView {
+    /// Something is wrong right now.
+    pub fn alarm(&self) -> bool {
+        self.show_stalled || self.output_stalled || self.audio_stalled || self.autosave_failures > 0
+    }
+    /// Worth showing: wrong now, or went wrong earlier this session.
+    pub fn notable(&self) -> bool {
+        self.alarm() || self.stalls > 0 || self.faults > 0
+    }
+}
+
 pub struct UiState {
     pub dock: DockState<Tab>,
     pub selected: Option<CueId>,
@@ -98,6 +122,8 @@ pub struct UiState {
     pub health: transport::Health,
     /// Set when an autosave newer than the saved show was found at startup.
     pub recovery: Option<String>,
+    /// Set when the last session ended without a clean quit.
+    pub unclean_exit: Option<String>,
     /// Timeline editor zoom (pixels per second) and snap.
     pub tl_zoom: f32,
     pub tl_snap: bool,
@@ -117,6 +143,7 @@ pub struct UiState {
     pub output_fps: f32,
     /// Video layers frame-locked to audio, as published by the output thread.
     pub av_sync: AvSync,
+    pub watch: WatchView,
     /// Soundboard: visible cart, edit mode, pad being edited, pad held by
     /// the pointer, and pending key / MIDI learn.
     pub cart_page: usize,
@@ -153,6 +180,7 @@ impl Default for UiState {
             new_fixture_def: "generic/rgb-par".into(),
             health: Default::default(),
             recovery: None,
+            unclean_exit: None,
             tl_zoom: 40.0,
             tl_snap: true,
             tl_drag: None,
@@ -166,6 +194,7 @@ impl Default for UiState {
             quit_requested: false,
             output_fps: 0.0,
             av_sync: AvSync::default(),
+            watch: WatchView::default(),
             cart_page: 0,
             cart_edit: false,
             cart_slot: None,
@@ -325,7 +354,10 @@ fn recovery_modal(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
     egui::Modal::new(egui::Id::new("recovery")).show(ctx, |ui| {
         ui.set_width(420.0);
         ui.heading("Recover unsaved changes?");
-        ui.label(format!("LiveStage found an autosave from {when} that is newer than the saved show. It was probably left by a crash or a forced quit."));
+        match &st.unclean_exit {
+            Some(exit) => ui.label(format!("{exit} LiveStage found an autosave from {when} with changes that were never saved.")),
+            None => ui.label(format!("LiveStage found an autosave from {when} that is newer than the saved show. It was probably left by a crash or a forced quit.")),
+        };
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui.button(egui::RichText::new("Recover").strong()).clicked() {
