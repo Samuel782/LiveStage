@@ -29,22 +29,18 @@
 //! file plays sample-for-sample what the resident path would.
 
 use crate::renderer::EngineShared;
-use crate::{AudioClip, AudioError, AudioResult};
+use crate::{AudioClip, AudioResult};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{Decoder, DecoderOptions, CODEC_TYPE_NULL};
+use crate::decode::{self, decode_err};
+use symphonia::core::codecs::audio::AudioDecoder;
 use symphonia::core::errors::Error as SymError;
-use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
-use symphonia::core::units::TimeBase;
+use symphonia::core::formats::{FormatReader, SeekMode, SeekTo};
+use symphonia::core::units::{TimeBase, Timestamp};
 
 /// Files at least this long are streamed from disk; shorter ones (cart
 /// pads, stingers) are decoded whole into RAM.
@@ -74,68 +70,51 @@ const IDLE: Duration = Duration::from_millis(4);
 struct FileDecoder {
     path: PathBuf,
     format: Box<dyn FormatReader>,
-    decoder: Box<dyn Decoder>,
+    decoder: Box<dyn AudioDecoder>,
     track_id: u32,
     time_base: Option<TimeBase>,
     rate: u32,
-    sbuf: Option<SampleBuffer<f32>>,
+    /// Reused interleaved copy of the last decoded packet.
+    scratch: Vec<f32>,
     /// Input frame the next delivered sample must start at (after a seek).
     skip_to: Option<u64>,
 }
 
-fn decode_err(path: &Path, e: impl std::fmt::Display) -> AudioError {
-    AudioError::Decode { path: path.display().to_string(), msg: e.to_string() }
-}
-
 impl FileDecoder {
     fn open(path: &Path) -> AudioResult<Self> {
-        let file = File::open(path)?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-        let mut hint = Hint::new();
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            hint.with_extension(ext);
-        }
-        let probed = symphonia::default::get_probe()
-            .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
-            .map_err(|e| decode_err(path, e))?;
-        let format = probed.format;
-        let track = format
-            .tracks()
-            .iter()
-            .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-            .ok_or_else(|| AudioError::NoTrack(path.display().to_string()))?;
-        let params = track.codec_params.clone();
-        let decoder = symphonia::default::get_codecs().make(&params, &DecoderOptions::default()).map_err(|e| decode_err(path, e))?;
+        let (format, track) = decode::open(path)?;
+        let decoder = decode::make_decoder(path, &track)?;
         Ok(Self {
             path: path.to_path_buf(),
             track_id: track.id,
-            time_base: params.time_base,
-            rate: params.sample_rate.unwrap_or(48_000),
+            time_base: track.time_base,
+            rate: track.params.sample_rate.unwrap_or(48_000),
             format,
             decoder,
-            sbuf: None,
+            scratch: Vec::new(),
             skip_to: None,
         })
     }
 
     fn frame_to_ts(&self, frame: u64) -> u64 {
         match self.time_base {
-            Some(tb) if tb.numer > 0 => ((frame as u128 * tb.denom as u128) / (tb.numer as u128 * self.rate.max(1) as u128)) as u64,
-            _ => frame,
+            Some(tb) => ((frame as u128 * tb.denom.get() as u128) / (tb.numer.get() as u128 * self.rate.max(1) as u128)) as u64,
+            None => frame,
         }
     }
 
     fn ts_to_frame(&self, ts: u64) -> u64 {
         match self.time_base {
-            Some(tb) if tb.denom > 0 => ((ts as u128 * tb.numer as u128 * self.rate as u128) / tb.denom as u128) as u64,
-            _ => ts,
+            Some(tb) => ((ts as u128 * tb.numer.get() as u128 * self.rate as u128) / tb.denom.get() as u128) as u64,
+            None => ts,
         }
     }
 
     /// The next [`read`](Self::read) starts exactly at input frame `frame`.
     fn seek(&mut self, frame: u64) -> AudioResult<()> {
         let warm = frame.saturating_sub(SEEK_WARMUP_FRAMES);
-        let to = SeekTo::TimeStamp { ts: self.frame_to_ts(warm), track_id: self.track_id };
+        let ts = Timestamp::new(i64::try_from(self.frame_to_ts(warm)).unwrap_or(i64::MAX));
+        let to = SeekTo::Timestamp { ts, track_id: self.track_id };
         if self.format.seek(SeekMode::Accurate, to).is_err() {
             // Unseekable stream: start over and decode up to the target.
             *self = Self::open(&self.path.clone())?;
@@ -150,32 +129,29 @@ impl FileDecoder {
     fn read(&mut self, out: &mut Vec<f32>) -> AudioResult<bool> {
         loop {
             let packet = match self.format.next_packet() {
-                Ok(p) => p,
+                Ok(Some(p)) => p,
+                Ok(None) => return Ok(false),
                 Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
                 Err(SymError::ResetRequired) => return Ok(false),
                 Err(e) => return Err(decode_err(&self.path, e)),
             };
-            if packet.track_id() != self.track_id {
+            if packet.track_id != self.track_id {
                 continue;
             }
-            let start = self.ts_to_frame(packet.ts());
-            let buf = match self.decoder.decode(&packet) {
-                Ok(b) => b,
+            // Priming packets can carry negative timestamps.
+            let start = self.ts_to_frame(packet.pts.get().max(0) as u64);
+            let ch = match self.decoder.decode(&packet) {
+                Ok(buf) => {
+                    buf.copy_to_vec_interleaved(&mut self.scratch);
+                    buf.spec().channels().count()
+                }
                 Err(SymError::DecodeError(e)) => {
                     tracing::warn!(file = %self.path.display(), "skipping bad frame: {e}");
                     continue;
                 }
                 Err(e) => return Err(decode_err(&self.path, e)),
             };
-            let spec = *buf.spec();
-            let ch = spec.channels.count();
-            let needed = buf.capacity() as u64;
-            let sb = match &mut self.sbuf {
-                Some(sb) if sb.capacity() as u64 >= needed * ch as u64 => sb,
-                _ => self.sbuf.insert(SampleBuffer::<f32>::new(needed, spec)),
-            };
-            sb.copy_interleaved_ref(buf);
-            let samples = sb.samples();
+            let samples = &self.scratch;
             let skip = match self.skip_to {
                 Some(target) => {
                     let n = samples.len() / ch.max(1);

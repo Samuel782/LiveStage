@@ -5,7 +5,9 @@
 #   scripts/build-release.sh --allow-no-ffmpeg  # build without movie playback if FFmpeg is missing
 #   FFMPEG_PREFIX=$HOME/.local/ffmpeg-9 scripts/build-release.sh
 #
-# FFmpeg is found with pkg-config (PKG_CONFIG_PATH, or FFMPEG_PREFIX/lib/pkgconfig).
+# FFmpeg is found with pkg-config (PKG_CONFIG_PATH, or FFMPEG_PREFIX/lib/pkgconfig);
+# without one the build provides FFmpeg 9 itself into target/ffmpeg-build
+# (crates/livestage_ffmpeg_provision), unless --allow-no-ffmpeg is given.
 # Its shared libraries and their non-system dependencies are copied into
 # dist/<name>/lib and the binary is pointed at them (@executable_path/../lib on
 # macOS, $ORIGIN/../lib on Linux), so the folder runs on machines without
@@ -42,16 +44,23 @@ if pkg-config --exists libavcodec libavformat libavutil libswscale 2>/dev/null; 
 elif [[ $allow_no_ffmpeg == 1 ]]; then
     echo "warning: FFmpeg not found; building WITHOUT movie playback (--allow-no-ffmpeg)" >&2
 else
-    cat >&2 <<'EOF'
-error: FFmpeg 9.x development libraries not found by pkg-config.
-  Install FFmpeg 9.x (a Homebrew or apt package works if it ships 9.x; otherwise build it
-  into a prefix such as ~/.local/ffmpeg-9) and set FFMPEG_PREFIX or PKG_CONFIG_PATH. To ship a build without movie playback anyway, pass
-  --allow-no-ffmpeg.
-EOF
+    with_ffmpeg=1
+    features=(--features ffmpeg)
+    echo "FFmpeg: not installed; the build provides FFmpeg 9 (target/ffmpeg-build)"
+fi
+
+if ! cargo build --release -p livestage_ui ${features[@]+"${features[@]}"}; then
+    [[ $with_ffmpeg == 1 ]] && echo "error: build failed (pass --allow-no-ffmpeg to ship without movie playback)" >&2
     exit 1
 fi
 
-cargo build --release -p livestage_ui "${features[@]}"
+# A provided FFmpeg: point pkg-config at it for the bundling below.
+if [[ $with_ffmpeg == 1 ]] && ! pkg-config --exists libavcodec 2>/dev/null; then
+    provided="$(ls -td target/ffmpeg-build/*/.livestage-ffmpeg 2>/dev/null | head -1)"
+    [[ -n "$provided" ]] || { echo "error: no provided FFmpeg found in target/ffmpeg-build" >&2; exit 1; }
+    export PKG_CONFIG_PATH="$ROOT/$(dirname "$provided")/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    echo "FFmpeg: provided, libavcodec $(pkg-config --modversion libavcodec) in $(pkg-config --variable=libdir libavcodec)"
+fi
 
 suffix=""
 [[ $with_ffmpeg == 0 ]] && suffix="-nomovies"

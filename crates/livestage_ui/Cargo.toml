@@ -12,7 +12,7 @@ name = "livestage"
 path = "src/main.rs"
 
 [features]
-ffmpeg = ["livestage_video/ffmpeg"]
+ffmpeg = ["livestage_video/ffmpeg", "dep:ffmpeg-sys-next"]
 
 [dependencies]
 livestage_core.workspace = true
@@ -36,9 +36,11 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
+# Only for its `links` metadata: build.rs adds an rpath to a provided FFmpeg.
+ffmpeg-sys-next = { version = "9.0.1", optional = true, default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-mach2 = "0.4"
+mach2 = "0.7"
 # Dock icon (same versions egui-winit already uses).
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }

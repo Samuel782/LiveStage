@@ -143,7 +143,7 @@ pub fn list_input_devices() -> Vec<(String, u16)> {
     let Ok(devices) = host.input_devices() else { return Vec::new() };
     devices
         .filter_map(|d| {
-            let name = d.name().ok()?;
+            let name = crate::device::device_name(&d)?;
             let ch = d.supported_input_configs().ok()?.map(|c| c.channels()).max().unwrap_or(0);
             Some((name, ch))
         })
@@ -221,11 +221,11 @@ fn open_stream(
         Some(w) => host
             .input_devices()
             .map_err(|e| crate::AudioError::Device(e.to_string()))?
-            .find(|d| d.name().is_ok_and(|n| n == w))
+            .find(|d| crate::device::device_name(d).is_some_and(|n| n == w))
             .ok_or_else(|| crate::AudioError::Device(format!("no audio input named {w}")))?,
         None => host.default_input_device().ok_or_else(|| crate::AudioError::Device("no audio input available".into()))?,
     };
-    let name = device.name().unwrap_or_else(|_| "Unknown input".into());
+    let name = crate::device::device_name(&device).unwrap_or_else(|| "Unknown input".into());
     let config = device.default_input_config().map_err(|e| crate::AudioError::Device(e.to_string()))?;
     let channels = config.channels().max(1);
     let channel = channel.clamp(1, channels);
@@ -254,13 +254,13 @@ where
 {
     let ch = config.channels.max(1) as usize;
     let pick = channel as usize - 1;
-    let rate = config.sample_rate.0;
+    let rate = config.sample_rate;
     let mut decoder = LtcDecoder::with_rate_hint(rate, hint);
     let callback = move |data: &[T], info: &cpal::InputCallbackInfo| {
         let now = Instant::now();
         // How long ago the end of this buffer was captured.
         let ts = info.timestamp();
-        let latency = ts.callback.duration_since(&ts.capture).unwrap_or_default();
+        let latency = ts.callback.duration_since(ts.capture);
         let frames = data.len() / ch;
         for (i, frame) in data.chunks_exact(ch).enumerate() {
             let Some(f) = decoder.push(<f32 as FromSample<T>>::from_sample_(frame[pick])) else { continue };
@@ -270,7 +270,7 @@ where
         }
     };
     device
-        .build_input_stream(config, callback, |e| tracing::error!("LTC input error: {e}"), None)
+        .build_input_stream(*config, callback, |e| tracing::error!("LTC input error: {e}"), None)
         .map_err(|e| crate::AudioError::Device(e.to_string()))
 }
 

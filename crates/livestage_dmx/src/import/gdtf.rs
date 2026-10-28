@@ -18,8 +18,9 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Imported, String> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| format!("not a GDTF file (zip): {e}"))?;
     let name = archive
         .file_names()
+        .filter_map(Result::ok)
         .find(|n| n.eq_ignore_ascii_case("description.xml"))
-        .map(str::to_string)
+        .map(|n| n.into_owned())
         .ok_or("not a GDTF file: no description.xml")?;
     let mut xml = String::new();
     archive

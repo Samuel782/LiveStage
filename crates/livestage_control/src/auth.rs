@@ -13,7 +13,7 @@
 //! checks the expiry. Nothing is stored per token: rotating the secret
 //! revokes every token at once.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -128,7 +128,7 @@ impl RemoteAuth {
     }
 
     fn mac(&self, payload: &str) -> HmacSha256 {
-        let mut mac = <HmacSha256 as Mac>::new_from_slice(&self.secret).expect("HMAC accepts any key length");
+        let mut mac = <HmacSha256 as KeyInit>::new_from_slice(&self.secret).expect("HMAC accepts any key length");
         mac.update(payload.as_bytes());
         mac
     }

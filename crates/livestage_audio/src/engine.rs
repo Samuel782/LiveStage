@@ -334,7 +334,7 @@ impl AudioEngine {
                     Ok(o) => o,
                     Err(e) => return drop(info_tx.send(Err(e))),
                 };
-                let _ = info_tx.send(Ok((opened.config.sample_rate.0, opened.config.channels, opened.name.clone())));
+                let _ = info_tx.send(Ok((opened.config.sample_rate, opened.config.channels, opened.name.clone())));
                 let Ok((renderer, shared)) = renderer_rx.recv() else { return };
                 let stream = match build_stream(&opened, renderer, shared) {
                     Ok(s) => s,

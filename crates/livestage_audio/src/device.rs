@@ -16,16 +16,22 @@ pub struct OutputDeviceInfo {
     pub is_default: bool,
 }
 
+/// A device's human-readable name: what the UI lists and show files store
+/// to pick the device again.
+pub(crate) fn device_name(device: &cpal::Device) -> Option<String> {
+    device.description().ok().map(|d| d.name().to_string())
+}
+
 /// Enumerates output devices on the default host (CoreAudio / WASAPI / ALSA).
 pub fn list_output_devices() -> Vec<OutputDeviceInfo> {
     let host = cpal::default_host();
-    let default_name = host.default_output_device().and_then(|d| d.name().ok());
+    let default_name = host.default_output_device().and_then(|d| device_name(&d));
     let Ok(devices) = host.output_devices() else { return vec![] };
     devices
         .filter_map(|d| {
-            let name = d.name().ok()?;
+            let name = device_name(&d)?;
             let max_channels = d.supported_output_configs().ok()?.map(|c| c.channels()).max().unwrap_or(0);
-            let default_sample_rate = d.default_output_config().map(|c| c.sample_rate().0).unwrap_or(48_000);
+            let default_sample_rate = d.default_output_config().map(|c| c.sample_rate()).unwrap_or(48_000);
             Some(OutputDeviceInfo {
                 is_default: default_name.as_deref() == Some(name.as_str()),
                 name,
@@ -55,7 +61,7 @@ pub(crate) fn select_device(
         Some(want) => host
             .output_devices()
             .map_err(|e| AudioError::Device(e.to_string()))?
-            .find(|d| d.name().map(|n| n == want).unwrap_or(false))
+            .find(|d| self::device_name(d).is_some_and(|n| n == want))
             .or_else(|| {
                 tracing::warn!(device = want, "configured audio device not found, using default");
                 host.default_output_device()
@@ -63,22 +69,22 @@ pub(crate) fn select_device(
         None => host.default_output_device(),
     }
     .ok_or_else(|| AudioError::Device("no output device available".into()))?;
-    let name = device.name().unwrap_or_else(|_| "Unknown device".into());
+    let name = self::device_name(&device).unwrap_or_else(|| "Unknown device".into());
 
     let default = device.default_output_config().map_err(|e| AudioError::Device(e.to_string()))?;
-    let rate = sample_rate.unwrap_or(default.sample_rate().0);
+    let rate = sample_rate.unwrap_or(default.sample_rate());
 
     // Prefer f32, then the most channels, at the requested rate.
     let ranges: Vec<_> = device.supported_output_configs().map_err(|e| AudioError::Device(e.to_string()))?.collect();
     let best = ranges
         .iter()
-        .filter(|r| r.min_sample_rate().0 <= rate && rate <= r.max_sample_rate().0)
+        .filter(|r| r.min_sample_rate() <= rate && rate <= r.max_sample_rate())
         .filter(|r| channels.is_none_or(|c| r.channels() >= c))
         .max_by_key(|r| (r.sample_format() == SampleFormat::F32, r.channels()));
 
     let (mut config, format, buffer_range) = match best {
         Some(r) => {
-            let c = r.with_sample_rate(cpal::SampleRate(rate));
+            let c = r.with_sample_rate(rate);
             (c.config(), c.sample_format(), Some(*c.buffer_size()))
         }
         None => (default.config(), default.sample_format(), Some(*default.buffer_size())),
@@ -114,7 +120,7 @@ where
     T: SizedSample + FromSample<f32>,
 {
     let ch = opened.config.channels as usize;
-    let rate = opened.config.sample_rate.0 as f64;
+    let rate = opened.config.sample_rate as f64;
     // Scratch is allocated here, before the closure moves to the RT thread.
     let mut scratch = vec![0.0f32; 8192 * ch];
     let errors = shared.clone();
@@ -122,7 +128,7 @@ where
         errors.device_errors.fetch_add(1, Ordering::Relaxed);
         tracing::error!("audio stream error: {e}");
     };
-    let config = opened.config.clone();
+    let config = opened.config;
 
     let callback = move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
         let t0 = Instant::now();
@@ -144,6 +150,6 @@ where
     };
     opened
         .device
-        .build_output_stream(&config, callback, on_error, None)
+        .build_output_stream(config, callback, on_error, None)
         .map_err(|e| AudioError::Device(e.to_string()))
 }

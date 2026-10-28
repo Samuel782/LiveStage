@@ -7,8 +7,12 @@ members = [
     "crates/livestage_dmx",
     "crates/livestage_control",
     "crates/livestage_ui",
+    "crates/livestage_ffmpeg_provision",
 ]
 default-members = ["crates/livestage_ui"]
+# Vendored, patched `ffmpeg-sys-next` (see [patch.crates-io] below): built
+# as a dependency, not linted or tested as part of the workspace.
+exclude = ["vendor/rust-ffmpeg-sys"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,21 +28,21 @@ livestage_video = { path = "crates/livestage_video" }
 livestage_dmx = { path = "crates/livestage_dmx" }
 livestage_control = { path = "crates/livestage_control" }
 
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.28", features = ["v4", "serde"] }
-thiserror = "2.0"
-anyhow = "1.0"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-crossbeam-channel = "0.5"
-parking_lot = "0.12"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+uuid = { version = "1.29", features = ["v4", "serde"] }
+thiserror = "2.0.21"
+anyhow = "1.0.104"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+crossbeam-channel = "0.5.17"
+parking_lot = "0.13"
 bytemuck = { version = "1.25", features = ["derive"] }
 
 # Real-time audio
-cpal = "0.15.3"
-symphonia = { version = "0.5.5", features = ["all"] }
-ringbuf = "0.4.8"
+cpal = "0.18.2"
+symphonia = { version = "0.6.1", features = ["all"] }
+ringbuf = "0.5.3"
 
 # GPU / windowing / UI (versions chosen as a mutually compatible set)
 wgpu = "30.0.1"
@@ -47,31 +51,36 @@ egui = "0.36.2"
 egui-wgpu = { version = "0.36.2", features = ["winit"] }
 egui-winit = "0.36.2"
 egui_dock = "0.21.1"
-pollster = "0.4"
-libloading = "0.8"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+pollster = "1.0"
+libloading = "0.9"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 # Presentations: pure-Rust PDF rasteriser, PPTX (zip + XML), slide text
-hayro = "0.7.1"
-zip = { version = "2.4", default-features = false, features = ["deflate"] }
-roxmltree = "0.21"
-kurbo = "0.13"
+hayro = "0.8.0"
+zip = { version = "9.1", default-features = false, features = ["deflate"] }
+roxmltree = "0.21.2"
+kurbo = "0.13.1"
 ab_glyph = "0.2.32"
 epaint_default_fonts = "0.36.2"
-# Optional movie decoding (links the system FFmpeg 9.x libraries)
-ffmpeg-next = { version = "9.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+# Optional movie decoding (FFmpeg 9.x: the system one, or provided by the build)
+ffmpeg-next = { version = "9.0.0", default-features = false, features = ["codec", "format", "software-scaling"] }
 
 # Control protocols
-midir = "0.10.4"
-rosc = "0.10.1"
-socket2 = { version = "0.6", features = ["all"] }
+midir = "0.11.1"
+rosc = "0.11.4"
+socket2 = { version = "0.6.5", features = ["all"] }
 # Remote API authentication (HMAC-SHA256 session tokens)
-hmac = "0.12"
-sha2 = "0.10"
-getrandom = "0.3"
-tokio = { version = "1.53", features = ["rt-multi-thread", "net", "sync", "macros", "time"] }
-tokio-tungstenite = "0.26.2"
-futures-util = "0.3"
+hmac = "0.13"
+sha2 = "0.11"
+getrandom = "0.4"
+tokio = { version = "1.54", features = ["rt-multi-thread", "net", "sync", "macros", "time"] }
+tokio-tungstenite = "0.30.0"
+futures-util = "0.3.34"
+
+# `ffmpeg-sys-next` with automatic FFmpeg provisioning: `--features ffmpeg`
+# works without FFmpeg installed (see crates/livestage_ffmpeg_provision).
+[patch.crates-io]
+ffmpeg-sys-next = { path = "vendor/rust-ffmpeg-sys" }
 
 [profile.dev]
 opt-level = 1

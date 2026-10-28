@@ -4,13 +4,14 @@
 use crate::{AudioClip, AudioError, AudioResult};
 use std::fs::File;
 use std::path::Path;
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoder, AudioDecoderOptions};
+use symphonia::core::codecs::CodecParameters;
 use symphonia::core::errors::Error as SymError;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, FormatReader};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
+use symphonia::core::units::TimeBase;
 
 /// Lightweight probe result for import-time metadata.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -26,83 +27,91 @@ impl AudioInfo {
     }
 }
 
-fn open(path: &Path) -> AudioResult<Box<dyn symphonia::core::formats::FormatReader>> {
+pub(crate) fn decode_err(path: &Path, e: impl std::fmt::Display) -> AudioError {
+    AudioError::Decode { path: path.display().to_string(), msg: e.to_string() }
+}
+
+/// The first audio track of an opened file.
+pub(crate) struct AudioTrack {
+    pub id: u32,
+    pub params: AudioCodecParameters,
+    pub time_base: Option<TimeBase>,
+    pub frames: Option<u64>,
+}
+
+/// Opens `path` and finds its first audio track.
+pub(crate) fn open(path: &Path) -> AudioResult<(Box<dyn FormatReader>, AudioTrack)> {
     let file = File::open(path)?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         hint.with_extension(ext);
     }
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
-        .map_err(|e| AudioError::Decode { path: path.display().to_string(), msg: e.to_string() })?;
-    Ok(probed.format)
+    let format = symphonia::default::get_probe()
+        .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
+        .map_err(|e| decode_err(path, e))?;
+    let track = format
+        .tracks()
+        .iter()
+        .find_map(|t| match &t.codec_params {
+            Some(CodecParameters::Audio(p)) => Some(AudioTrack { id: t.id, params: p.clone(), time_base: t.time_base, frames: t.num_frames }),
+            _ => None,
+        })
+        .ok_or_else(|| AudioError::NoTrack(path.display().to_string()))?;
+    Ok((format, track))
+}
+
+/// A decoder for `track`. Gapless trimming stays off (as in Symphonia
+/// 0.5): packet timestamps then map 1:1 to decoded frames, which the
+/// sample-accurate seek in `stream` relies on.
+pub(crate) fn make_decoder(path: &Path, track: &AudioTrack) -> AudioResult<Box<dyn AudioDecoder>> {
+    let mut opts = AudioDecoderOptions::default();
+    opts.gapless = false;
+    symphonia::default::get_codecs().make_audio_decoder(&track.params, &opts).map_err(|e| decode_err(path, e))
 }
 
 /// Reads stream parameters without decoding.
 pub fn probe(path: &Path) -> AudioResult<AudioInfo> {
-    let format = open(path)?;
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or_else(|| AudioError::NoTrack(path.display().to_string()))?;
-    let p = &track.codec_params;
-    Ok(AudioInfo {
-        sample_rate: p.sample_rate.unwrap_or(48_000),
-        channels: p.channels.map(|c| c.count() as u16).unwrap_or(2),
-        frames: p.n_frames,
-    })
+    let (_, track) = open(path)?;
+    let p = &track.params;
+    Ok(AudioInfo { sample_rate: p.sample_rate.unwrap_or(48_000), channels: p.channels.as_ref().map(|c| c.count() as u16).unwrap_or(2), frames: track.frames })
 }
 
 /// Fully decodes a file to interleaved f32 at its native rate.
 pub fn decode_file(path: &Path) -> AudioResult<AudioClip> {
-    let mut format = open(path)?;
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_or_else(|| AudioError::NoTrack(path.display().to_string()))?;
-    let track_id = track.id;
-    let params = track.codec_params.clone();
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&params, &DecoderOptions::default())
-        .map_err(|e| AudioError::Decode { path: path.display().to_string(), msg: e.to_string() })?;
+    let (mut format, track) = open(path)?;
+    let mut decoder = make_decoder(path, &track)?;
 
-    let mut sample_rate = params.sample_rate.unwrap_or(48_000);
-    let mut channels = params.channels.map(|c| c.count() as u16).unwrap_or(0);
-    let mut data: Vec<f32> = match (params.n_frames, channels) {
+    let mut sample_rate = track.params.sample_rate.unwrap_or(48_000);
+    let mut channels = track.params.channels.as_ref().map(|c| c.count() as u16).unwrap_or(0);
+    let mut data: Vec<f32> = match (track.frames, channels) {
         (Some(n), c) if c > 0 => Vec::with_capacity(n as usize * c as usize),
         _ => Vec::new(),
     };
-    let mut sbuf: Option<SampleBuffer<f32>> = None;
+    let mut scratch: Vec<f32> = Vec::new();
 
     loop {
         let packet = match format.next_packet() {
-            Ok(p) => p,
+            Ok(Some(p)) => p,
+            Ok(None) => break,
             Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(SymError::ResetRequired) => break,
-            Err(e) => return Err(AudioError::Decode { path: path.display().to_string(), msg: e.to_string() }),
+            Err(e) => return Err(decode_err(path, e)),
         };
-        if packet.track_id() != track_id {
+        if packet.track_id != track.id {
             continue;
         }
         match decoder.decode(&packet) {
             Ok(buf) => {
-                let spec = *buf.spec();
-                sample_rate = spec.rate;
-                channels = spec.channels.count() as u16;
-                let needed = buf.capacity() as u64;
-                let sb = match &mut sbuf {
-                    Some(sb) if sb.capacity() as u64 >= needed * spec.channels.count() as u64 => sb,
-                    _ => sbuf.insert(SampleBuffer::<f32>::new(needed, spec)),
-                };
-                sb.copy_interleaved_ref(buf);
-                data.extend_from_slice(sb.samples());
+                let spec = buf.spec();
+                sample_rate = spec.rate();
+                channels = spec.channels().count() as u16;
+                buf.copy_to_vec_interleaved(&mut scratch);
+                data.extend_from_slice(&scratch);
             }
             // Corrupt frames are skipped rather than aborting the show.
             Err(SymError::DecodeError(e)) => tracing::warn!(file = %path.display(), "skipping bad frame: {e}"),
-            Err(e) => return Err(AudioError::Decode { path: path.display().to_string(), msg: e.to_string() }),
+            Err(e) => return Err(decode_err(path, e)),
         }
     }
 

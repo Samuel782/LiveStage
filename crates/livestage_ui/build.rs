@@ -2,6 +2,10 @@
 //! `icon/` are packed into an `.ico` (see `src/ico.rs`) and compiled into
 //! the resource section with `winresource`, so Explorer, the taskbar and
 //! shortcuts show it. Other platforms set the icon at run time.
+//!
+//! With `--features ffmpeg` and an FFmpeg provided by the build (see
+//! `livestage_ffmpeg_provision`), it also adds an rpath on Linux so the
+//! binary finds those libraries when launched directly.
 
 #[allow(dead_code)]
 #[path = "src/ico.rs"]
@@ -10,6 +14,7 @@ mod ico;
 fn main() {
     println!("cargo:rerun-if-changed=../../icon");
     println!("cargo:rerun-if-changed=src/ico.rs");
+    ffmpeg_rpath();
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -23,6 +28,20 @@ fn main() {
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR")).join("livestage.ico");
     std::fs::write(&out, ico).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
     embed(&out);
+}
+
+/// `cargo run` / `cargo test` put the provided FFmpeg on the library path
+/// themselves; a directly launched Linux binary needs an rpath. macOS
+/// libraries carry absolute install names and Windows DLLs are copied next
+/// to the binary, so neither needs one. `scripts/build-release.sh`
+/// replaces it with `$ORIGIN/../lib` when bundling.
+fn ffmpeg_rpath() {
+    println!("cargo:rerun-if-env-changed=DEP_FFMPEG_LIVESTAGE_RUNTIME_DIR");
+    let Ok(dir) = std::env::var("DEP_FFMPEG_LIVESTAGE_RUNTIME_DIR") else { return };
+    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if !matches!(os.as_str(), "macos" | "ios" | "windows") {
+        println!("cargo:rustc-link-arg-bins=-Wl,-rpath,{dir}");
+    }
 }
 
 #[cfg(windows)]

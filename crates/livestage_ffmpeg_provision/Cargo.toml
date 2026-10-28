@@ -1,0 +1,17 @@
+[package]
+name = "livestage_ffmpeg_provision"
+description = "Build-time FFmpeg provisioning: uses a configured FFmpeg 9 or fetches a verified one"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Used as a build-dependency of the vendored `ffmpeg-sys-next`
+# (vendor/rust-ffmpeg-sys), so everything here runs inside a build script.
+[dependencies]
+pkg-config = "0.3.34"
+sha2.workspace = true
+ureq = "3.5"
+tar = "0.4.46"
+liblzma = { version = "0.4.9", features = ["static"] }
+flate2 = "1.1"
+zip.workspace = true

@@ -2,15 +2,15 @@
 
 use super::RenderedSlide;
 use crate::{VideoError, VideoResult};
-use hayro::hayro_interpret::font::Glyph;
+use hayro::hayro_interpret::font::GlyphRun;
 use hayro::hayro_interpret::hayro_cmap::BfString;
 use hayro::hayro_interpret::{
-    interpret_page, BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint,
-    PathDrawMode, SoftMask,
+    interpret_page, BlendMode, ClipPath, Context, Device, DrawMode, DrawProps, Image, ImageDrawProps, InterpreterCache, InterpreterSettings,
+    SoftMask,
 };
 use hayro::hayro_interpret::TransformExt;
 use hayro::hayro_syntax::Pdf;
-use hayro::{render, RenderCache, RenderSettings};
+use hayro::{render, PixmapSettings, RenderCache, RenderSettings};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -43,15 +43,13 @@ pub fn render_pages(path: &Path, target: (u32, u32), each: &mut dyn FnMut(usize,
             page,
             &cache,
             &settings,
-            &RenderSettings {
-                x_scale: scale,
-                y_scale: scale,
-                bg_color: hayro::vello_cpu::color::palette::css::WHITE,
-                ..Default::default()
-            },
+            &RenderSettings::default(),
+            &PixmapSettings { x_scale: scale, y_scale: scale, bg_color: hayro::vello_cpu::color::palette::css::WHITE },
         );
         let (pw, ph) = (pixmap.width() as u32, pixmap.height() as u32);
-        let rgba = pixmap.take_unpremultiplied().into_iter().flat_map(|p| [p.r, p.g, p.b, p.a]).collect();
+        // Opaque white paper: every pixel has alpha 255, so the premultiplied
+        // bytes are already straight RGBA.
+        let rgba = pixmap.data_as_u8_slice().to_vec();
         let text = page_text(page, &settings);
         each(i, total, RenderedSlide { width: pw, height: ph, rgba, text, notes: String::new() })?;
     }
@@ -119,27 +117,20 @@ pub(crate) fn clean_text(s: &str) -> String {
 }
 
 impl<'a> Device<'a> for TextCollector {
-    fn set_soft_mask(&mut self, _: Option<SoftMask<'a>>) {}
-    fn set_blend_mode(&mut self, _: BlendMode) {}
-    fn draw_path(&mut self, _: &kurbo::BezPath, _: kurbo::Affine, _: &Paint<'a>, _: &PathDrawMode) {}
+    fn draw_path(&mut self, _: &kurbo::BezPath, _: DrawProps<'a>, _: &DrawMode) {}
     fn push_clip_path(&mut self, _: &ClipPath) {}
     fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
-    fn draw_glyph(
-        &mut self,
-        glyph: &Glyph<'a>,
-        transform: kurbo::Affine,
-        glyph_transform: kurbo::Affine,
-        _: &Paint<'a>,
-        _: &GlyphDrawMode,
-    ) {
-        let at = (transform * glyph_transform).translation();
-        match glyph.as_unicode() {
-            Some(BfString::Char(c)) => self.push(at.x, at.y, c.encode_utf8(&mut [0; 4])),
-            Some(BfString::String(s)) => self.push(at.x, at.y, &s),
-            None => {}
+    fn draw_glyph_run(&mut self, run: &GlyphRun<'_, 'a>, props: DrawProps<'a>, _: &DrawMode) {
+        for glyph in run.glyphs() {
+            let at = (props.transform * glyph.transform()).translation();
+            match glyph.as_unicode() {
+                Some(BfString::Char(c)) => self.push(at.x, at.y, c.encode_utf8(&mut [0; 4])),
+                Some(BfString::String(s)) => self.push(at.x, at.y, &s),
+                None => {}
+            }
         }
     }
-    fn draw_image(&mut self, _: Image<'a, '_>, _: kurbo::Affine) {}
-    fn pop_clip_path(&mut self) {}
+    fn draw_image(&mut self, _: Image<'a, '_>, _: ImageDrawProps<'a>) {}
+    fn pop_clip(&mut self) {}
     fn pop_transparency_group(&mut self) {}
 }

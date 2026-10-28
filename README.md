@@ -127,11 +127,12 @@ layout on Apple M2 (`cargo test -p livestage_ui --release slow_ui -- --ignored -
 
 ### Requirements
 
-- **Rust** 1.92 or newer (stable).
+- **Rust** 1.95 or newer (stable).
 - **macOS** 12+ (Metal): developed and tested here. **Windows** 10+ (DX12/Vulkan) and **Linux**
   (Vulkan, ALSA: `libasound2-dev`, `libudev-dev`) are supported by every dependency and have
   platform code paths, but are not yet tested.
-- Optional: **FFmpeg 9.x** development libraries for movie playback; the **NDI runtime** for NDI;
+- Movie playback (`--features ffmpeg`) needs **FFmpeg 9.x**, which the build provides itself when
+  none is installed (see *FFmpeg* below). Optional: the **NDI runtime** for NDI;
   **LibreOffice** for full-fidelity PowerPoint import and for `.ppt` / `.key` / `.odp`.
 
 ### Commands
@@ -143,31 +144,58 @@ cargo build --release
 ./target/release/livestage "path/My Show.livestage"     # open a show
 ./target/release/livestage --new ~/Shows "Tour 2027"    # create an empty show
 
-# With movie-file playback (FFmpeg 9.x via pkg-config)
+# With movie-file playback (FFmpeg 9.x: found on the system, or provided by the build)
 cargo run --release --features ffmpeg
-# FFmpeg installed in a custom prefix:
+# Use a specific FFmpeg 9 install instead:
 PKG_CONFIG_PATH=$HOME/.local/ffmpeg-9/lib/pkgconfig cargo run --release --features ffmpeg
 
 # What can this build play? (exit 1 if movies are unavailable or H.264/HEVC/ProRes is missing)
 ./target/release/livestage --check-media
 ```
 
+### FFmpeg
+
+`--features ffmpeg` needs no setup. The build uses an FFmpeg 9 it can find (`FFMPEG_DIR`, vcpkg on
+Windows, then pkg-config); if there is none, it provides one once into `target/ffmpeg-build/`, shared
+by every profile:
+
+| Target | Provided FFmpeg |
+|---|---|
+| Linux x86_64 / aarch64, Windows x86_64 / aarch64 | [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) `n9.0` LGPL shared build, verified against the release's `checksums.sha256` |
+| macOS (and other Unix) | FFmpeg 9.0.2 source (SHA-256 pinned after checking the release signature), built with `configure && make` (about 3 minutes; needs the Xcode command-line tools) |
+
+This lives in `crates/livestage_ffmpeg_provision`, called from a vendored `ffmpeg-sys-next`
+(`vendor/rust-ffmpeg-sys`, see its `LIVESTAGE.md`). `cargo run`/`cargo test` find the libraries on
+their own; directly launched binaries do too (absolute install names on macOS, an rpath on Linux,
+DLLs copied next to the `.exe` on Windows).
+
+| Env | Effect |
+|---|---|
+| `LIVESTAGE_FFMPEG=auto` | Default: use an installed FFmpeg 9, else provide one. `fetch` always uses the provided one; `system` never provides one. |
+| `LIVESTAGE_FFMPEG_CACHE=dir` | Where provided builds are kept (default `<target-dir>/ffmpeg-build`). |
+| `LIVESTAGE_FFMPEG_URL` + `LIVESTAGE_FFMPEG_SHA256` | Your own archive (`.zip`, `.tar.xz`, `.tar.gz`) with `include/` and `lib/` (and `bin/` DLLs on Windows). |
+
+The first provisioning needs network access (github.com or ffmpeg.org); offline builds can set
+`FFMPEG_DIR` or reuse an existing cache.
+
 ### Release builds
 
 ```bash
-FFMPEG_PREFIX=$HOME/.local/ffmpeg-9 scripts/build-release.sh   # → dist/livestage-<ver>-<os>-<arch>.tar.gz
+scripts/build-release.sh                                         # → dist/livestage-<ver>-<os>-<arch>.tar.gz
+FFMPEG_PREFIX=$HOME/.local/ffmpeg-9 scripts/build-release.sh   # same, with a specific FFmpeg
 scripts/build-release.sh --allow-no-ffmpeg                       # → …-nomovies, stills/sequences only
 ```
 
-The script (macOS, Linux) builds with `--features ffmpeg`, and **fails if FFmpeg can't be found**
-unless `--allow-no-ffmpeg` is given, so a release never loses movie playback by accident. FFmpeg
+The script (macOS, Linux) builds with `--features ffmpeg` (using the provided FFmpeg when none is
+installed), and **fails if FFmpeg can't be found or provided** unless `--allow-no-ffmpeg` is given,
+so a release never loses movie playback by accident. FFmpeg
 is linked **dynamically**: its libraries and their non-system dependencies are copied into
 `dist/<name>/lib` and the binary loads them from there (`@executable_path/../lib` with ad-hoc
 re-signing on macOS — set `CODESIGN_IDENTITY` for a Developer ID; `$ORIGIN/../lib` via `patchelf`
 on Linux). The staged binary must then pass `--check-media` in an empty environment.
 
-- **Windows** isn't scripted: build with `--features ffmpeg` (`FFMPEG_DIR` pointing at a shared
-  FFmpeg 9 build, see `ffmpeg-sys-next`) and copy its `av*.dll` / `sw*.dll` next to `livestage.exe`.
+- **Windows** isn't scripted: `cargo build --release --features ffmpeg` puts the FFmpeg DLLs next to
+  `target\release\livestage.exe`; ship them together.
 - **Static linking** (`ffmpeg-next`'s `static` feature with static FFmpeg libraries) avoids
   bundling but isn't set up or tested here.
 - **Licensing:** shipping FFmpeg means following its licence. Dynamic linking against an LGPL
@@ -182,7 +210,7 @@ Settings isn't treated as a problem.
 
 | Feature / env | Effect |
 |---|---|
-| `--features ffmpeg` | Adds the FFmpeg backend for `.mov .mp4 .m4v .mkv .webm .avi .mxf .mpg .ts .m2ts .wmv .flv .ogv .dv .nut`. Without it, video cues play stills and PNG/JPEG image sequences, movie files show an on-screen notice, and a startup banner says movie playback is unavailable. Requires FFmpeg **9.x** headers and libraries (`ffmpeg-next` 9). |
+| `--features ffmpeg` | Adds the FFmpeg backend for `.mov .mp4 .m4v .mkv .webm .avi .mxf .mpg .ts .m2ts .wmv .flv .ogv .dv .nut`. Without it, video cues play stills and PNG/JPEG image sequences, movie files show an on-screen notice, and a startup banner says movie playback is unavailable. Requires FFmpeg **9.x** (`ffmpeg-next` 9), provided by the build when not installed (see *FFmpeg*). |
 | `LIVESTAGE_HWDEC=0` | Forces software video decode (hardware decode is otherwise used when available; also a Settings switch). |
 | `LIVESTAGE_SOFFICE=/path/soffice` | LibreOffice binary for presentation import (also a Settings field; otherwise `PATH` and standard install locations are searched). |
 | `RUST_LOG=info` | Logging (`tracing`); e.g. `RUST_LOG=info,livestage_core=debug` to log every cue start. |
@@ -700,9 +728,8 @@ release on note-off; a pad takes precedence over a default note. MIDI Time Code 
 ## Testing
 
 ```bash
-cargo test --workspace                                                     # 132 tests
-PKG_CONFIG_PATH=$HOME/.local/ffmpeg-9/lib/pkgconfig \
-  cargo test --workspace --features livestage_ui/ffmpeg,livestage_video/ffmpeg  # 135 tests
+cargo test --workspace --all-features            # 236 tests (FFmpeg provided if not installed)
+cargo test -p livestage_ffmpeg_provision -- --ignored   # downloads the Linux/Windows FFmpeg archives
 cargo clippy --workspace --all-targets
 ```
 
