@@ -3,7 +3,7 @@
   "id": "a7a04dc0-d262-411e-bacd-85c1723c8fd0",
   "name": "Demo Show",
   "created_at": 1792255988,
-  "modified_at": 1792344904,
+  "modified_at": 1793029655,
   "cue_lists": [
     {
       "id": "37fdc501-5ec5-46a5-ab8e-959b75753a7e",
@@ -48,7 +48,33 @@
               }
             },
             {
-              "offset": 0,
+              "offset": 1100000,
+              "cue": {
+                "type": "video",
+                "id": "8f62fd27-18ef-4e3c-9594-59821f03a179",
+                "number": "6.2",
+                "name": "New Video cue",
+                "notes": "",
+                "pre_wait": 0,
+                "post_wait": 0,
+                "follow": "None",
+                "armed": true,
+                "color": null,
+                "output": "1212afeb-6b84-42dc-b1e1-bcdce1fe820e",
+                "content": {
+                  "type": "test_pattern"
+                },
+                "layer": 0,
+                "opacity": 1.0,
+                "fade_in": 500000,
+                "fade_out": 500000,
+                "hold": null,
+                "media_length": null,
+                "end_behavior": "Hide"
+              }
+            },
+            {
+              "offset": 1900000,
               "cue": {
                 "type": "timer",
                 "id": "9b2ca76f-255a-4db2-b6a0-5dbbda925b56",
@@ -84,32 +110,6 @@
                 },
                 "layer": 10,
                 "hold_at_zero": true
-              }
-            },
-            {
-              "offset": 1800000,
-              "cue": {
-                "type": "video",
-                "id": "8f62fd27-18ef-4e3c-9594-59821f03a179",
-                "number": "6.2",
-                "name": "New Video cue",
-                "notes": "",
-                "pre_wait": 0,
-                "post_wait": 0,
-                "follow": "None",
-                "armed": true,
-                "color": null,
-                "output": "1212afeb-6b84-42dc-b1e1-bcdce1fe820e",
-                "content": {
-                  "type": "test_pattern"
-                },
-                "layer": 0,
-                "opacity": 1.0,
-                "fade_in": 500000,
-                "fade_out": 500000,
-                "hold": null,
-                "media_length": null,
-                "end_behavior": "Hide"
               }
             }
           ],
@@ -173,6 +173,28 @@
         },
         {
           "type": "dmx",
+          "id": "ce4202ae-3f24-4755-86e8-9b32c15a4fe6",
+          "number": "8",
+          "name": "New DMX cue",
+          "notes": "",
+          "pre_wait": 0,
+          "post_wait": 0,
+          "follow": "None",
+          "armed": true,
+          "color": null,
+          "channels": [
+            {
+              "universe": 0,
+              "channel": 1,
+              "value": 255
+            }
+          ],
+          "attributes": [],
+          "fade": 2000000,
+          "release_on_stop": true
+        },
+        {
+          "type": "dmx",
           "id": "97accfa9-f278-4228-a20e-89733a63a443",
           "number": "3",
           "name": "New DMX cue",
@@ -228,6 +250,33 @@
           },
           "layer": 10,
           "hold_at_zero": true
+        },
+        {
+          "type": "audio",
+          "id": "f1520577-f439-4338-9efe-9c2ff225bf47",
+          "number": "9",
+          "name": "New Audio cue",
+          "notes": "",
+          "pre_wait": 0,
+          "post_wait": 0,
+          "follow": "None",
+          "armed": true,
+          "color": null,
+          "tracks": [],
+          "click": {
+            "bpm": 120.0,
+            "beats_per_bar": 7,
+            "stem": "94d8ac99-cf09-431a-ade3-cfe32b31dfdc",
+            "gain_db": -6.0,
+            "count_in_bars": 1
+          },
+          "gain_db": 0.0,
+          "fade_in": 0,
+          "fade_out": 0,
+          "start_at": 0,
+          "end_at": null,
+          "looped": false,
+          "media_length": null
         }
       ]
     },
@@ -242,7 +291,17 @@
     {
       "id": "1212afeb-6b84-42dc-b1e1-bcdce1fe820e",
       "name": "Main LED Wall",
-      "physical": null,
+      "physical": {
+        "name": "Monitor #41042",
+        "position": [
+          0,
+          0
+        ],
+        "size": [
+          3420,
+          2224
+        ]
+      },
       "canvas_size": [
         3420,
         2224
@@ -251,19 +310,23 @@
       "enabled": true,
       "projection": {
         "warp": {
-          "cols": 4,
-          "rows": 4,
+          "cols": 5,
+          "rows": 5,
           "points": [
             [
               0.0,
               0.0
             ],
             [
-              0.33333334,
+              0.25,
               0.0
             ],
             [
-              0.6666667,
+              0.5,
+              0.0
+            ],
+            [
+              0.75,
               0.0
             ],
             [
@@ -272,46 +335,78 @@
             ],
             [
               0.0,
-              0.33333334
+              0.25
             ],
             [
-              0.33333334,
-              0.33333334
+              0.25,
+              0.25
             ],
             [
-              0.6666667,
-              0.33333334
+              0.5,
+              0.25
+            ],
+            [
+              0.75,
+              0.25
             ],
             [
               1.0,
-              0.33333334
+              0.25
             ],
             [
               0.0,
-              0.6666667
+              0.5
             ],
             [
-              0.33333334,
-              0.6666667
+              0.25,
+              0.5
             ],
             [
-              0.6666667,
-              0.6666667
+              1.2734022,
+              1.0943493
+            ],
+            [
+              0.75,
+              0.5
             ],
             [
               1.0,
-              0.6666667
+              0.5
+            ],
+            [
+              0.0,
+              0.75
+            ],
+            [
+              0.25,
+              0.75
+            ],
+            [
+              0.5,
+              0.75
+            ],
+            [
+              0.75,
+              0.75
+            ],
+            [
+              1.0,
+              0.75
             ],
             [
               0.0,
               1.0
             ],
             [
-              0.33333334,
+              0.25,
               1.0
             ],
             [
-              0.6666667,
+              0.5,
+              1.0
+            ],
+            [
+              0.75,
               1.0
             ],
             [
@@ -324,8 +419,8 @@
         "blend": {
           "left": {
             "width": 0.0,
-            "power": 2.0,
-            "gamma": 2.2
+            "power": 6.0,
+            "gamma": 3.5
           },
           "right": {
             "width": 0.0,
@@ -343,7 +438,31 @@
             "gamma": 2.2
           }
         },
-        "masks": [],
+        "masks": [
+          {
+            "name": "Mask 1",
+            "points": [
+              [
+                0.4,
+                0.4
+              ],
+              [
+                0.6,
+                0.4
+              ],
+              [
+                0.6,
+                0.6
+              ],
+              [
+                0.4,
+                0.6
+              ]
+            ],
+            "invert": false,
+            "enabled": false
+          }
+        ],
         "brightness": 1.0
       },
       "ndi_output": null,
@@ -681,7 +800,7 @@
     }
   ],
   "audio": {
-    "device_name": null,
+    "device_name": "PreSonus Studio 192",
     "sample_rate": null,
     "buffer_frames": 128,
     "output_channels": 2,
@@ -716,6 +835,20 @@
         "channels": 2,
         "gain_db": 0.0,
         "mute": false
+      },
+      {
+        "id": "d1024948-064c-456f-a894-8ed8fc93c620",
+        "name": "Stem 4",
+        "channels": 2,
+        "gain_db": 0.0,
+        "mute": false
+      },
+      {
+        "id": "fba9d36d-d646-4dfb-96ae-591e854fc55a",
+        "name": "Stem 5",
+        "channels": 2,
+        "gain_db": 0.0,
+        "mute": false
       }
     ],
     "buses": [
@@ -747,12 +880,6 @@
       }
     ],
     "crosspoints": [
-      {
-        "stem": "7ababf50-0a47-4d26-b3f1-c12872209b80",
-        "source_channel": 1,
-        "output": 1,
-        "gain_db": 0.0
-      },
       {
         "stem": "94d8ac99-cf09-431a-ade3-cfe32b31dfdc",
         "source_channel": 0,
@@ -794,6 +921,24 @@
         "source_channel": 0,
         "output": 0,
         "gain_db": 0.0
+      },
+      {
+        "stem": "7ababf50-0a47-4d26-b3f1-c12872209b80",
+        "source_channel": 1,
+        "output": 1,
+        "gain_db": 0.0
+      },
+      {
+        "stem": "94d8ac99-cf09-431a-ade3-cfe32b31dfdc",
+        "source_channel": 0,
+        "output": 0,
+        "gain_db": 0.0
+      },
+      {
+        "stem": "94d8ac99-cf09-431a-ade3-cfe32b31dfdc",
+        "source_channel": 0,
+        "output": 1,
+        "gain_db": 0.0
       }
     ],
     "master_gain_db": 0.0
@@ -812,6 +957,15 @@
     ],
     "patch": [],
     "pixel_maps": [],
+    "profiles": [],
+    "sacn_input": {
+      "enabled": false,
+      "patches": []
+    },
+    "sync": {
+      "sacn_sync_universe": null,
+      "artsync": false
+    },
     "refresh_hz": 40.0,
     "render_hz": 100.0
   },
@@ -821,7 +975,9 @@
     "websocket_enabled": false,
     "websocket_port": 8765,
     "midi_input": null,
-    "msc_device_id": 127
+    "msc_device_id": 127,
+    "external_access": false,
+    "osc_allowlist": []
   },
   "assets": [
     {
@@ -865,17 +1021,28 @@
     ]
   },
   "timecode": {
-    "source": "internal",
+    "source": "art_net",
     "rate": "fps25",
     "internal_base": "audio",
     "internal_start": "01:00:00:00@25",
     "mtc_input": null,
     "artnet_port": 6454,
+    "ltc_input": null,
+    "ltc_channel": 1,
     "lock": {
       "dropout": 100000,
       "freewheel": 200000,
       "jump_frames": 4,
       "lock_samples": 3
+    },
+    "output": {
+      "mtc": false,
+      "mtc_port": null,
+      "ltc": false,
+      "ltc_channel": 2,
+      "ltc_level_db": -12.0,
+      "artnet": false,
+      "artnet_destination": "255.255.255.255"
     }
   },
   "carts": [
