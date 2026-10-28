@@ -194,8 +194,10 @@ pub enum DmxAction {
     SetPixelMap { index: usize, enabled: bool },
 }
 
+/// Saved as `{"type": "int", "value": 1}`. (Internal tagging alone cannot
+/// hold a bare number or string, so shows with arguments failed to save.)
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum OscArg {
     Int(i32),
     Float(f32),
@@ -212,4 +214,22 @@ pub enum ControlAction {
     Command(crate::command::ShowCommand),
     /// Log a marker (useful for show reports and rehearsals).
     Marker { text: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn osc_cue_with_arguments_round_trips() {
+        let action = ControlAction::SendOsc {
+            host: "127.0.0.1".into(),
+            port: 9000,
+            address: "/x".into(),
+            args: vec![OscArg::Int(1), OscArg::Float(0.5), OscArg::String("a".into()), OscArg::Bool(true)],
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains(r#"{"type":"int","value":1}"#), "{json}");
+        assert_eq!(serde_json::from_str::<ControlAction>(&json).unwrap(), action);
+    }
 }

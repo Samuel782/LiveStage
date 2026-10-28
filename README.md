@@ -153,6 +153,10 @@ PKG_CONFIG_PATH=$HOME/.local/ffmpeg-9/lib/pkgconfig cargo run --release --featur
 ./target/release/livestage --check-media
 ```
 
+**Demo show:** `cargo run --release -p livestage_video --features ffmpeg --example feature_tour -- shows`
+generates `shows/Feature Tour.livestage`, which uses every feature with its own media. See
+[docs/FEATURE_TOUR.md](docs/FEATURE_TOUR.md) for what to try.
+
 ### FFmpeg
 
 `--features ffmpeg` needs no setup. The build uses an FFmpeg 9 it can find (`FFMPEG_DIR`, vcpkg on

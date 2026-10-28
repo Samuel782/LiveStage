@@ -262,7 +262,8 @@ impl ProjectBundle {
         resolve_asset(&self.root, asset)
     }
 
-    /// Assets referenced by cues or the registry that are not on disk.
+    /// Assets referenced by cues or the registry that are not on disk. A
+    /// folder counts as present: image sequences are folders of frames.
     pub fn missing_assets(&self) -> Vec<AssetRef> {
         use crate::cue::AnyCue;
         let mut refs: Vec<AssetRef> = self.project.assets.iter().map(|a| a.path.clone()).collect();
@@ -274,7 +275,7 @@ impl ProjectBundle {
         }
         refs.sort();
         refs.dedup();
-        refs.into_iter().filter(|a| self.resolve(a).map(|p| !p.is_file()).unwrap_or(true)).collect()
+        refs.into_iter().filter(|a| self.resolve(a).map(|p| !p.is_file() && !p.is_dir()).unwrap_or(true)).collect()
     }
 }
 
@@ -392,7 +393,14 @@ mod tests {
         })
         .unwrap();
         fs::remove_file(b.resolve(&rec.path).unwrap()).unwrap();
-        assert_eq!(b.missing_assets(), vec![rec.path]);
+        assert_eq!(b.missing_assets(), vec![rec.path.clone()]);
+        // An image-sequence folder is present; once removed it is missing.
+        let seq = AssetRef::new("assets/video/Sequence");
+        fs::create_dir_all(b.resolve(&seq).unwrap()).unwrap();
+        b.project.assets.push(AssetRecord { path: seq.clone(), ..b.project.assets[0].clone() });
+        assert_eq!(b.missing_assets(), vec![rec.path.clone()]);
+        fs::remove_dir_all(b.resolve(&seq).unwrap()).unwrap();
+        assert_eq!(b.missing_assets(), vec![seq, rec.path]);
         fs::remove_dir_all(&dir).ok();
     }
 
