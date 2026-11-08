@@ -196,7 +196,7 @@ impl Compositor {
                     opacity: fade,
                     content,
                     clock: LayerClock::start(now, *start_at),
-                    sync: sync.map(|s| LayerSync::new(s.master, s.offset)),
+                    sync: sync.map(|s| LayerSync::starting_at(s.master, s.offset, s.start)),
                     removing: false,
                     ghost: false,
                     gpu: None,

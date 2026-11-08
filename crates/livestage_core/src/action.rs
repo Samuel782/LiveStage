@@ -126,12 +126,17 @@ pub struct TimerContent {
     pub elapsed_offset: ShowTime,
 }
 
-/// Locks a visual layer to another cue's media clock (a timeline's audio
-/// master): the layer's media time is `master clock - offset`.
+/// Locks a visual layer to a cue's media clock (a timeline's audio master,
+/// or a movie's own soundtrack): the layer's media time is
+/// `start + master clock - offset`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MediaSync {
     pub master: CueId,
+    /// Master time at which the layer's media time is `start`.
     pub offset: ShowTime,
+    /// Layer media time at master time `offset` (a movie started part-way
+    /// in: its soundtrack's clock counts from zero there).
+    pub start: ShowTime,
 }
 
 #[derive(Clone, Debug, PartialEq)]

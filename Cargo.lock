@@ -1923,6 +1923,7 @@ name = "livestage_audio"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "ffmpeg-next",
  "livestage_core",
  "parking_lot 0.13.0",
  "ringbuf",

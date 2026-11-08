@@ -13,7 +13,8 @@
 //!   stores [`AnyCue`], a tagged enum that implements `Cue` by delegation.
 
 use crate::action::*;
-use crate::id::{CueId, OutputId};
+use crate::id::{CueId, OutputId, StemId};
+use crate::project::AssetRef;
 use crate::state::{CueState, Rgb};
 use crate::time::ShowTime;
 use serde::{Deserialize, Serialize};
@@ -87,6 +88,10 @@ pub struct CueRuntime {
     pub paused_total: ShowTime,
     /// Last computed elapsed time (for display after stop/complete).
     pub last_elapsed: ShowTime,
+    /// Media position the cue's engines were last started from. A movie's
+    /// soundtrack counts its clock from here, so in-place seeks are relative
+    /// to it.
+    pub media_base: ShowTime,
 }
 
 /// Fields shared by every cue.
@@ -540,9 +545,48 @@ pub struct VideoCue {
     pub media_length: Option<ShowTime>,
     #[serde(default)]
     pub end_behavior: EndBehavior,
+    /// The movie's own soundtrack (video content only).
+    #[serde(default)]
+    pub audio: MovieAudio,
 }
 fn full() -> f32 {
     1.0
+}
+
+/// A movie's embedded audio, played through the audio engine like an audio
+/// cue's track: routed to a stem, faded, paused, sought and stopped with the
+/// picture, which is frame-locked to the soundtrack's sample clock.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MovieAudio {
+    /// Play the movie's first audio track. Off for cues saved before movies
+    /// had sound (their sound is usually a separate audio cue); a movie cue
+    /// created by import turns it on when the file has an audio track.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Stem (output routing) the soundtrack plays through.
+    #[serde(default)]
+    pub stem: StemId,
+    #[serde(default)]
+    pub gain_db: f32,
+}
+
+impl VideoCue {
+    /// The movie whose soundtrack plays, and whether it loops, when movie
+    /// audio is on and the content is a movie.
+    pub fn movie_audio(&self) -> Option<(&AssetRef, bool)> {
+        match &self.content {
+            VisualContent::Video { asset, looped } if self.audio.enabled => Some((asset, *looped)),
+            _ => None,
+        }
+    }
+
+    /// Sends `action` to the audio engine if the content is a movie (whose
+    /// soundtrack may be playing, even if movie audio was switched off since).
+    fn to_soundtrack(&self, ctx: &mut dyn CueContext, action: AudioAction) {
+        if matches!(self.content, VisualContent::Video { .. }) {
+            ctx.dispatch(EngineAction::Audio(action));
+        }
+    }
 }
 
 impl Cue for VideoCue {
@@ -567,41 +611,85 @@ impl Cue for VideoCue {
             VisualContent::Video { asset, .. } | VisualContent::Image { asset } => vec![asset.clone()],
             _ => return,
         };
+        if self.movie_audio().is_some() {
+            ctx.dispatch(EngineAction::Audio(AudioAction::Preload { assets: assets.clone() }));
+        }
         ctx.dispatch(EngineAction::Video(VideoAction::Preload { assets }));
     }
     fn on_go(&mut self, ctx: &mut dyn CueContext, offset: ShowTime) {
+        let fade_in = if offset.is_zero() { self.fade_in } else { ShowTime::ZERO };
+        self.header.runtime.media_base = offset;
+        let mut sync = None;
+        if let Some((asset, looped)) = self.movie_audio() {
+            ctx.dispatch(EngineAction::Audio(AudioAction::Play {
+                cue: self.header.id,
+                tracks: vec![AudioTrack { asset: asset.clone(), stem: self.audio.stem, gain_db: 0.0, mute: false }],
+                click: None,
+                gain_db: self.audio.gain_db,
+                fade_in,
+                start_at: offset,
+                end_at: None,
+                looped,
+            }));
+            // The picture follows its soundtrack's sample clock, which counts
+            // from `offset`. A looped movie is not locked: picture and sound
+            // each loop at their own length.
+            if !looped {
+                sync = Some(MediaSync { master: self.header.id, offset: ShowTime::ZERO, start: offset });
+            }
+        }
         ctx.dispatch(EngineAction::Video(VideoAction::Show {
             cue: self.header.id,
             output: self.output,
             content: self.content.clone(),
             layer: self.layer,
             opacity: self.opacity,
-            fade_in: if offset.is_zero() { self.fade_in } else { ShowTime::ZERO },
+            fade_in,
             start_at: offset,
-            sync: None,
+            sync,
         }));
     }
     fn on_stop(&mut self, ctx: &mut dyn CueContext, fade: Option<ShowTime>) {
         let fade = fade.unwrap_or(self.fade_out);
+        self.to_soundtrack(ctx, AudioAction::Stop { cue: self.header.id, fade });
         ctx.dispatch(EngineAction::Video(VideoAction::Hide { cue: self.header.id, fade }));
     }
     fn on_complete(&mut self, ctx: &mut dyn CueContext) {
         if self.end_behavior == EndBehavior::Hide {
+            self.to_soundtrack(ctx, AudioAction::Stop { cue: self.header.id, fade: self.fade_out });
             ctx.dispatch(EngineAction::Video(VideoAction::Hide { cue: self.header.id, fade: self.fade_out }));
         }
     }
     fn on_pause(&mut self, ctx: &mut dyn CueContext) {
+        self.to_soundtrack(ctx, AudioAction::Pause { cue: self.header.id });
         ctx.dispatch(EngineAction::Video(VideoAction::Pause { cue: self.header.id }));
     }
     fn on_seek(&mut self, ctx: &mut dyn CueContext, offset: ShowTime) -> bool {
+        if self.movie_audio().is_some() {
+            // The soundtrack's clock starts at the GO position: before it,
+            // restart there instead.
+            let base = self.header.runtime.media_base;
+            if offset < base {
+                return false;
+            }
+            ctx.dispatch(EngineAction::Audio(AudioAction::Seek { cue: self.header.id, position: offset - base }));
+        }
         // Re-times the layer: the decoder seeks, teleprompters jump their scroll.
         ctx.dispatch(EngineAction::Video(VideoAction::Seek { cue: self.header.id, position: offset }));
         true
     }
     fn on_resume(&mut self, ctx: &mut dyn CueContext) {
+        self.to_soundtrack(ctx, AudioAction::Resume { cue: self.header.id });
         ctx.dispatch(EngineAction::Video(VideoAction::Resume { cue: self.header.id }));
     }
     fn media_clock(&self, ctx: &dyn CueContext) -> Option<ShowTime> {
+        // With its soundtrack on, the cue's id also names an audio voice. The
+        // picture follows that clock (frame lock); the cue itself keeps the
+        // show clock, so a soundtrack that is missing or shorter than the
+        // picture cannot stall it.
+        if self.movie_audio().is_some() {
+            return None;
+        }
         ctx.media_position(self.header.id)
     }
 }
@@ -1105,6 +1193,7 @@ mod tests {
             hold: None,
             media_length: Some(ShowTime::from_secs(60)),
             end_behavior: EndBehavior::Hide,
+            audio: MovieAudio::default(),
         })
     }
 
@@ -1142,6 +1231,104 @@ mod tests {
         cue.resume(&mut ctx);
         ctx.advance(ShowTime::from_secs(1));
         assert_eq!(cue.elapsed(&ctx), ShowTime::from_secs(11));
+    }
+
+    fn movie_with_sound() -> (AnyCue, CueId, StemId) {
+        let mut cue = video_cue();
+        let stem = StemId::new();
+        let AnyCue::Video(v) = &mut cue else { unreachable!() };
+        v.audio = MovieAudio { enabled: true, stem, gain_db: -3.0 };
+        v.fade_in = ShowTime::from_millis(500);
+        let id = cue.header().id;
+        (cue, id, stem)
+    }
+
+    #[test]
+    fn movie_soundtrack_plays_locked_and_follows_the_cue() {
+        let mut ctx = MockCtx::default();
+        let (mut cue, id, stem) = movie_with_sound();
+        cue.standby(&mut ctx);
+        assert!(ctx.actions.iter().any(|a| matches!(a, EngineAction::Audio(AudioAction::Preload { assets }) if assets.len() == 1)));
+        ctx.actions.clear();
+        cue.go(&mut ctx);
+        let play = ctx.actions.iter().find_map(|a| match a {
+            EngineAction::Audio(p @ AudioAction::Play { .. }) => Some(p.clone()),
+            _ => None,
+        });
+        let Some(AudioAction::Play { cue: pc, tracks, gain_db, fade_in, start_at, looped, click, .. }) = play else { panic!("no soundtrack: {:?}", ctx.actions) };
+        assert_eq!((pc, gain_db, fade_in, start_at, looped), (id, -3.0, ShowTime::from_millis(500), ShowTime::ZERO, false));
+        assert!(click.is_none());
+        assert_eq!(tracks.len(), 1);
+        assert_eq!((tracks[0].asset.as_str(), tracks[0].stem), ("assets/video/a.mov", stem));
+        let sync = ctx.actions.iter().find_map(|a| match a {
+            EngineAction::Video(VideoAction::Show { sync, .. }) => Some(*sync),
+            _ => None,
+        });
+        assert_eq!(sync, Some(Some(MediaSync { master: id, offset: ShowTime::ZERO, start: ShowTime::ZERO })), "picture locked to its own sound");
+
+        // Pause, resume, seek and stop reach both engines.
+        ctx.advance(ShowTime::from_secs(3));
+        ctx.actions.clear();
+        cue.pause(&mut ctx);
+        cue.resume(&mut ctx);
+        cue.seek(&mut ctx, ShowTime::from_secs(20));
+        cue.stop(&mut ctx, None);
+        let audio: Vec<_> = ctx.actions.iter().filter_map(|a| if let EngineAction::Audio(a) = a { Some(a.clone()) } else { None }).collect();
+        assert_eq!(
+            audio,
+            vec![
+                AudioAction::Pause { cue: id },
+                AudioAction::Resume { cue: id },
+                AudioAction::Seek { cue: id, position: ShowTime::from_secs(20) },
+                AudioAction::Stop { cue: id, fade: ShowTime::ZERO },
+            ]
+        );
+        assert!(ctx.actions.contains(&EngineAction::Video(VideoAction::Seek { cue: id, position: ShowTime::from_secs(20) })));
+    }
+
+    #[test]
+    fn movie_started_part_way_counts_its_soundtrack_from_there() {
+        let mut ctx = MockCtx::default();
+        let (mut cue, id, _) = movie_with_sound();
+        cue.go_from(&mut ctx, ShowTime::from_secs(10));
+        assert!(ctx.actions.iter().any(|a| matches!(a, EngineAction::Audio(AudioAction::Play { start_at, fade_in, .. })
+            if *start_at == ShowTime::from_secs(10) && fade_in.is_zero())));
+        assert!(ctx.actions.iter().any(|a| matches!(a, EngineAction::Video(VideoAction::Show { sync: Some(s), start_at, .. })
+            if s.start == ShowTime::from_secs(10) && *start_at == ShowTime::from_secs(10))));
+        // Forward: the soundtrack seeks relative to where it started.
+        ctx.actions.clear();
+        cue.seek(&mut ctx, ShowTime::from_secs(25));
+        assert!(ctx.actions.contains(&EngineAction::Audio(AudioAction::Seek { cue: id, position: ShowTime::from_secs(15) })));
+        // Before the start point: restarted there, sound and picture together.
+        ctx.actions.clear();
+        cue.seek(&mut ctx, ShowTime::from_secs(4));
+        assert!(ctx.actions.iter().any(|a| matches!(a, EngineAction::Audio(AudioAction::Stop { .. }))));
+        assert!(ctx.actions.iter().any(|a| matches!(a, EngineAction::Audio(AudioAction::Play { start_at, .. }) if *start_at == ShowTime::from_secs(4))));
+        assert_eq!(cue.state(), CueState::Running);
+        assert_eq!(cue.elapsed(&ctx), ShowTime::from_secs(4));
+    }
+
+    #[test]
+    fn movie_audio_is_opt_in_and_off_for_older_shows() {
+        let mut ctx = MockCtx::default();
+        let mut cue = video_cue();
+        cue.go(&mut ctx);
+        assert!(!ctx.actions.iter().any(|a| matches!(a, EngineAction::Audio(AudioAction::Play { .. }))));
+        assert!(ctx.actions.iter().any(|a| matches!(a, EngineAction::Video(VideoAction::Show { sync: None, .. }))));
+        // A cue saved before movie audio existed loads with it off.
+        let mut json: serde_json::Value = serde_json::to_value(&cue).unwrap();
+        json.as_object_mut().unwrap().remove("audio");
+        let AnyCue::Video(old) = serde_json::from_value::<AnyCue>(json).unwrap() else { panic!() };
+        assert!(!old.audio.enabled);
+        // Looped movies play their sound but are not frame-locked to it.
+        let (mut looped, _, _) = movie_with_sound();
+        if let AnyCue::Video(v) = &mut looped {
+            v.content = VisualContent::Video { asset: crate::project::AssetRef::new("assets/video/a.mov"), looped: true };
+        }
+        ctx.actions.clear();
+        looped.go(&mut ctx);
+        assert!(ctx.actions.iter().any(|a| matches!(a, EngineAction::Audio(AudioAction::Play { looped: true, .. }))));
+        assert!(ctx.actions.iter().any(|a| matches!(a, EngineAction::Video(VideoAction::Show { sync: None, .. }))));
     }
 
     fn deck(n: usize) -> SlideCue {

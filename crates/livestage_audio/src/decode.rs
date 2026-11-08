@@ -1,5 +1,8 @@
 //! Universal decoding via Symphonia (WAV, AIFF, FLAC, MP3, AAC/M4A, OGG
-//! Vorbis, ALAC, ...). Runs on loader threads, never on the audio thread.
+//! Vorbis, ALAC, ...), including the soundtracks of MP4 / MOV / MKV movies.
+//! With the `ffmpeg` feature, files Symphonia cannot read fall back to
+//! FFmpeg (see [`crate::ffmpeg_decode`]). Runs on loader threads, never on
+//! the audio thread.
 
 use crate::{AudioClip, AudioError, AudioResult};
 use std::fs::File;
@@ -77,8 +80,46 @@ pub fn probe(path: &Path) -> AudioResult<AudioInfo> {
     Ok(AudioInfo { sample_rate: p.sample_rate.unwrap_or(48_000), channels: p.channels.as_ref().map(|c| c.count() as u16).unwrap_or(2), frames: track.frames })
 }
 
-/// Fully decodes a file to interleaved f32 at its native rate.
+/// Whether `path` has an audio track that can be played (a movie's
+/// soundtrack). Reads headers only.
+pub fn has_audio_track(path: &Path) -> bool {
+    match open(path) {
+        Ok((_, track)) => {
+            // Symphonia found a track; can it (or FFmpeg) decode it?
+            make_decoder(path, &track).is_ok() || ffmpeg_has_audio(path)
+        }
+        Err(AudioError::NoTrack(_)) => false,
+        Err(_) => ffmpeg_has_audio(path),
+    }
+}
+
+#[cfg(feature = "ffmpeg")]
+fn ffmpeg_has_audio(path: &Path) -> bool {
+    crate::ffmpeg_decode::has_audio_track(path)
+}
+
+#[cfg(not(feature = "ffmpeg"))]
+fn ffmpeg_has_audio(_: &Path) -> bool {
+    false
+}
+
+/// Fully decodes a file's first audio track to interleaved f32 at its
+/// native rate: Symphonia first, then FFmpeg when built with `ffmpeg`.
 pub fn decode_file(path: &Path) -> AudioResult<AudioClip> {
+    match decode_symphonia(path) {
+        // No audio track at all: FFmpeg would not find one either.
+        Err(e @ AudioError::NoTrack(_)) => Err(e),
+        #[cfg(feature = "ffmpeg")]
+        Err(e) => {
+            tracing::debug!(file = %path.display(), "Symphonia cannot decode ({e}); trying FFmpeg");
+            crate::ffmpeg_decode::decode_file(path)
+        }
+        other => other,
+    }
+}
+
+/// [`decode_file`] with Symphonia only.
+pub fn decode_symphonia(path: &Path) -> AudioResult<AudioClip> {
     let (mut format, track) = open(path)?;
     let mut decoder = make_decoder(path, &track)?;
 

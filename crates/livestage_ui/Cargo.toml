@@ -12,7 +12,7 @@ name = "livestage"
 path = "src/main.rs"
 
 [features]
-ffmpeg = ["livestage_video/ffmpeg", "dep:ffmpeg-sys-next"]
+ffmpeg = ["livestage_video/ffmpeg", "livestage_audio/ffmpeg", "dep:ffmpeg-sys-next"]
 
 [dependencies]
 livestage_core.workspace = true

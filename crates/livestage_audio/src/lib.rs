@@ -21,6 +21,8 @@ pub mod clip;
 pub mod decode;
 pub mod device;
 pub mod engine;
+#[cfg(feature = "ffmpeg")]
+pub mod ffmpeg_decode;
 pub mod ltc;
 pub mod metronome;
 pub mod renderer;

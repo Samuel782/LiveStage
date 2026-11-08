@@ -661,6 +661,7 @@ fn visual(h: CueHeader, output: OutputId, content: VisualContent, layer: i32) ->
         hold: None,
         media_length: None,
         end_behavior: EndBehavior::Hide,
+        audio: livestage_core::cue::MovieAudio::default(),
     }
 }
 

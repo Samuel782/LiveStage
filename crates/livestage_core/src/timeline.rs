@@ -280,7 +280,7 @@ impl CueContext for MasterSync<'_> {
             // Only time-based content; a nested timeline's own master wins.
             let timed = matches!(content, VisualContent::Video { .. } | VisualContent::Text(_));
             if timed && sync.is_none() {
-                *sync = Some(MediaSync { master, offset: self.position - *start_at });
+                *sync = Some(MediaSync { master, offset: self.position - *start_at, start: ShowTime::ZERO });
             }
         }
         self.inner.dispatch(action);
@@ -393,6 +393,7 @@ mod tests {
             hold: None,
             media_length: Some(ShowTime::from_secs(60)),
             end_behavior: EndBehavior::Hide,
+            audio: MovieAudio::default(),
         })
     }
 
@@ -417,12 +418,12 @@ mod tests {
         let mut tl = AnyCue::Timeline(tl);
 
         tl.go(&mut ctx);
-        assert_eq!(shown_sync(&ctx), vec![Some(MediaSync { master: master_id, offset: ShowTime::ZERO })]);
+        assert_eq!(shown_sync(&ctx), vec![Some(MediaSync { master: master_id, offset: ShowTime::ZERO, start: ShowTime::ZERO })]);
 
         // Fired 5 ms late: the layer starts 5 ms deep but stays anchored at its offset.
         ctx.positions.insert(master_id, ShowTime::from_millis(10_005));
         tl.tick(&mut ctx);
-        assert_eq!(shown_sync(&ctx)[1], Some(MediaSync { master: master_id, offset: ShowTime::from_secs(10) }));
+        assert_eq!(shown_sync(&ctx)[1], Some(MediaSync { master: master_id, offset: ShowTime::from_secs(10), start: ShowTime::ZERO }));
 
         // Chasing on a seek re-anchors at the offset too.
         ctx.actions.clear();

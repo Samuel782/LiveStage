@@ -8,11 +8,16 @@
 //!
 //! **Hardware decode.** When the platform has a hardware decoder
 //! (VideoToolbox on macOS, D3D11VA on Windows, VAAPI on Linux) the codec is
-//! given a hardware device; decoded surfaces are transferred as NV12 and
-//! uploaded as two GPU planes, with YUV→RGB done in the layer shader. That
-//! removes both the CPU decode and the CPU colour conversion. Streams the
-//! hardware can't decode fall back to software inside FFmpeg; set
+//! given a hardware device. Decoded surfaces are handed to the renderer
+//! without leaving the GPU where [`crate::native`] can import them (macOS,
+//! Windows); elsewhere, or when an import fails, they are transferred as NV12
+//! and uploaded as two GPU planes. Either way YUV→RGB happens in the layer
+//! shader, so there is neither a CPU decode nor a CPU colour conversion.
+//! Streams the hardware can't decode fall back to software inside FFmpeg; set
 //! `LIVESTAGE_HWDEC=0` to force software decode.
+//!
+//! A movie's soundtrack is not decoded here: movie cues play it through the
+//! audio engine (`livestage_audio`), and the layer follows its sample clock.
 //!
 //! Frame positions are on an *unwrapped* timeline: when a looped clip reaches
 //! EOF the worker rewinds and keeps counting up from the clip length, so the

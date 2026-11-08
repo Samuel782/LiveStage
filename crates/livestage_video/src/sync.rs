@@ -120,11 +120,13 @@ impl LayerClock {
 }
 
 /// Binds a layer to a master: the layer's media time should be
-/// `master - offset`.
+/// `start + master - offset`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayerSync {
     pub master: livestage_core::id::CueId,
     pub offset: ShowTime,
+    /// Layer media time at master time `offset`.
+    pub start: ShowTime,
     /// Smoothed error (master − layer) in seconds; positive = video late.
     error: f64,
     /// Error measured on the last frame (unsmoothed), seconds.
@@ -136,7 +138,13 @@ pub struct LayerSync {
 
 impl LayerSync {
     pub fn new(master: livestage_core::id::CueId, offset: ShowTime) -> Self {
-        Self { master, offset, error: 0.0, last_error: 0.0, last: Correction::FreeRun, snaps: 0 }
+        Self::starting_at(master, offset, ShowTime::ZERO)
+    }
+
+    /// A layer whose media time is `start` when the master reaches `offset`
+    /// (a movie started part-way in, locked to its own soundtrack).
+    pub fn starting_at(master: livestage_core::id::CueId, offset: ShowTime, start: ShowTime) -> Self {
+        Self { master, offset, start, error: 0.0, last_error: 0.0, last: Correction::FreeRun, snaps: 0 }
     }
 
     /// Re-times `clock` towards the master for the frame shown at `now`.
@@ -165,7 +173,7 @@ impl LayerSync {
                 return Correction::FreeRun;
             }
         };
-        let target = position - self.offset;
+        let target = self.start + position - self.offset;
         let current = clock.at(now);
         let error = signed_secs(target, current);
         self.last_error = error;

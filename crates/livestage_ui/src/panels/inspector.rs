@@ -166,7 +166,7 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             Page::Action => {
                 changed |= match cue {
                     AnyCue::Audio(a) => audio(ui, a, &stems, &assets),
-                    AnyCue::Video(v) => video(ui, v, &outputs, &assets),
+                    AnyCue::Video(v) => video(ui, v, &outputs, &stems, &assets),
                     AnyCue::Timer(t) => timer(ui, t, &outputs),
                     AnyCue::Dmx(d) => dmx(ui, d, &lighting, &fixture_names),
                     AnyCue::Control(c) => control(ui, c),
@@ -458,7 +458,7 @@ fn audio(ui: &mut Ui, a: &mut AudioCue, stems: &[(StemId, String)], assets: &[As
     c
 }
 
-fn video(ui: &mut Ui, v: &mut VideoCue, outputs: &[(OutputId, String)], assets: &[AssetRef]) -> bool {
+fn video(ui: &mut Ui, v: &mut VideoCue, outputs: &[(OutputId, String)], stems: &[(StemId, String)], assets: &[AssetRef]) -> bool {
     let mut c = false;
     egui::Grid::new("video").num_columns(2).show(ui, |ui| {
         ui.label("Output");
@@ -521,6 +521,7 @@ fn video(ui: &mut Ui, v: &mut VideoCue, outputs: &[(OutputId, String)], assets: 
         VisualContent::Video { asset, looped } => {
             c |= asset_combo(ui, "vasset", asset, assets);
             c |= toggle(ui, looped, "Loop").changed();
+            c |= movie_audio(ui, &mut v.audio, stems);
         }
         VisualContent::Image { asset } => c |= asset_combo(ui, "iasset", asset, assets),
         VisualContent::Slides { slides, .. } => {
@@ -554,6 +555,29 @@ fn video(ui: &mut Ui, v: &mut VideoCue, outputs: &[(OutputId, String)], assets: 
         }
         VisualContent::Color { rgba } => c |= color_edit(ui, rgba),
         VisualContent::Timer(_) | VisualContent::TestPattern => {}
+    }
+    c
+}
+
+/// The movie's own soundtrack: on / off, stem and level.
+fn movie_audio(ui: &mut Ui, a: &mut MovieAudio, stems: &[(StemId, String)]) -> bool {
+    let mut c = toggle(ui, &mut a.enabled, "Play movie audio").changed();
+    if c && a.enabled && !stems.iter().any(|s| s.0 == a.stem) {
+        if let Some(first) = stems.first() {
+            a.stem = first.0;
+        }
+    }
+    if a.enabled {
+        ui.horizontal(|ui| {
+            let name = stems.iter().find(|s| s.0 == a.stem).map_or("?".into(), |s| s.1.clone());
+            ComboBox::from_id_salt("movie-stem").selected_text(name).show_ui(ui, |ui| {
+                for (sid, n) in stems {
+                    c |= ui.selectable_value(&mut a.stem, *sid, n).changed();
+                }
+            });
+            c |= ui.add(DragValue::new(&mut a.gain_db).range(-60.0..=6.0).suffix(" dB")).changed();
+        });
+        hint(ui, "Plays the movie's audio track through this stem, with the cue's fades. The picture is locked to it.");
     }
     c
 }

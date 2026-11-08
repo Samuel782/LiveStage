@@ -10,6 +10,8 @@ pub struct GpuContext {
     pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    /// How hardware-decoded video reaches this device.
+    pub zero_copy: crate::native::ZeroCopy,
 }
 
 impl GpuContext {
@@ -41,7 +43,9 @@ impl GpuContext {
             )
             .await?;
         device.on_uncaptured_error(Arc::new(|e| tracing::error!("wgpu: {e}")));
-        Ok(Arc::new(Self { instance, adapter, device, queue }))
+        let zero_copy = crate::native::probe(&device);
+        tracing::info!(zero_copy = zero_copy.is_active(), "hardware video: {}", zero_copy.summary());
+        Ok(Arc::new(Self { instance, adapter, device, queue, zero_copy }))
     }
 
     /// Picks a non-sRGB surface format (see [`crate::CANVAS_FORMAT`]).

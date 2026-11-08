@@ -54,6 +54,57 @@ pub fn wanted_features() -> wgpu::Features {
     }
 }
 
+/// How hardware-decoded frames reach the GPU on this machine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ZeroCopy {
+    /// Frames go straight into wgpu; `path` names the interop used.
+    Active { path: &'static str },
+    /// Frames are copied GPU → CPU → GPU as NV12, for `reason`.
+    Off { reason: String },
+}
+
+impl ZeroCopy {
+    pub fn is_active(&self) -> bool {
+        matches!(self, ZeroCopy::Active { .. })
+    }
+
+    /// One phrase for logs and `--check-media`.
+    pub fn summary(&self) -> String {
+        match self {
+            ZeroCopy::Active { path } => format!("zero-copy {path}"),
+            ZeroCopy::Off { reason } => format!("frames copied through the CPU ({reason})"),
+        }
+    }
+}
+
+/// Whether hardware frames will be imported on `device`, checked by
+/// importing a real native surface where the platform allows it (macOS: an
+/// IOSurface-backed NV12 pixel buffer, as VideoToolbox produces).
+pub fn probe(device: &wgpu::Device) -> ZeroCopy {
+    let off = |reason: &str| ZeroCopy::Off { reason: reason.into() };
+    if !cfg!(any(target_os = "macos", target_os = "windows")) {
+        return off("no zero-copy import on this platform");
+    }
+    if DISABLED.load(Ordering::Acquire) {
+        return off("an import failed earlier");
+    }
+    if !enabled() {
+        return off("LIVESTAGE_ZEROCOPY=0");
+    }
+    match platform::self_test(device) {
+        Ok(path) => ZeroCopy::Active { path },
+        Err(reason) => ZeroCopy::Off { reason },
+    }
+}
+
+/// [`probe`] on a device of its own (for `--check-media`), or `None` when
+/// there is no GPU adapter.
+pub fn probe_headless() -> Option<ZeroCopy> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let gpu = pollster::block_on(crate::gpu::GpuContext::new(instance, None)).ok()?;
+    Some(probe(&gpu.device))
+}
+
 /// A hardware-decoded NV12 frame still in GPU memory.
 pub struct NativeSurface {
     inner: platform::Surface,
@@ -239,6 +290,77 @@ mod platform {
         }
     }
 
+    #[allow(non_snake_case, non_upper_case_globals)]
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        static kCFTypeDictionaryKeyCallBacks: u8;
+        static kCFTypeDictionaryValueCallBacks: u8;
+        fn CFDictionaryCreate(
+            allocator: *const c_void,
+            keys: *const *const c_void,
+            values: *const *const c_void,
+            count: isize,
+            key_callbacks: *const c_void,
+            value_callbacks: *const c_void,
+        ) -> *const c_void;
+        fn CFRelease(object: *const c_void);
+    }
+
+    #[allow(non_snake_case, non_upper_case_globals)]
+    #[link(name = "CoreVideo", kind = "framework")]
+    unsafe extern "C" {
+        static kCVPixelBufferIOSurfacePropertiesKey: *const c_void;
+        fn CVPixelBufferCreate(
+            allocator: *const c_void,
+            width: usize,
+            height: usize,
+            format: u32,
+            attributes: *const c_void,
+            out: *mut *mut c_void,
+        ) -> i32;
+    }
+
+    /// Imports a 64x64 IOSurface-backed NV12 pixel buffer (what VideoToolbox
+    /// decodes into) on `device`.
+    pub(super) fn self_test(device: &wgpu::Device) -> Result<&'static str, String> {
+        const SIZE: (u32, u32) = (64, 64);
+        // SAFETY: CoreFoundation / CoreVideo calls with valid arguments; each
+        // created object is released once, and the pixel buffer is retained
+        // by the surface before our reference is dropped.
+        let surface = unsafe {
+            let empty = CFDictionaryCreate(
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                (&raw const kCFTypeDictionaryKeyCallBacks).cast(),
+                (&raw const kCFTypeDictionaryValueCallBacks).cast(),
+            );
+            let key = kCVPixelBufferIOSurfacePropertiesKey;
+            let attributes = CFDictionaryCreate(
+                std::ptr::null(),
+                &key,
+                &empty,
+                1,
+                (&raw const kCFTypeDictionaryKeyCallBacks).cast(),
+                (&raw const kCFTypeDictionaryValueCallBacks).cast(),
+            );
+            let mut buffer = std::ptr::null_mut();
+            let status = CVPixelBufferCreate(std::ptr::null(), SIZE.0 as usize, SIZE.1 as usize, NV12_FORMATS[0], attributes, &mut buffer);
+            CFRelease(attributes);
+            CFRelease(empty);
+            if status != 0 || buffer.is_null() {
+                return Err(format!("no IOSurface pixel buffer (CoreVideo error {status})"));
+            }
+            let surface = Surface::retain(buffer);
+            CVPixelBufferRelease(buffer);
+            surface.ok_or("the pixel buffer has no IOSurface")?
+        };
+        let surface = super::NativeSurface { inner: surface };
+        surface.import(device, SIZE)?;
+        Ok("IOSurface → Metal")
+    }
+
     impl super::NativeSurface {
         /// Wraps a VideoToolbox frame, or `None` if it is not 8-bit NV12
         /// backed by an IOSurface (the caller then transfers it).
@@ -421,6 +543,19 @@ mod platform {
         }
     }
 
+    /// Checks what an import needs on `device` (a D3D11VA frame to test
+    /// with only exists once a movie decodes).
+    pub(super) fn self_test(device: &wgpu::Device) -> Result<&'static str, String> {
+        // SAFETY: only checks which backend the device runs on.
+        if unsafe { device.as_hal::<wgpu::hal::api::Dx12>() }.is_none() {
+            return Err("the GPU device is not Direct3D 12".into());
+        }
+        if !device.features().contains(wgpu::Features::TEXTURE_FORMAT_NV12) {
+            return Err("the GPU device lacks NV12 textures".into());
+        }
+        Ok("D3D11 shared texture → Direct3D 12")
+    }
+
     impl Surface {
         pub(super) fn import(&self, device: &wgpu::Device, _size: (u32, u32)) -> Result<Planes, String> {
             // SAFETY: only checks which backend the device runs on.
@@ -494,6 +629,10 @@ mod platform {
 
     /// No native frames are produced on this platform.
     pub(super) enum Surface {}
+
+    pub(super) fn self_test(_: &wgpu::Device) -> Result<&'static str, String> {
+        Err("no zero-copy import on this platform".into())
+    }
 
     impl Surface {
         pub(super) fn import(&self, _: &wgpu::Device, _: (u32, u32)) -> Result<Planes, String> {

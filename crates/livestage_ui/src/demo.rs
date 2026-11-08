@@ -23,8 +23,11 @@ pub fn audio_cue(p: &Project, number: &str, name: &str, asset: AssetRef, media_l
     })
 }
 
-pub fn visual_cue(p: &Project, number: &str, name: &str, asset: AssetRef, video: bool) -> AnyCue {
+/// A still or movie cue on the first output. `soundtrack`: the movie has an
+/// audio track, which then plays through the first stem.
+pub fn visual_cue(p: &Project, number: &str, name: &str, asset: AssetRef, video: bool, soundtrack: bool) -> AnyCue {
     let output = p.displays.first().map(|d| d.id).unwrap_or_default();
+    let audio = MovieAudio { enabled: video && soundtrack, stem: p.audio.stems.first().map(|s| s.id).unwrap_or_default(), gain_db: 0.0 };
     AnyCue::Video(VideoCue {
         header: CueHeader::new(number, name),
         output,
@@ -36,6 +39,7 @@ pub fn visual_cue(p: &Project, number: &str, name: &str, asset: AssetRef, video:
         hold: None,
         media_length: None,
         end_behavior: EndBehavior::Hide,
+        audio,
     })
 }
 
@@ -90,6 +94,7 @@ pub fn new_cue(p: &Project, kind: CueKind, number: &str) -> AnyCue {
             hold: None,
             media_length: None,
             end_behavior: EndBehavior::Hide,
+            audio: MovieAudio::default(),
         }),
         CueKind::Timer => timer_cue(output, number, "Countdown", ShowTime::from_secs(300)),
         CueKind::Dmx => AnyCue::Dmx(DmxCue {
@@ -232,6 +237,7 @@ pub fn create_demo(parent: &Path) -> CoreResult<ProjectBundle> {
             hold: Some(ShowTime::from_secs(6)),
             media_length: None,
             end_behavior: EndBehavior::Hide,
+            audio: MovieAudio::default(),
         }),
     );
     tl.add(ShowTime::from_secs(8), dmx_look("4.3", "Chorus hit", &[(1, 255), (2, 255), (3, 255)], 200));
@@ -262,6 +268,7 @@ pub fn create_demo(parent: &Path) -> CoreResult<ProjectBundle> {
         hold: None,
         media_length: None,
         end_behavior: EndBehavior::Hide,
+        audio: MovieAudio::default(),
     });
     teleprompter.header_mut().notes = "Scrolls at 40 pt/s on the confidence monitor".into();
     cues.push(teleprompter);
