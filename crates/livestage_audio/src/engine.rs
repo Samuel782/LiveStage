@@ -67,11 +67,20 @@ enum Clip {
     Streamed(Arc<StreamedClip>),
 }
 
+/// Why a file could not be loaded.
+#[derive(Debug, Clone)]
+enum LoadError {
+    /// No audio track, such as a silent movie whose soundtrack is switched
+    /// on: its voice plays silence, so a picture locked to it runs on.
+    NoTrack,
+    Failed(String),
+}
+
 #[derive(Debug, Clone)]
 enum ClipSlot {
     Loading,
     Ready(Clip),
-    Failed(String),
+    Failed(LoadError),
 }
 
 /// Clip cache with a background loader thread.
@@ -96,7 +105,7 @@ impl ClipCache {
                     // A decoder panic on a damaged file fails that file only;
                     // the loader keeps serving the others.
                     let slot = std::panic::catch_unwind(|| load(&path, sample_rate))
-                        .unwrap_or_else(|_| ClipSlot::Failed("the decoder crashed on this file".into()));
+                        .unwrap_or_else(|_| ClipSlot::Failed(LoadError::Failed("the decoder crashed on this file".into())));
                     worker_slots.lock().insert(path, slot);
                 }
             })?;
@@ -114,7 +123,7 @@ impl ClipCache {
     /// The clip once decoded, its error if decoding failed, or `None` while
     /// the loader thread works on it (queued now if nobody asked before).
     /// Never decodes on the calling thread.
-    fn poll(&self, path: &Path) -> Option<Result<Clip, String>> {
+    fn poll(&self, path: &Path) -> Option<Result<Clip, LoadError>> {
         let mut slots = self.slots.lock();
         match slots.get(path) {
             Some(ClipSlot::Ready(c)) => Some(Ok(c.clone())),
@@ -133,14 +142,9 @@ impl ClipCache {
     }
 }
 
-/// Prefix of the load error of a file without audio (a silent movie).
-const NO_TRACK: &str = "no audio track";
-
-/// A file without an audio track, such as a silent movie whose soundtrack is
-/// switched on: its voice plays silence, so a picture locked to it runs on.
 fn no_track(path: &Path) -> ClipSlot {
     tracing::info!(file = %path.display(), "no audio track; playing silence");
-    ClipSlot::Failed(format!("{NO_TRACK} in {}", path.display()))
+    ClipSlot::Failed(LoadError::NoTrack)
 }
 
 fn load(path: &Path, sample_rate: u32) -> ClipSlot {
@@ -168,7 +172,7 @@ fn load(path: &Path, sample_rate: u32) -> ClipSlot {
         Err(AudioError::NoTrack(_)) => no_track(path),
         Err(e) => {
             tracing::error!("{e}");
-            ClipSlot::Failed(e.to_string())
+            ClipSlot::Failed(LoadError::Failed(e.to_string()))
         }
     }
 }
@@ -547,8 +551,8 @@ impl AudioEngine {
                             continue;
                         }
                     },
-                    Some(Err(e)) if e.starts_with(NO_TRACK) => continue,
-                    Some(Err(e)) => {
+                    Some(Err(LoadError::NoTrack)) => continue,
+                    Some(Err(LoadError::Failed(e))) => {
                         tracing::error!(asset = %t.asset, "audio unavailable: {e}");
                         continue;
                     }

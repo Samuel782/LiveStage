@@ -92,6 +92,9 @@ pub struct CueRuntime {
     /// soundtrack counts its clock from here, so in-place seeks are relative
     /// to it.
     pub media_base: ShowTime,
+    /// A movie cue started its soundtrack at GO (an audio voice under the
+    /// cue's id), whatever its movie-audio switch says now.
+    pub soundtrack: bool,
 }
 
 /// Fields shared by every cue.
@@ -580,10 +583,10 @@ impl VideoCue {
         }
     }
 
-    /// Sends `action` to the audio engine if the content is a movie (whose
-    /// soundtrack may be playing, even if movie audio was switched off since).
+    /// Sends `action` to the soundtrack this run started, if any. (Movie
+    /// audio switched on or off mid-run takes effect at the next GO.)
     fn to_soundtrack(&self, ctx: &mut dyn CueContext, action: AudioAction) {
-        if matches!(self.content, VisualContent::Video { .. }) {
+        if self.header.runtime.soundtrack {
             ctx.dispatch(EngineAction::Audio(action));
         }
     }
@@ -619,6 +622,7 @@ impl Cue for VideoCue {
     fn on_go(&mut self, ctx: &mut dyn CueContext, offset: ShowTime) {
         let fade_in = if offset.is_zero() { self.fade_in } else { ShowTime::ZERO };
         self.header.runtime.media_base = offset;
+        self.header.runtime.soundtrack = self.movie_audio().is_some();
         let mut sync = None;
         if let Some((asset, looped)) = self.movie_audio() {
             ctx.dispatch(EngineAction::Audio(AudioAction::Play {
@@ -665,7 +669,7 @@ impl Cue for VideoCue {
         ctx.dispatch(EngineAction::Video(VideoAction::Pause { cue: self.header.id }));
     }
     fn on_seek(&mut self, ctx: &mut dyn CueContext, offset: ShowTime) -> bool {
-        if self.movie_audio().is_some() {
+        if self.header.runtime.soundtrack {
             // The soundtrack's clock starts at the GO position: before it,
             // restart there instead.
             let base = self.header.runtime.media_base;
@@ -687,7 +691,7 @@ impl Cue for VideoCue {
         // picture follows that clock (frame lock); the cue itself keeps the
         // show clock, so a soundtrack that is missing or shorter than the
         // picture cannot stall it.
-        if self.movie_audio().is_some() {
+        if self.header.runtime.soundtrack {
             return None;
         }
         ctx.media_position(self.header.id)
@@ -1315,6 +1319,21 @@ mod tests {
         cue.go(&mut ctx);
         assert!(!ctx.actions.iter().any(|a| matches!(a, EngineAction::Audio(AudioAction::Play { .. }))));
         assert!(ctx.actions.iter().any(|a| matches!(a, EngineAction::Video(VideoAction::Show { sync: None, .. }))));
+        // Without a soundtrack, transport stays with the video engine.
+        cue.pause(&mut ctx);
+        cue.resume(&mut ctx);
+        cue.stop(&mut ctx, None);
+        assert!(!ctx.actions.iter().any(|a| matches!(a, EngineAction::Audio(_))), "{:?}", ctx.actions);
+        // A soundtrack started at GO is stopped even if movie audio is
+        // switched off while it plays.
+        let (mut sounding, id, _) = movie_with_sound();
+        sounding.go(&mut ctx);
+        if let AnyCue::Video(v) = &mut sounding {
+            v.audio.enabled = false;
+        }
+        ctx.actions.clear();
+        sounding.stop(&mut ctx, None);
+        assert!(ctx.actions.contains(&EngineAction::Audio(AudioAction::Stop { cue: id, fade: ShowTime::ZERO })));
         // A cue saved before movie audio existed loads with it off.
         let mut json: serde_json::Value = serde_json::to_value(&cue).unwrap();
         json.as_object_mut().unwrap().remove("audio");

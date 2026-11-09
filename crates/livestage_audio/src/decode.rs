@@ -119,7 +119,7 @@ pub fn decode_file(path: &Path) -> AudioResult<AudioClip> {
 }
 
 /// [`decode_file`] with Symphonia only.
-pub fn decode_symphonia(path: &Path) -> AudioResult<AudioClip> {
+pub(crate) fn decode_symphonia(path: &Path) -> AudioResult<AudioClip> {
     let (mut format, track) = open(path)?;
     let mut decoder = make_decoder(path, &track)?;
 

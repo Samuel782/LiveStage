@@ -157,7 +157,7 @@ fn append_interleaved(frame: &ff::frame::Audio, out: &mut Vec<f32>) -> Result<()
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
     use crate::AudioEngine;
     use livestage_core::action::{AudioAction, AudioTrack};
@@ -183,7 +183,7 @@ pub(crate) mod tests {
     /// Writes a 1 s, 10 fps 32x32 movie (MPEG-4 video) with a stereo
     /// soundtrack in `audio` (`None`: no audio track). `None` when this
     /// FFmpeg build lacks an encoder or muxer.
-    pub(crate) fn write_movie(path: &Path, audio: Option<(ff::codec::Id, ff::format::Sample)>) -> Option<()> {
+    fn write_movie(path: &Path, audio: Option<(ff::codec::Id, ff::format::Sample)>) -> Option<()> {
         init().ok()?;
         let mut out = ff::format::output(path).ok()?;
         let global = out.format().flags().contains(ff::format::Flags::GLOBAL_HEADER);

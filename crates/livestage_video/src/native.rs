@@ -101,8 +101,9 @@ pub fn probe(device: &wgpu::Device) -> ZeroCopy {
 /// there is no GPU adapter.
 pub fn probe_headless() -> Option<ZeroCopy> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    // Creating the context already probes its device.
     let gpu = pollster::block_on(crate::gpu::GpuContext::new(instance, None)).ok()?;
-    Some(probe(&gpu.device))
+    Some(gpu.zero_copy.clone())
 }
 
 /// A hardware-decoded NV12 frame still in GPU memory.
@@ -336,6 +337,9 @@ mod platform {
                 (&raw const kCFTypeDictionaryKeyCallBacks).cast(),
                 (&raw const kCFTypeDictionaryValueCallBacks).cast(),
             );
+            if empty.is_null() {
+                return Err("CoreFoundation could not allocate a dictionary".into());
+            }
             let key = kCVPixelBufferIOSurfacePropertiesKey;
             let attributes = CFDictionaryCreate(
                 std::ptr::null(),
@@ -345,10 +349,13 @@ mod platform {
                 (&raw const kCFTypeDictionaryKeyCallBacks).cast(),
                 (&raw const kCFTypeDictionaryValueCallBacks).cast(),
             );
+            CFRelease(empty); // retained by `attributes`
+            if attributes.is_null() {
+                return Err("CoreFoundation could not allocate a dictionary".into());
+            }
             let mut buffer = std::ptr::null_mut();
             let status = CVPixelBufferCreate(std::ptr::null(), SIZE.0 as usize, SIZE.1 as usize, NV12_FORMATS[0], attributes, &mut buffer);
             CFRelease(attributes);
-            CFRelease(empty);
             if status != 0 || buffer.is_null() {
                 return Err(format!("no IOSurface pixel buffer (CoreVideo error {status})"));
             }
