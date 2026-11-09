@@ -31,7 +31,7 @@ cargo run --release                        # opens ./shows/Demo Show.livestage (
 |---|---|
 | **1 kHz real-time show thread** | Cue lists tick on a dedicated thread at 1 kHz in a real-time scheduling class (Mach time-constraint on macOS, `SCHED_FIFO` on Linux, `TIME_CRITICAL` on Windows). The UI never blocks a cue; stacked timeline children start within ~0.5–1.6 ms of their mark, and their video is frame-locked to the audio sample clock. |
 | **Lock-free audio engine** | `cpal` output with a real-time callback that never allocates, frees or locks. Commands cross a single-producer/single-consumer ring buffer. Any format Symphonia decodes (WAV, AIFF, FLAC, MP3, AAC/M4A, OGG, ALAC). Stems patched to physical outputs, sample-synchronous multitrack, click track with count-in. |
-| **`wgpu` video pipeline** | Layer compositor → canvas → Bezier warp mesh with **edge blending**, **polygon masks** and brightness → each output. Movie files with hardware decode (VideoToolbox / D3D11VA / VAAPI) and YUV→RGB on the GPU, stills, image sequences, timers, text/teleprompter. |
+| **`wgpu` video pipeline** | Layer compositor → canvas → Bezier warp mesh with **edge blending**, **polygon masks** and brightness → each output. Movie files with hardware decode (VideoToolbox / D3D11VA / VAAPI), **zero-copy** frame import on macOS and Windows, YUV→RGB on the GPU, and the movie's **own soundtrack** through the audio engine (frame-locked); stills, image sequences, timers, text/teleprompter. |
 | **Multi-display kiosk outputs** | Name logical outputs ("Main LED Wall", "Confidence Monitor"), map them to physical screens, route any content anywhere. Program windows are borderless fullscreen, cursorless, always-on-top and ignore OS close requests. They are rendered and presented on their own **output thread**, so they keep running when the operator window is covered, minimised or dragged. |
 | **Presentations** | Import **PDF** (pure-Rust `hayro` rasteriser) and **PowerPoint** (`.pptx` built-in renderer, or LibreOffice for full fidelity and `.ppt` / `.key` / `.odp`). Slides render once, in the background, at the largest output's resolution; slide text and speaker notes are kept. Slide cues route to any output with Next / Previous / Go-to and cross-fades. |
 | **Live scrubbing** | Click or drag the playhead of any running cue (cue grid, inspector, multiview) to seek **while it plays**: audio jumps in place with a 2 ms de-click dip, video re-times its decoder, timers and teleprompters jump, timelines re-chase their children. |
@@ -151,7 +151,12 @@ PKG_CONFIG_PATH=$HOME/.local/ffmpeg-9/lib/pkgconfig cargo run --release --featur
 
 # What can this build play? (exit 1 if movies are unavailable or H.264/HEVC/ProRes is missing)
 ./target/release/livestage --check-media
+# e.g. "FFmpeg 9.0.2, VideoToolbox hardware decode, zero-copy IOSurface → Metal"
 ```
+
+`--check-media` also says how hardware frames reach the GPU. On macOS it imports a test IOSurface
+on a fresh GPU device, so *zero-copy* means the import works on this machine; otherwise it gives
+the reason frames are copied through the CPU.
 
 **Demo show:** `cargo run --release -p livestage_video --features ffmpeg --example feature_tour -- shows`
 generates `shows/Feature Tour.livestage`, which uses every feature with its own media. See
@@ -216,6 +221,7 @@ Settings isn't treated as a problem.
 |---|---|
 | `--features ffmpeg` | Adds the FFmpeg backend for `.mov .mp4 .m4v .mkv .webm .avi .mxf .mpg .ts .m2ts .wmv .flv .ogv .dv .nut`. Without it, video cues play stills and PNG/JPEG image sequences, movie files show an on-screen notice, and a startup banner says movie playback is unavailable. Requires FFmpeg **9.x** (`ffmpeg-next` 9), provided by the build when not installed (see *FFmpeg*). |
 | `LIVESTAGE_HWDEC=0` | Forces software video decode (hardware decode is otherwise used when available; also a Settings switch). |
+| `LIVESTAGE_ZEROCOPY=0` | Copies hardware-decoded frames through the CPU instead of importing them into `wgpu` (for diagnosing a GPU driver). |
 | `LIVESTAGE_SOFFICE=/path/soffice` | LibreOffice binary for presentation import (also a Settings field; otherwise `PATH` and standard install locations are searched). |
 | `RUST_LOG=info` | Logging (`tracing`); e.g. `RUST_LOG=info,livestage_core=debug` to log every cue start. |
 
@@ -383,7 +389,7 @@ apply live, without dropouts.
 ### Other panels
 
 - **Inspector**: context-aware settings for the selected cue: audio tracks/stems/fades/click, video
-  source and output, timer mode and colours, text and teleprompter (including scroll speed and
+  source and output, a movie's own sound (**Play movie audio**, stem and level), timer mode and colours, text and teleprompter (including scroll speed and
   mirroring), DMX channels and fade, OSC/MIDI actions, timeline items. Running cues get a live
   playhead you can drag to seek. Slide cues show a clickable thumbnail strip (jump while running, or
   pick the first slide), Previous / Next, transition time and the speaker notes.
@@ -636,7 +642,8 @@ release on note-off; a pad takes precedence over a default note. MIDI Time Code 
 - **Timelines.** A master cue (usually audio) acts as the clock. Starting mid-way *chases*: media
   starts part-way through, past DMX looks are re-applied, and past triggers are not re-fired.
 - **A/V lock.** Video and text layers started by a timeline with an audio master are frame-locked to
-  that master's sample clock, so they cannot drift from the song (a free-running layer would slip by
+  that master's sample clock (a movie playing its own sound is locked to its soundtrack instead),
+  so they cannot drift from the song (a free-running layer would slip by
   the audio crystal's error, e.g. 0.36 s an hour at 100 ppm). The output thread compares each layer
   with the audio clock every frame. Inside 1 ms the layer plays at 1×. Small errors are slewed out by
   changing its speed by at most ±5 %, so the decoder only drops or repeats an occasional frame. A
@@ -648,6 +655,23 @@ release on note-off; a pad takes precedence over a default note. MIDI Time Code 
 - **Video.** Hardware-decoded frames arrive as NV12 and are converted by the layer shader (BT.601/709,
   limited/full range from the stream's tags). Streams the hardware can't decode fall back to software
   automatically.
+- **Zero-copy video.** Hardware frames go to the GPU without a CPU round trip
+  (`livestage_video::native`, built on `wgpu-external-frame` and wgpu-hal). On macOS, the
+  VideoToolbox `CVPixelBuffer`'s IOSurface planes become Metal textures that the NV12 shader samples
+  directly. On Windows, the D3D11VA texture is copied GPU to GPU into a shared NV12 texture, which
+  wgpu's Direct3D 12 device opens. Elsewhere (VAAPI on Linux) and whenever an import fails, frames are
+  copied through the CPU as before: a failed import reads that frame back and turns zero-copy off for
+  the rest of the run, so nothing is dropped. The startup log and `--check-media` report the path.
+- **Movie audio.** A movie cue can play the file's first audio track through the audio engine:
+  **Play movie audio** in the inspector, with a stem (output routing) and a level. It is on by
+  default for movies imported with an audio track, and off for cues saved before this existed
+  (those shows used a separate audio cue). The soundtrack is a voice of the cue like an audio cue's
+  track: it starts with the cue's fade-in, pauses, seeks in place and stops with its fade-out. The
+  picture is frame-locked to the soundtrack's sample clock (see *A/V lock* above), so audio and
+  video start together once both are loaded. A movie without an audio track plays silence, and its
+  picture runs on. Symphonia reads MP4 / MOV / MKV soundtracks and streams long ones from disk; with
+  `--features ffmpeg`, files it can't read (AVI, MXF, MPEG-TS, AC-3, ...) are decoded by FFmpeg,
+  aligned to the picture's start.
 - **Seeking.** `CueExt::seek` moves a running or paused cue in place through `Cue::on_seek`; cues
   that cannot seek in place (DMX fades) restart from the new position. The audio renderer ramps to
   silence over 96 frames, moves the read position (re-phasing the click to the song grid) and ramps
@@ -770,7 +794,8 @@ cargo run --release -- --ui-snapshot ui.png --tab lighting --demo-rig --select-a
 ```
 
 This renders the real UI offscreen (with live output canvases) to a PNG. `--go` may repeat; note
-that GO on audio cues plays through the default audio device.
+that GO on audio cues, and on movie cues with **Play movie audio** on, plays through the default
+audio device.
 
 ---
 
@@ -787,9 +812,12 @@ that GO on audio cues plays through the default audio device.
   (`mtc_send` is a test tool). Slaved media is kept in sync by de-clicked seeks beyond the
   tolerance, not by varispeed resampling.
 
-- **Zero-copy video**: hardware frames are copied GPU→CPU→GPU as NV12. True zero-copy (IOSurface /
-  D3D11 shared textures into `wgpu`) needs wgpu-hal interop. Audio inside movie files is ignored (use
-  an audio cue).
+- **Zero-copy video** covers macOS (IOSurface → Metal) and Windows (D3D11 shared texture →
+  Direct3D 12). On Linux, VAAPI frames are still copied GPU→CPU→GPU as NV12. The Windows path is
+  compile-checked only and hasn't run on real hardware yet.
+- **Movie audio** plays the first audio track only, as one source on one stem (no per-track
+  selection). A looped movie loops sound and picture at their own lengths and is not frame-locked.
+  Soundtracks only FFmpeg can read are decoded whole into memory rather than streamed from disk.
 - **NDI**: video only (no NDI audio or tally). The send path still copies from GPU to CPU, because the
   NDI SDK takes CPU buffers.
 - **PowerPoint without LibreOffice** draws the common building blocks only (see

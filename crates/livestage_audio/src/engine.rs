@@ -7,7 +7,7 @@ use crate::metronome::Metronome;
 use crate::renderer::*;
 use crate::routing::RoutingTable;
 use crate::stream::{open_stream, StreamReader, StreamedClip, Streamer};
-use crate::{db_to_gain, AudioResult};
+use crate::{db_to_gain, AudioError, AudioResult};
 use cpal::traits::StreamTrait;
 use livestage_core::action::AudioAction;
 use livestage_core::id::CueId;
@@ -133,6 +133,16 @@ impl ClipCache {
     }
 }
 
+/// Prefix of the load error of a file without audio (a silent movie).
+const NO_TRACK: &str = "no audio track";
+
+/// A file without an audio track, such as a silent movie whose soundtrack is
+/// switched on: its voice plays silence, so a picture locked to it runs on.
+fn no_track(path: &Path) -> ClipSlot {
+    tracing::info!(file = %path.display(), "no audio track; playing silence");
+    ClipSlot::Failed(format!("{NO_TRACK} in {}", path.display()))
+}
+
 fn load(path: &Path, sample_rate: u32) -> ClipSlot {
     // Long files: probe, keep only the pre-roll, stream the rest.
     match StreamedClip::open(path, sample_rate) {
@@ -146,7 +156,8 @@ fn load(path: &Path, sample_rate: u32) -> ClipSlot {
             return ClipSlot::Ready(Clip::Streamed(Arc::new(clip)));
         }
         Ok(None) => {}
-        Err(e) => tracing::warn!(file = %path.display(), "streaming probe failed, decoding whole: {e}"),
+        Err(AudioError::NoTrack(_)) => return no_track(path),
+        Err(e) => tracing::debug!(file = %path.display(), "streaming probe failed, decoding whole: {e}"),
     }
     match decode_file(path) {
         Ok(clip) => {
@@ -154,6 +165,7 @@ fn load(path: &Path, sample_rate: u32) -> ClipSlot {
             tracing::info!(file = %path.display(), secs = clip.duration_secs(), "audio loaded");
             ClipSlot::Ready(Clip::Resident(Arc::new(clip)))
         }
+        Err(AudioError::NoTrack(_)) => no_track(path),
         Err(e) => {
             tracing::error!("{e}");
             ClipSlot::Failed(e.to_string())
@@ -535,6 +547,7 @@ impl AudioEngine {
                             continue;
                         }
                     },
+                    Some(Err(e)) if e.starts_with(NO_TRACK) => continue,
                     Some(Err(e)) => {
                         tracing::error!(asset = %t.asset, "audio unavailable: {e}");
                         continue;

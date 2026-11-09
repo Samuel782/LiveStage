@@ -1351,7 +1351,13 @@ pub fn cue_for_asset(root: &Path, project: &livestage_core::Project, rec: &lives
                 .map(ShowTime::from_secs_f64);
             Some(crate::demo::audio_cue(project, number, name, rec.path.clone(), media_length))
         }
-        AssetKind::Video | AssetKind::Image => Some(crate::demo::visual_cue(project, number, name, rec.path.clone(), rec.kind == AssetKind::Video)),
+        AssetKind::Video | AssetKind::Image => {
+            let video = rec.kind == AssetKind::Video;
+            // A movie's own sound plays by default when it has any.
+            let soundtrack = video
+                && livestage_core::bundle::resolve_asset(root, &rec.path).is_ok_and(|p| livestage_audio::decode::has_audio_track(&p));
+            Some(crate::demo::visual_cue(project, number, name, rec.path.clone(), video, soundtrack))
+        }
         AssetKind::Document | AssetKind::Data => None,
     }
 }

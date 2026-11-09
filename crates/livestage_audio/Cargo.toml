@@ -13,3 +13,8 @@ ringbuf.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
+ffmpeg-next = { workspace = true, optional = true }
+
+[features]
+# Movie soundtracks Symphonia cannot read (AVI, MXF, AC-3, ...) via FFmpeg.
+ffmpeg = ["dep:ffmpeg-next"]

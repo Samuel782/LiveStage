@@ -671,7 +671,7 @@ mod av_sync_tests {
                 opacity: 1.0,
                 fade_in: ShowTime::ZERO,
                 start_at: ShowTime::ZERO,
-                sync: Some(MediaSync { master, offset: ShowTime::ZERO }),
+                sync: Some(MediaSync { master, offset: ShowTime::ZERO, start: ShowTime::ZERO }),
             },
             &|_| None,
         );
@@ -703,5 +703,75 @@ mod av_sync_tests {
         assert!(free_run_error > 0.055, "free-run error {free_run_error}");
         // Locked, it stays within one audio buffer (5.3 ms) of the sample clock.
         assert!(worst_locked < 0.008, "locked error {worst_locked}");
+    }
+
+    /// A movie cue with its soundtrack on, started 5 s in: the GO drives the
+    /// audio engine (offline, no device) and the compositor, and the picture
+    /// stays on the soundtrack's sample clock while the device drifts.
+    #[test]
+    fn movie_picture_follows_its_own_soundtrack() {
+        use livestage_core::cue::{CueExt, CueHeader, EndBehavior, MovieAudio, VideoCue};
+        use livestage_core::{CueContext, EngineAction};
+        const RATE: u32 = 48_000;
+        struct Ctx(ShowTime, Vec<EngineAction>);
+        impl CueContext for Ctx {
+            fn now(&self) -> ShowTime {
+                self.0
+            }
+            fn dispatch(&mut self, action: EngineAction) {
+                self.1.push(action);
+            }
+        }
+        let routing = AudioRouting::default();
+        let (mut engine, mut device) = AudioEngine::offline(RATE, 2, &routing).unwrap();
+        engine.insert_clip("/movie.mov", AudioClip { sample_rate: RATE, channels: 2, data: vec![0.0; RATE as usize * 2 * 60] });
+        let resolve = |a: &AssetRef| Some(PathBuf::from("/").join(a.as_str()));
+        let mut cue = VideoCue {
+            header: CueHeader::new("1", "Movie"),
+            output: OutputId::new(),
+            content: VisualContent::Video { asset: AssetRef::new("movie.mov"), looped: false },
+            layer: 0,
+            opacity: 1.0,
+            fade_in: ShowTime::ZERO,
+            fade_out: ShowTime::ZERO,
+            hold: None,
+            media_length: Some(ShowTime::from_secs(60)),
+            end_behavior: EndBehavior::Hide,
+            audio: MovieAudio { enabled: true, stem: routing.stems[0].id, gain_db: 0.0 },
+        };
+        let id = cue.header.id;
+        let mut ctx = Ctx(ShowTime::ZERO, Vec::new());
+        cue.go_from(&mut ctx, ShowTime::from_secs(5));
+        let mut comp = Compositor::default();
+        for action in ctx.1.drain(..) {
+            match action {
+                EngineAction::Audio(a) => engine.handle(&a, &resolve),
+                // The movie file is not there: the layer shows a notice, timed like the movie.
+                EngineAction::Video(v) => comp.handle(ShowTime::ZERO, &v, &|_| None),
+                _ => {}
+            }
+        }
+        assert_eq!(comp.sync_masters(), vec![id], "the picture is locked to its soundtrack");
+
+        let mut buf = vec![0.0f32; 256 * 2];
+        let mut rendered = 0u64;
+        let mut worst = 0.0f64;
+        for frame in 1..=10 * 60u64 {
+            let now = ShowTime::from_micros(frame * 16_667);
+            while (rendered as f64) < now.as_secs_f64() * RATE as f64 * (1.0 + 1_000e-6) {
+                device.render(&mut buf);
+                rendered += 256;
+            }
+            let clocks = vec![(id, engine.voice_clock(id).unwrap())];
+            let report = comp.follow_masters(now, |m| master_reading(&clocks, m));
+            assert_eq!((report.locked, report.snaps), (1, 0), "frame {frame}: error {}", report.worst_error);
+            if frame > 120 {
+                worst = worst.max(report.worst_error);
+            }
+        }
+        assert!(worst < 0.008, "picture {worst} s off its soundtrack");
+        // 5 s into the movie plus 10 s of (fast) audio.
+        let audio = engine.media_position(id).unwrap().as_secs_f64();
+        assert!((audio - 10.01).abs() < 0.02, "soundtrack clock {audio}");
     }
 }

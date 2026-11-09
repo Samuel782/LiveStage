@@ -443,9 +443,17 @@ impl ApplicationHandler for App {
 /// when movies cannot play or an essential codec is missing (for release
 /// smoke tests and support).
 fn check_media() -> i32 {
-    use livestage_video::capabilities::{movie_support, MovieSupport};
+    use livestage_video::capabilities::{movie_support, HwDecode, MovieSupport};
     let s = movie_support();
-    println!("{}", s.summary());
+    // How hardware-decoded frames reach the GPU (imports a test surface).
+    let zero_copy = match s {
+        MovieSupport::Ready { hardware: HwDecode::Available { .. }, .. } => match livestage_video::native::probe_headless() {
+            Some(z) => format!(", {}", z.summary()),
+            None => ", no GPU adapter".into(),
+        },
+        _ => String::new(),
+    };
+    println!("{}{zero_copy}", s.summary());
     if let MovieSupport::Ready { missing_optional, .. } = s {
         if !missing_optional.is_empty() {
             println!("optional codecs not available: {}", missing_optional.join(", "));

@@ -13,6 +13,7 @@ image.workspace = true
 chrono.workspace = true
 libloading.workspace = true
 parking_lot.workspace = true
+pollster.workspace = true
 ffmpeg-next = { workspace = true, optional = true }
 hayro.workspace = true
 zip.workspace = true
@@ -42,5 +43,3 @@ windows = { version = "0.62", features = [
 # Movie-file backend via the system FFmpeg libraries (see README).
 ffmpeg = ["dep:ffmpeg-next"]
 
-[dev-dependencies]
-pollster.workspace = true
