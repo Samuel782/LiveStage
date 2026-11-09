@@ -83,7 +83,8 @@ pub fn scrub_bar(ui: &mut Ui, id_salt: impl egui::AsIdSalt, elapsed: ShowTime, d
     let filled = egui::Rect::from_min_max(track.min, egui::pos2(track.left() + track.width() * frac, track.bottom()));
     p.rect_filled(filled, 3.0, accent.gamma_multiply(if resp.hovered() || dragging { 0.85 } else { 0.6 }));
     let x = track.left() + track.width() * frac;
-    let knob = if resp.hovered() || dragging { height * 0.42 } else { height * 0.32 };
+    let grow = crate::motion::value(ui.ctx(), id.with("knob"), (resp.hovered() || dragging) as u8 as f32, crate::motion::Spring::SNAPPY);
+    let knob = height * (0.32 + 0.10 * grow);
     p.circle_filled(egui::pos2(x, rect.center().y), knob, theme::text());
     if resp.hovered() && !dragging {
         if let Some(h) = resp.hover_pos() {
@@ -209,7 +210,7 @@ use egui::{Align2, Color32, FontId, Pos2, Rect, Response, RichText, Sense, Strok
 
 /// Uppercase, letter-spaced telemetry caption text.
 pub fn caption_text(text: &str) -> RichText {
-    RichText::new(text.to_uppercase()).size(10.5).extra_letter_spacing(1.1).color(theme::text_dim())
+    RichText::new(text.to_uppercase()).size(theme::type_scale::CAPTION + 0.5).extra_letter_spacing(0.6).color(theme::text_dim())
 }
 
 /// Uppercase, letter-spaced telemetry caption.
@@ -232,19 +233,35 @@ pub fn toggle(ui: &mut Ui, on: &mut bool, label: impl Into<WidgetText>) -> Respo
         resp.mark_changed();
     }
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *on, galley.as_ref().map_or("", |g| g.text())));
+    // The knob stretches the instant the pointer goes down (before the
+    // switch commits on release) and springs along the track afterwards.
+    let ctx = ui.ctx().clone();
+    let pressed = resp.is_pointer_button_down_on();
+    let press_id = resp.id.with("press");
+    if pressed {
+        crate::motion::snap(&ctx, press_id, 1.0);
+    }
+    let stretch = crate::motion::value(&ctx, press_id, 0.0, crate::motion::Spring::SNAPPY).clamp(0.0, 1.0);
+    let t = crate::motion::toggle(&ctx, resp.id, *on, crate::motion::Spring::SNAPPY);
     if ui.is_rect_visible(rect) {
-        let t = ui.ctx().animate_bool_with_time(resp.id, *on, 0.12);
+        let tc = t.clamp(0.0, 1.0);
         let tr = Rect::from_min_size(Pos2::new(rect.left(), rect.center().y - track.y / 2.0), track);
         let p = ui.painter();
         let enabled = ui.is_enabled();
         let off_fill = if theme::is_light() { theme::control_active() } else { theme::control() };
-        let fill = off_fill.lerp_to_gamma(theme::accent(), t);
+        let fill = off_fill.lerp_to_gamma(theme::accent(), tc);
         let fill = if enabled { fill } else { fill.gamma_multiply(0.5) };
-        p.rect(tr, track.y / 2.0, fill, Stroke::new(theme::HAIRLINE, theme::border().lerp_to_gamma(theme::accent(), t)), StrokeKind::Inside);
-        let x = egui::lerp(tr.left() + track.y / 2.0..=tr.right() - track.y / 2.0, t);
-        let knob = Pos2::new(x, tr.center().y);
-        p.circle_filled(knob + Vec2::new(0.0, 0.5), 7.5, Color32::from_black_alpha(40));
-        p.circle_filled(knob, 7.5, if enabled { Color32::WHITE } else { Color32::from_gray(200) });
+        p.rect(tr, track.y / 2.0, fill, Stroke::new(theme::HAIRLINE, theme::border().lerp_to_gamma(theme::accent(), tc)), StrokeKind::Inside);
+        let r = 7.5;
+        let grow = 5.0 * stretch;
+        let lo = tr.left() + track.y / 2.0;
+        let hi = tr.right() - track.y / 2.0;
+        let x = egui::lerp(lo..=hi, t);
+        // Off: grows towards the right; on: towards the left.
+        let (kl, kr) = (x - r - grow * tc, x + r + grow * (1.0 - tc));
+        let knob = Rect::from_min_max(Pos2::new(kl, tr.center().y - r), Pos2::new(kr, tr.center().y + r));
+        p.rect_filled(knob.translate(Vec2::new(0.0, 0.5)), r, Color32::from_black_alpha(40));
+        p.rect_filled(knob, r, if enabled { Color32::WHITE } else { Color32::from_gray(200) });
         if resp.has_focus() {
             p.rect_stroke(tr.expand(2.0), track.y / 2.0 + 2.0, Stroke::new(theme::FOCUS_RING, theme::accent()), StrokeKind::Outside);
         }
@@ -274,30 +291,22 @@ pub enum KeyTone {
 /// (keyboard shortcut) in the corner. Drawn in `rect`.
 pub fn key(ui: &mut Ui, rect: Rect, label: &str, size: f32, legend: Option<&str>, tone: KeyTone, lit: bool) -> Response {
     let resp = ui.allocate_rect(rect, Sense::click());
-    let pressed = resp.is_pointer_button_down_on();
-    let hovered = resp.hovered();
     let enabled = ui.is_enabled();
+    let (press, hover) = press_and_hover(ui, &resp);
     let depth = 2.0;
-    let face = if pressed { Rect::from_min_max(rect.min + Vec2::new(0.0, depth), rect.max) } else { Rect::from_min_max(rect.min, rect.max - Vec2::new(0.0, depth)) };
+    let face = pressed_face(rect, depth, press);
     let (fill, ink, edge) = match tone {
         KeyTone::Go => (theme::go(), theme::on(theme::go()), theme::go()),
         KeyTone::Danger => (theme::stop(), Color32::WHITE, theme::stop()),
         KeyTone::Warn => (theme::control(), theme::stop_text(), theme::stop().gamma_multiply(0.8)),
         KeyTone::Neutral => (theme::control(), theme::text(), theme::border_hi()),
     };
-    let fill = if !enabled {
-        fill.gamma_multiply(0.45)
-    } else if hovered && !pressed {
-        fill.lerp_to_gamma(if theme::is_light() { Color32::BLACK } else { Color32::WHITE }, 0.06)
-    } else {
-        fill
-    };
+    let fill = if !enabled { fill.gamma_multiply(0.45) } else { fill.lerp_to_gamma(if theme::is_light() { Color32::BLACK } else { Color32::WHITE }, 0.06 * hover * (1.0 - press)) };
     let radius = 6.0;
     let p = ui.painter();
-    if !pressed {
-        p.rect_filled(Rect::from_min_max(Pos2::new(rect.left(), rect.top() + depth), rect.max), radius, fill.lerp_to_gamma(Color32::BLACK, 0.35));
-    }
-    p.rect(face, radius, fill, Stroke::new(theme::HAIRLINE, edge.gamma_multiply(if hovered { 1.0 } else { 0.75 })), StrokeKind::Inside);
+    // The base edge shows below the face; it disappears as the key sinks.
+    p.rect_filled(Rect::from_min_max(Pos2::new(rect.left(), rect.top() + depth), rect.max), radius, fill.lerp_to_gamma(Color32::BLACK, 0.35));
+    p.rect(face, radius, fill, Stroke::new(theme::HAIRLINE, edge.gamma_multiply(0.75 + 0.25 * hover)), StrokeKind::Inside);
     if lit {
         let bar = Rect::from_min_size(face.min + Vec2::new(12.0, 7.0), Vec2::new(face.width() - 24.0, 3.0));
         p.rect_filled(bar, 1.5, if tone == KeyTone::Go { ink.gamma_multiply(0.55) } else { Color32::WHITE });
@@ -309,12 +318,34 @@ pub fn key(ui: &mut Ui, rect: Rect, label: &str, size: f32, legend: Option<&str>
     let line_h = size * 1.05;
     let top = face.center().y - line_h * (lines.len() as f32 - 1.0) / 2.0 - if legend.is_some() { 4.0 } else { 0.0 };
     for (i, l) in lines.iter().enumerate() {
-        p.text(Pos2::new(face.center().x, top + i as f32 * line_h), Align2::CENTER_CENTER, *l, FontId::proportional(size), ink);
+        theme::tracked_text(p, Pos2::new(face.center().x, top + i as f32 * line_h), Align2::CENTER_CENTER, *l, FontId::proportional(size), ink);
     }
     if let Some(l) = legend {
         p.text(face.left_bottom() + Vec2::new(10.0, -8.0), Align2::LEFT_BOTTOM, l, FontId::monospace(9.5), ink.gamma_multiply(0.7));
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Press and hover amounts (0..=1) for a physical control: the press lands
+/// the instant the pointer goes down and springs back (with a little
+/// bounce) on release; hover fades in and out.
+pub fn press_and_hover(ui: &Ui, resp: &Response) -> (f32, f32) {
+    use crate::motion::{self, Spring};
+    let ctx = ui.ctx();
+    let id = resp.id.with("press");
+    let enabled = ui.is_enabled();
+    let pressed = enabled && resp.is_pointer_button_down_on();
+    if pressed {
+        motion::snap(ctx, id, 1.0);
+    }
+    let press = motion::value(ctx, id, 0.0, Spring::RELEASE).clamp(0.0, 1.0);
+    let hover = motion::fade(ctx, resp.id.with("hover"), (enabled && resp.hovered()) as u8 as f32, Spring::SNAPPY);
+    (press, hover)
+}
+
+/// The face of a key over a `depth`-point base edge, sunk by `press`.
+pub fn pressed_face(rect: Rect, depth: f32, press: f32) -> Rect {
+    Rect::from_min_max(rect.min + Vec2::new(0.0, depth * press), rect.max - Vec2::new(0.0, depth * (1.0 - press)))
 }
 
 /// Uppercase with thin spaces between letters (for painter text, which has no letter spacing).

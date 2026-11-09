@@ -92,6 +92,7 @@ pub fn window(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
 
 /// Applies the live-adjustable preferences to the UI.
 pub fn apply_prefs(ctx: &egui::Context, p: &Preferences) {
+    crate::motion::set_reduce_motion_pref(p.reduce_motion);
     theme::set_accent(p.accent);
     theme::set_appearance(p.appearance);
     theme::apply(ctx);
@@ -101,17 +102,33 @@ pub fn apply_prefs(ctx: &egui::Context, p: &Preferences) {
 fn sidebar(ui: &mut Ui, st: &mut UiState) {
     ui.vertical(|ui| {
         ui.set_width(150.0);
-        for s in Section::ALL {
-            let selected = st.settings_section == s;
-            let (rect, resp) = ui.allocate_exact_size(egui::vec2(150.0, 30.0), egui::Sense::click());
-            if selected {
-                ui.painter().rect_filled(rect, theme::RADIUS as f32 + 2.0, theme::accent_menu());
-            } else if resp.hovered() {
-                ui.painter().rect_filled(rect, theme::RADIUS as f32 + 2.0, theme::control_hover());
+        let radius = theme::RADIUS as f32 + 2.0;
+        // Rows first, so the selection can be drawn under every label and
+        // slide between rows instead of jumping.
+        let rows: Vec<(Section, egui::Rect, egui::Response)> = Section::ALL
+            .iter()
+            .map(|s| {
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(150.0, 30.0), egui::Sense::click());
+                (*s, rect, resp)
+            })
+            .collect();
+        let p = ui.painter();
+        for (s, rect, resp) in &rows {
+            if *s != st.settings_section && (resp.hovered() || resp.is_pointer_button_down_on()) {
+                let c = if resp.is_pointer_button_down_on() { theme::control_active() } else { theme::control_hover() };
+                p.rect_filled(*rect, radius, c);
             }
+        }
+        if let Some((_, target, _)) = rows.iter().find(|(s, ..)| *s == st.settings_section) {
+            let y = crate::motion::value(ui.ctx(), ui.id().with("settings-selection"), target.top(), crate::motion::Spring::SMOOTH);
+            p.rect_filled(egui::Rect::from_min_size(egui::pos2(target.left(), y), target.size()), radius, theme::accent_menu());
+        }
+        // Selected while the pointer is still down: the label follows at once.
+        for (s, rect, resp) in rows {
+            let selected = st.settings_section == s;
             let color = if selected { egui::Color32::WHITE } else { theme::text() };
-            ui.painter().text(rect.left_center() + egui::vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, s.title(), egui::FontId::proportional(theme::type_scale::BODY + 0.5), color);
-            if resp.clicked() {
+            theme::tracked_text(p, rect.left_center() + egui::vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, s.title(), egui::FontId::proportional(theme::type_scale::BODY), color);
+            if resp.is_pointer_button_down_on() && resp.contains_pointer() {
                 st.settings_section = s;
             }
         }
@@ -120,14 +137,14 @@ fn sidebar(ui: &mut Ui, st: &mut UiState) {
 
 fn heading(ui: &mut Ui, title: &str, scope: &str) {
     ui.horizontal(|ui| {
-        ui.heading(title);
+        ui.label(theme::styled(title, theme::type_scale::HEADING).strong());
         ui.label(super::widgets::caption_text(scope));
     });
     ui.add_space(4.0);
 }
 
 fn hint(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(12.0).color(theme::text_dim()));
+    ui.label(theme::styled(text, theme::type_scale::CALLOUT).color(theme::text_dim()));
 }
 
 fn path_field(ui: &mut Ui, id: &str, value: &mut Option<PathBuf>, placeholder: &str) {
@@ -146,11 +163,12 @@ fn general(ui: &mut Ui, st: &mut UiState) {
     heading(ui, "General", "this Mac");
     egui::Grid::new("set-general").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
         ui.label("Appearance");
-        ui.horizontal(|ui| {
-            for a in Appearance::ALL {
-                ui.selectable_value(&mut st.prefs.appearance, a, a.label());
-            }
-        });
+        let options: Vec<(Appearance, &str)> = Appearance::ALL.iter().map(|a| (*a, a.label())).collect();
+        super::widgets::inputs::segmented(ui, &mut st.prefs.appearance, &options);
+        ui.end_row();
+        ui.label("Motion");
+        toggle(ui, &mut st.prefs.reduce_motion, "Reduce motion")
+            .on_hover_text("Controls land at once instead of springing. Also follows System Settings → Accessibility → Display.");
         ui.end_row();
         ui.label("Accent colour");
         ui.horizontal(|ui| {

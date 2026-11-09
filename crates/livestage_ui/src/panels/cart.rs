@@ -221,14 +221,17 @@ fn grid(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState, area: Rect) {
 
         let elapsed = pad.as_ref().and_then(|p| rt.elapsed_of(p.cue.header().id));
         let selected = st.cart_edit && st.cart_slot == Some(slot);
-        paint_pad(ui, rect, slot, pad.as_ref(), elapsed, selected, st.cart_edit, resp.hovered());
+        let (press, hover) = super::widgets::press_and_hover(ui, &resp);
+        paint_pad(ui, id, rect, slot, pad.as_ref(), elapsed, selected, st.cart_edit, press, hover);
         pad_menu(&resp, rt, st, page, slot, pad.as_ref());
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn paint_pad(ui: &Ui, rect: Rect, slot: usize, pad: Option<&CartPad>, elapsed: Option<ShowTime>, selected: bool, edit: bool, hovered: bool) {
+fn paint_pad(ui: &Ui, id: egui::Id, rect: Rect, slot: usize, pad: Option<&CartPad>, elapsed: Option<ShowTime>, selected: bool, edit: bool, press: f32, hover: f32) {
     let p = ui.painter_at(rect.expand(2.0));
+    // Pressed pads sink (scale to ~97 %) the instant the pointer goes down.
+    let rect = rect.shrink(press * (rect.width().min(rect.height()) * 0.015).clamp(1.0, 3.0));
     let small = (rect.height() * 0.12).clamp(9.0, 13.0);
     let Some(pad) = pad else {
         let stroke = if selected { Stroke::new(2.0_f32, theme::accent()) } else { Stroke::new(1.0_f32, theme::border()) };
@@ -241,13 +244,10 @@ fn paint_pad(ui: &Ui, rect: Rect, slot: usize, pad: Option<&CartPad>, elapsed: O
     };
     let base = pad_color(pad);
     let playing = pad.is_playing();
-    let fill = if playing {
-        base
-    } else if hovered {
-        base.gamma_multiply(0.45)
-    } else {
-        base.gamma_multiply(0.30)
-    };
+    // Lighting up (and going dark) cross-fades rather than switching.
+    let lit = crate::motion::fade(ui.ctx(), id.with("lit"), playing as u8 as f32, crate::motion::Spring::SNAPPY);
+    let idle = base.gamma_multiply(0.30 + 0.15 * hover.max(press));
+    let fill = idle.lerp_to_gamma(base, lit);
     let stroke = if selected {
         Stroke::new(theme::FOCUS_RING, theme::accent())
     } else if playing {

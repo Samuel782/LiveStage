@@ -22,6 +22,8 @@ pub struct Preferences {
     pub accent: Accent,
     /// UI zoom (egui points per pixel multiplier).
     pub ui_scale: f32,
+    /// Controls land at once instead of springing (on top of the OS setting).
+    pub reduce_motion: bool,
     // Windows / outputs
     /// Program outputs open as soon as the show is loaded.
     pub outputs_on_launch: bool,
@@ -53,6 +55,7 @@ impl Default for Preferences {
             appearance: Appearance::System,
             accent: Accent::Ice,
             ui_scale: 1.0,
+            reduce_motion: false,
             outputs_on_launch: false,
             outputs_always_on_top: true,
             hide_cursor_on_outputs: true,

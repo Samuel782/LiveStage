@@ -255,10 +255,17 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
         // Every row spans the full width, so the columns are the same for all.
         let cols = columns(ui.available_width());
         let mut top_index = 0usize;
+        // Content origin (moves with scrolling) and the selected row, for
+        // the selection ring that slides between rows.
+        let content_top = ui.min_rect().top();
+        let mut selected_rect: Option<Rect> = None;
         for row in &rows {
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), if row.depth > 0 { CHILD_H } else { ROW_H }), Sense::click());
             if row.depth == 0 {
                 top_index += 1;
+            }
+            if st.selected == Some(row.id) {
+                selected_rect = Some(rect);
             }
             // Rows outside the scroll view are laid out (for their height and
             // clicks) but not painted.
@@ -283,9 +290,6 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                     let bar = Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
                     p.rect_filled(bar.expand2(egui::vec2(3.0, 0.0)).translate(egui::vec2(3.0, 0.0)), 0.0, c.gamma_multiply(0.12));
                     p.rect_filled(bar, 0.0, c);
-                }
-                if selected {
-                    p.rect_stroke(rect.shrink(1.0), 2.0, egui::Stroke::new(theme::FOCUS_RING, theme::accent()), egui::StrokeKind::Inside);
                 }
                 // Running: a thin progress trace along the bottom of the row.
                 if let Some(pr) = row.progress.filter(|_| running) {
@@ -411,7 +415,8 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
                 }
             }
 
-            if resp.clicked() || resp.secondary_clicked() {
+            // Select on pointer-down (as Finder and Mail do), not on release.
+            if resp.is_pointer_button_down_on() || resp.secondary_clicked() {
                 st.selected = Some(row.id);
             }
             if st.grid_scroll_to == Some(row.id) {
@@ -424,6 +429,15 @@ pub fn show(ui: &mut Ui, rt: &mut UiRuntime, st: &mut UiState) {
             let resp = resp.on_hover_text("Click: select · Double-click: set as next · Right-click: actions");
             let live = st.live_mode;
             resp.context_menu(|ui| row_menu(ui, row, live, &mut actions));
+        }
+        if let Some(target) = selected_rect {
+            // Springs in content coordinates, so scrolling never makes it lag.
+            let ctx = ui.ctx().clone();
+            let id = ui.id().with("cue-selection");
+            let top = content_top + crate::motion::value(&ctx, id.with("y"), target.top() - content_top, crate::motion::Spring::SMOOTH);
+            let height = crate::motion::value(&ctx, id.with("h"), target.height(), crate::motion::Spring::SMOOTH);
+            let ring = Rect::from_min_size(egui::pos2(target.left(), top), egui::vec2(target.width(), height));
+            ui.painter().rect_stroke(ring.shrink(1.0), 3.0, egui::Stroke::new(theme::FOCUS_RING, theme::accent()), egui::StrokeKind::Inside);
         }
         if rows.is_empty() {
             ui.add_space(30.0);

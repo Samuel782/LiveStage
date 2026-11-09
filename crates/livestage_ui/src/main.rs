@@ -15,6 +15,7 @@ mod health;
 #[cfg(test)]
 mod ico;
 mod logging;
+mod motion;
 mod panels;
 mod prefs;
 mod priority;

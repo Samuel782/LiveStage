@@ -12,28 +12,49 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, current: &mut T, options: &[(
     let widths: Vec<f32> = options.iter().map(|(_, l)| ui.fonts_mut(|f| f.layout_no_wrap(l.to_string(), font.clone(), theme::text()).size().x) + 2.0 * theme::GRID + 4.0).collect();
     let total: f32 = widths.iter().sum::<f32>() + 4.0;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(total, theme::CONTROL_HEIGHT - 2.0), Sense::hover());
-    let p = ui.painter();
+    let thumb_id = ui.id().with(("seg-thumb", options.len()));
+    let p = ui.painter().clone();
     p.rect(rect, theme::RADIUS as f32 + 2.0, theme::recessed(), theme::hairline(), StrokeKind::Inside);
+    // Segment rects first: the thumb is drawn under the labels.
+    let mut segs = Vec::with_capacity(options.len());
     let mut x = rect.left() + 2.0;
+    for w in &widths {
+        segs.push(Rect::from_min_size(Pos2::new(x, rect.top() + 2.0), Vec2::new(*w, rect.height() - 4.0)));
+        x += w;
+    }
     let mut changed = false;
-    for ((value, label), w) in options.iter().zip(widths) {
-        let r = Rect::from_min_size(Pos2::new(x, rect.top() + 2.0), Vec2::new(w, rect.height() - 4.0));
-        let resp = ui.interact(r, ui.id().with(("seg", label)), Sense::click());
+    let mut labels = Vec::with_capacity(options.len());
+    for (((value, label), r), i) in options.iter().zip(&segs).zip(0..) {
+        let resp = ui.interact(*r, ui.id().with(("seg", label)), Sense::click());
         let on = *current == *value;
-        if on {
-            ui.painter().rect(r, theme::RADIUS as f32, theme::control_active().lerp_to_gamma(theme::raised(), 0.2), Stroke::new(theme::HAIRLINE, theme::border_hi()), StrokeKind::Inside);
-        } else if resp.hovered() {
-            ui.painter().rect_filled(r, theme::RADIUS as f32, theme::control_hover());
+        // Pointer-down shows at once; the choice commits on release.
+        if !on && resp.is_pointer_button_down_on() {
+            p.rect_filled(*r, theme::RADIUS as f32, theme::control_active());
+        } else if !on && resp.hovered() {
+            p.rect_filled(*r, theme::RADIUS as f32, theme::control_hover());
         }
-        if resp.has_focus() {
-            ui.painter().rect_stroke(r, theme::RADIUS as f32, Stroke::new(theme::FOCUS_RING, theme::accent()), StrokeKind::Inside);
-        }
-        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, *label, font.clone(), if on { theme::text() } else { theme::text_dim() });
         if resp.clicked() && !on {
             *current = *value;
             changed = true;
         }
-        x += w;
+        labels.push((i, *r, *label, resp.has_focus()));
+    }
+    // The thumb slides (springs) to the selected segment, from wherever it is.
+    let sel = options.iter().position(|(v, _)| *v == *current);
+    if let Some(i) = sel {
+        let ctx = ui.ctx();
+        let target = segs[i];
+        let left = crate::motion::value(ctx, thumb_id.with("x"), target.left(), crate::motion::Spring::SMOOTH);
+        let width = crate::motion::value(ctx, thumb_id.with("w"), target.width(), crate::motion::Spring::SMOOTH);
+        let thumb = Rect::from_min_size(Pos2::new(left, target.top()), Vec2::new(width, target.height()));
+        p.rect(thumb, theme::RADIUS as f32, theme::control_active().lerp_to_gamma(theme::raised(), 0.2), Stroke::new(theme::HAIRLINE, theme::border_hi()), StrokeKind::Inside);
+    }
+    for (i, r, label, focus) in labels {
+        if focus {
+            p.rect_stroke(r, theme::RADIUS as f32, Stroke::new(theme::FOCUS_RING, theme::accent()), StrokeKind::Inside);
+        }
+        let on = sel == Some(i);
+        p.text(r.center(), egui::Align2::CENTER_CENTER, label, font.clone(), if on { theme::text() } else { theme::text_dim() });
     }
     changed
 }

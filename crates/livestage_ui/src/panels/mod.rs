@@ -330,7 +330,8 @@ impl TabViewer for Viewer<'_> {
         egui::Id::new(tab.title())
     }
     fn title(&mut self, tab: &mut Tab) -> egui::WidgetText {
-        egui::RichText::new(tab.title().to_uppercase()).size(10.5).extra_letter_spacing(1.0).into()
+        // Title case at callout size, as macOS tab views label their tabs.
+        crate::theme::styled(tab.title(), crate::theme::type_scale::CALLOUT + 0.5).into()
     }
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Tab) {
         match tab {
@@ -440,7 +441,7 @@ fn alert_heading(ui: &mut egui::Ui, title: &str) {
     ui.horizontal(|ui| {
         crate::assets::icon_image(ui, 40.0);
         ui.add_space(4.0);
-        ui.heading(title);
+        ui.label(crate::theme::styled(title, crate::theme::type_scale::HEADING).strong());
     });
     ui.add_space(4.0);
 }
@@ -449,13 +450,13 @@ fn about_modal(ctx: &egui::Context, st: &mut UiState) {
     if !st.about_open {
         return;
     }
-    let r = egui::Modal::new(egui::Id::new("about")).show(ctx, |ui| {
+    let r = modal(ctx, "about").show(ctx, |ui| {
         ui.set_width(360.0);
         ui.vertical_centered(|ui| {
             ui.add_space(8.0);
             crate::assets::icon_image(ui, 112.0);
             ui.add_space(6.0);
-            ui.label(egui::RichText::new("LiveStage").size(24.0).strong());
+            ui.label(crate::theme::styled("LiveStage", crate::theme::type_scale::TITLE).strong());
             ui.label(egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(crate::theme::text_dim()));
             ui.add_space(8.0);
             ui.label("Show control for audio, video, lighting and timecode.");
@@ -476,7 +477,7 @@ fn quit_modal(ctx: &egui::Context, st: &mut UiState) {
     if !st.confirm_quit {
         return;
     }
-    egui::Modal::new(egui::Id::new("confirm-quit")).show(ctx, |ui| {
+    modal(ctx, "confirm-quit").show(ctx, |ui| {
         ui.set_width(380.0);
         alert_heading(ui, "Quit while outputs are live?");
         ui.label("Program outputs are on air. Quitting closes them and stops every cue.");
@@ -495,7 +496,7 @@ fn quit_modal(ctx: &egui::Context, st: &mut UiState) {
 
 fn recovery_modal(ctx: &egui::Context, rt: &mut UiRuntime, st: &mut UiState) {
     let Some(when) = st.recovery.clone() else { return };
-    egui::Modal::new(egui::Id::new("recovery")).show(ctx, |ui| {
+    modal(ctx, "recovery").show(ctx, |ui| {
         ui.set_width(420.0);
         alert_heading(ui, "Recover unsaved changes?");
         match &st.unclean_exit {
@@ -652,17 +653,21 @@ pub fn draw(
     cart::poll_learn(ctx, rt, st);
 
     use crate::theme;
-    egui::Panel::top("header")
+    let header_rect = egui::Panel::top("header")
         .exact_size(header::HEIGHT + 2.0 * theme::GRID)
         .show_separator_line(false)
-        .frame(egui::Frame::default().fill(theme::bg_deep()).stroke(theme::hairline()).inner_margin(egui::Margin::same(theme::GRID as i8)))
-        .show(root, |ui| header::show(ui, rt, st));
+        .frame(egui::Frame::default().fill(theme::bg_deep()).inner_margin(egui::Margin::same(theme::GRID as i8)))
+        .show(root, |ui| header::show(ui, rt, st))
+        .response
+        .rect;
     media_banner(root, st);
-    egui::Panel::bottom("status")
+    let footer_rect = egui::Panel::bottom("status")
         .exact_size(footer::HEIGHT)
         .show_separator_line(false)
-        .frame(egui::Frame::default().fill(theme::bg_deep()).stroke(theme::hairline()).inner_margin(egui::Margin::symmetric(theme::GRID as i8 + 2, 0)))
-        .show(root, |ui| footer::status_bar(ui, rt, st));
+        .frame(egui::Frame::default().fill(theme::bg_deep()).inner_margin(egui::Margin::symmetric(theme::GRID as i8 + 2, 0)))
+        .show(root, |ui| footer::status_bar(ui, rt, st))
+        .response
+        .rect;
     if st.log_open {
         egui::Panel::bottom("log-drawer")
             .resizable(true)
@@ -686,4 +691,26 @@ pub fn draw(
             .show_inside(ui, &mut Viewer { rt, st, physical, previews, ndi });
         st.dock = dock;
     });
+    // Floating chrome meets the workspace with a soft shadow, not a line.
+    // Painted last on the panels' layer, so above the workspace, below windows.
+    let edges = root.painter().clone();
+    theme::edge_shadow(&edges, header_rect, true, 1.0, 7.0);
+    theme::edge_shadow(&edges, footer_rect, true, -1.0, 4.0);
+}
+
+/// A modal task: dims the window behind it (cross-fading in) so the task
+/// has focus, after the macOS sheet / alert.
+pub(crate) fn modal(ctx: &egui::Context, id: &str) -> egui::Modal {
+    let id = egui::Id::new(id);
+    let dim = crate::motion::fade(ctx, id.with("scrim"), 1.0, crate::motion::Spring::SMOOTH);
+    let start = id.with("scrim-start");
+    // (Never call into `ctx` inside its own `data` lock.)
+    let pass = ctx.cumulative_pass_nr();
+    let last = ctx.data(|d| d.get_temp::<u64>(start));
+    let shown_last = last.is_some_and(|f| f + 1 >= pass);
+    if !shown_last {
+        crate::motion::snap(ctx, id.with("scrim"), 0.0);
+    }
+    ctx.data_mut(|d| d.insert_temp(start, pass));
+    egui::Modal::new(id).backdrop_color(crate::theme::modal_scrim().gamma_multiply(if shown_last { dim } else { 0.0 }))
 }

@@ -13,7 +13,17 @@
 //!   grid, 2 px focus rings in the accent colour.
 //! * **Type**: the platform UI face (SF Pro on macOS, Segoe UI on Windows)
 //!   and its monospace companion for every clock and meter readout, so
-//!   figures never jitter.
+//!   figures never jitter. Sizes follow the macOS HIG scale; tracking and
+//!   leading are size-specific ([`tracking`], [`leading`]): large text is
+//!   tightened, small text opened up, never one letter-spacing for all.
+//! * **Depth**: surfaces get darker / heavier as they get more structural
+//!   (header deck and tab strips deepest, panel bodies raised, controls
+//!   lightest); bigger floating surfaces cast deeper shadows; floating
+//!   chrome meets content with a soft edge shadow rather than a hard line.
+//!   Modal tasks dim what is behind them. Accessibility display settings
+//!   (increase contrast, reduce transparency, reduce motion) are honoured.
+//! * **Motion**: springs from [`crate::motion`]; controls react on
+//!   pointer-down.
 
 use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Visuals};
 use livestage_core::state::{palette, CueState, Rgb};
@@ -86,7 +96,16 @@ fn wants_light(ctx: &egui::Context) -> bool {
 /// Re-applies the theme when the OS appearance (or the preference) changed
 /// since the last frame. Cheap; call once per frame.
 pub fn sync(ctx: &egui::Context) {
-    if wants_light(ctx) != is_light() {
+    // OS accessibility settings, about once a second.
+    let now = ctx.input(|i| i.time);
+    let poll = egui::Id::new("livestage-a11y-poll");
+    let last: f64 = ctx.data(|d| d.get_temp(poll)).unwrap_or(f64::NEG_INFINITY);
+    let mut changed = false;
+    if now - last >= 1.0 || now < last {
+        ctx.data_mut(|d| d.insert_temp(poll, now));
+        changed = crate::motion::refresh_os_settings();
+    }
+    if changed || wants_light(ctx) != is_light() {
         apply(ctx);
     }
 }
@@ -199,7 +218,12 @@ pub fn control_active() -> Color32 {
     p().control_active
 }
 pub fn border() -> Color32 {
-    p().border
+    // Increase contrast: every hairline becomes a defined edge.
+    if crate::motion::increase_contrast() {
+        p().border_hi
+    } else {
+        p().border
+    }
 }
 pub fn border_hi() -> Color32 {
     p().border_hi
@@ -208,10 +232,18 @@ pub fn text() -> Color32 {
     p().text
 }
 pub fn text_dim() -> Color32 {
-    p().text_dim
+    if crate::motion::increase_contrast() {
+        p().text_dim.lerp_to_gamma(p().text, 0.4)
+    } else {
+        p().text_dim
+    }
 }
 pub fn text_faint() -> Color32 {
-    p().text_faint
+    if crate::motion::increase_contrast() {
+        p().text_dim
+    } else {
+        p().text_faint
+    }
 }
 pub fn menu_fill() -> Color32 {
     p().menu_fill
@@ -224,9 +256,47 @@ pub fn scrim() -> Color32 {
         Color32::from_black_alpha(160)
     }
 }
+/// Dims the window behind a modal task (alerts, About).
+pub fn modal_scrim() -> Color32 {
+    // Reduce transparency: an almost solid backdrop.
+    let solid = crate::motion::reduce_transparency();
+    match (is_light(), solid) {
+        (true, false) => Color32::from_black_alpha(70),
+        (false, false) => Color32::from_black_alpha(130),
+        (true, true) => Color32::from_black_alpha(150),
+        (false, true) => Color32::from_black_alpha(210),
+    }
+}
 /// Hairline stroke.
 pub fn hairline() -> Stroke {
     Stroke::new(HAIRLINE, border())
+}
+
+/// A soft shadow cast by floating chrome onto the content beside it (a
+/// scroll-edge effect instead of a hard divider): `edge` is the chrome's
+/// edge line, the shadow falls `depth` points away from it, towards `dir`
+/// (+1 down / right of a horizontal / vertical edge, -1 up / left).
+pub fn edge_shadow(p: &egui::Painter, edge: egui::Rect, horizontal: bool, dir: f32, depth: f32) {
+    let strength: u8 = if is_light() { 26 } else { 90 };
+    let dark = Color32::from_black_alpha(strength);
+    let clear = Color32::TRANSPARENT;
+    let mut mesh = egui::Mesh::default();
+    let (a, b, c, d) = if horizontal {
+        let y0 = if dir > 0.0 { edge.bottom() } else { edge.top() };
+        let y1 = y0 + dir * depth;
+        (egui::pos2(edge.left(), y0), egui::pos2(edge.right(), y0), egui::pos2(edge.right(), y1), egui::pos2(edge.left(), y1))
+    } else {
+        let x0 = if dir > 0.0 { edge.right() } else { edge.left() };
+        let x1 = x0 + dir * depth;
+        (egui::pos2(x0, edge.bottom()), egui::pos2(x0, edge.top()), egui::pos2(x1, edge.top()), egui::pos2(x1, edge.bottom()))
+    };
+    let base = mesh.vertices.len() as u32;
+    for (pos, color) in [(a, dark), (b, dark), (c, clear), (d, clear)] {
+        mesh.colored_vertex(pos, color);
+    }
+    mesh.add_triangle(base, base + 1, base + 2);
+    mesh.add_triangle(base, base + 2, base + 3);
+    p.add(mesh);
 }
 
 // ------------------------------------------------------------------ accent --
@@ -450,12 +520,72 @@ fn install_fonts(ctx: &egui::Context) {
     ctx.data_mut(|d| d.insert_temp(flag, true));
 }
 
-/// Type scale.
+/// Type scale (macOS HIG text styles).
 pub mod type_scale {
-    pub const SMALL: f32 = 11.5;
+    /// Caption: column headers, legends.
+    pub const CAPTION: f32 = 10.0;
+    /// Subheadline / footnote: secondary lines, status bar.
+    pub const SMALL: f32 = 11.0;
+    /// Callout: hints under controls.
+    pub const CALLOUT: f32 = 12.0;
+    /// Body and controls.
     pub const BODY: f32 = 13.0;
+    /// Title 3: panel titles, the show name.
     pub const SUBHEAD: f32 = 15.0;
+    /// Title 2: window and section headings.
     pub const HEADING: f32 = 17.0;
+    /// Title 1: dialog titles.
+    pub const TITLE: f32 = 22.0;
+}
+
+/// Letter spacing for `size`-point text, in points: slightly open at
+/// caption sizes, neutral at 12 pt, progressively tighter as text grows
+/// (about -0.02 em for display sizes), after SF Pro's tracking table.
+pub fn tracking(size: f32) -> f32 {
+    // (size pt, tracking em)
+    const TABLE: [(f32, f32); 7] = [(9.0, 0.012), (11.0, 0.006), (12.0, 0.0), (13.0, -0.006), (15.0, -0.014), (17.0, -0.022), (28.0, -0.02)];
+    let em = if size <= TABLE[0].0 {
+        TABLE[0].1
+    } else if size >= TABLE[TABLE.len() - 1].0 {
+        TABLE[TABLE.len() - 1].1
+    } else {
+        let i = TABLE.windows(2).position(|w| size < w[1].0).unwrap_or(0);
+        let ((s0, t0), (s1, t1)) = (TABLE[i], TABLE[i + 1]);
+        t0 + (t1 - t0) * (size - s0) / (s1 - s0)
+    };
+    em * size
+}
+
+/// Line height for `size`-point text: comfortable for body copy, tight
+/// for large type (leading shrinks as size grows).
+pub fn leading(size: f32) -> f32 {
+    let ratio = if size <= 13.0 { 1.38 } else if size >= 28.0 { 1.12 } else { 1.38 - (size - 13.0) / 15.0 * 0.26 };
+    (size * ratio).round()
+}
+
+/// Text at `size` with its size-specific tracking and leading.
+pub fn styled(text: impl Into<String>, size: f32) -> egui::RichText {
+    egui::RichText::new(text).size(size).extra_letter_spacing(tracking(size)).line_height(Some(leading(size)))
+}
+
+/// A single-line galley for painter text with the size-specific tracking
+/// (`Painter::text` has none).
+pub fn tracked_galley(p: &egui::Painter, text: impl Into<String>, font: FontId, color: Color32) -> std::sync::Arc<egui::Galley> {
+    let size = font.size;
+    let mut job = egui::text::LayoutJob::single_section(
+        text.into(),
+        egui::TextFormat { font_id: font, color, extra_letter_spacing: tracking(size), ..Default::default() },
+    );
+    job.wrap.max_width = f32::INFINITY;
+    p.layout_job(job)
+}
+
+/// Painter text with size-specific tracking, anchored like `Painter::text`.
+pub fn tracked_text(p: &egui::Painter, pos: egui::Pos2, anchor: egui::Align2, text: impl Into<String>, font: FontId, color: Color32) -> egui::Rect {
+    let g = tracked_galley(p, text, font, color);
+    let rect = anchor.anchor_size(pos, g.size());
+    p.galley(rect.min, g, color);
+    rect
 }
 
 // ------------------------------------------------------------------- apply --
@@ -476,15 +606,18 @@ pub fn apply(ctx: &egui::Context) {
     v.window_stroke = Stroke::new(HAIRLINE, border_hi());
     v.window_corner_radius = CornerRadius::same(WINDOW_RADIUS);
     v.menu_corner_radius = CornerRadius::same(WINDOW_RADIUS);
-    v.window_shadow = egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: p().shadow };
-    v.popup_shadow = egui::Shadow { offset: [0, 6], blur: 18, spread: 0, color: p().shadow };
+    // Bigger surfaces read as thicker: windows cast a deep, soft shadow,
+    // menus and popovers a short one.
+    v.window_shadow = egui::Shadow { offset: [0, 16], blur: 44, spread: 0, color: p().shadow };
+    v.popup_shadow = egui::Shadow { offset: [0, 5], blur: 16, spread: 0, color: p().shadow.gamma_multiply(0.75) };
     // Selection and keyboard focus: the accent, 2 px.
     v.selection.bg_fill = accent_dim();
     v.selection.stroke = Stroke::new(FOCUS_RING, accent());
     v.hyperlink_color = accent();
     v.warn_fg_color = standby();
     v.error_fg_color = stop_text();
-    v.striped = true;
+    // Tables that want bands ask for them; forms and settings read cleaner without.
+    v.striped = false;
     v.slider_trailing_fill = true;
     v.handle_shape = egui::style::HandleShape::Circle;
     v.indent_has_left_vline = false;
@@ -507,6 +640,9 @@ pub fn apply(ctx: &egui::Context) {
     v.widgets.hovered.weak_bg_fill = control_hover();
     v.widgets.hovered.bg_stroke = Stroke::new(HAIRLINE, border_hi());
     v.widgets.hovered.fg_stroke = Stroke::new(1.5, text());
+    // Pressed: the face sinks in by a point the instant the pointer goes
+    // down (the web's `:active { scale(0.97) }`), before anything commits.
+    v.widgets.active.expansion = -1.0;
     v.widgets.active.bg_fill = control_active();
     v.widgets.active.weak_bg_fill = control_active();
     v.widgets.active.bg_stroke = Stroke::new(HAIRLINE, accent());
@@ -534,6 +670,8 @@ pub fn apply(ctx: &egui::Context) {
     use type_scale::*;
     ctx.all_styles_mut(|s| {
         s.text_styles.insert(TextStyle::Small, FontId::new(SMALL, FontFamily::Proportional));
+        s.text_styles.insert(TextStyle::Name("Caption".into()), FontId::new(CAPTION, FontFamily::Proportional));
+        s.text_styles.insert(TextStyle::Name("Title".into()), FontId::new(TITLE, FontFamily::Proportional));
         s.text_styles.insert(TextStyle::Body, FontId::new(BODY, FontFamily::Proportional));
         s.text_styles.insert(TextStyle::Button, FontId::new(BODY, FontFamily::Proportional));
         s.text_styles.insert(TextStyle::Heading, FontId::new(HEADING, FontFamily::Proportional));
@@ -547,7 +685,10 @@ pub fn apply(ctx: &egui::Context) {
         s.spacing.window_margin = egui::Margin::same(GRID as i8 * 2);
         s.spacing.icon_width = 16.0;
         s.spacing.combo_width = GRID * 20.0;
-        s.interaction.tooltip_delay = 0.4;
+        s.interaction.tooltip_delay = 0.5;
+        // egui's own transitions (collapsing sections, window fades) are
+        // short; anything a user touches springs (crate::motion) instead.
+        s.animation_time = if crate::motion::reduce_motion() { 0.0 } else { 0.15 };
     });
 }
 
@@ -560,29 +701,35 @@ pub fn clock_font(size: f32) -> FontId {
 /// accent bar under the active tab.
 pub fn dock_style(base: &egui::Style) -> egui_dock::Style {
     let mut s = egui_dock::Style::from_egui(base);
+    // Each dock leaf reads as one rounded card: the tab strip is its
+    // (heavier) top edge, the body its raised face.
+    let top = CornerRadius { nw: WINDOW_RADIUS, ne: WINDOW_RADIUS, sw: 0, se: 0 };
+    let bottom = CornerRadius { nw: 0, ne: 0, sw: WINDOW_RADIUS, se: WINDOW_RADIUS };
     s.tab_bar.bg_fill = bg_deep();
-    s.tab_bar.height = 32.0;
+    s.tab_bar.height = 30.0;
     s.tab_bar.hline_color = border();
-    s.tab_bar.corner_radius = CornerRadius::ZERO;
+    s.tab_bar.corner_radius = top;
     s.tab.hline_below_active_tab_name = true;
-    s.tab.minimum_width = Some(GRID * 11.0);
+    s.tab.minimum_width = Some(GRID * 10.0);
+    // Breathing room between long titles ("Display Routing", "Audio Mixer").
+    s.tab.spacing = GRID * 0.5;
     s.tab.tab_body.bg_fill = raised();
     s.tab.tab_body.inner_margin = egui::Margin::same(GRID as i8 + 2);
     s.tab.tab_body.stroke = hairline();
-    s.tab.tab_body.corner_radius = CornerRadius::ZERO;
+    s.tab.tab_body.corner_radius = bottom;
     for t in [&mut s.tab.active, &mut s.tab.focused, &mut s.tab.active_with_kb_focus, &mut s.tab.focused_with_kb_focus] {
         t.bg_fill = raised();
         t.text_color = text();
         t.outline_color = border();
-        t.corner_radius = CornerRadius::ZERO;
+        t.corner_radius = top;
     }
     for t in [&mut s.tab.inactive, &mut s.tab.inactive_with_kb_focus, &mut s.tab.hovered] {
         t.bg_fill = bg_deep();
-        t.text_color = text_faint();
+        t.text_color = text_dim();
         t.outline_color = bg_deep();
-        t.corner_radius = CornerRadius::ZERO;
+        t.corner_radius = top;
     }
-    s.tab.hovered.text_color = text_dim();
+    s.tab.hovered.text_color = text();
     s.separator.color_idle = bg_deep();
     s.separator.color_hovered = accent();
     s.separator.color_dragged = accent();
@@ -623,6 +770,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn tracking_tightens_and_leading_shrinks_as_type_grows() {
+        assert!(tracking(10.0) > 0.0, "captions open up");
+        assert_eq!(tracking(12.0), 0.0);
+        assert!(tracking(13.0) < 0.0 && tracking(13.0) > -0.1, "body near zero");
+        assert!(tracking(44.0) < tracking(17.0), "display text tighter in points");
+        assert!((tracking(44.0) / 44.0 + 0.02).abs() < 1e-4, "-0.02 em at display sizes");
+        let mut last = f32::INFINITY;
+        for size in [9.0, 11.0, 12.0, 13.0, 15.0, 17.0, 22.0, 28.0, 44.0] {
+            let em = tracking(size) / size;
+            assert!(em <= last + 0.004, "monotonic-ish at {size}");
+            last = em;
+        }
+        assert!(leading(13.0) / 13.0 > leading(28.0) / 28.0);
+        assert_eq!(leading(13.0), 18.0);
     }
 
     #[test]
