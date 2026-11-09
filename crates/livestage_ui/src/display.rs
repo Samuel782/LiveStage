@@ -166,7 +166,7 @@ pub fn open_program_window(
     // Two frames in flight: the output thread never stalls a whole vsync on
     // one window while another is waiting.
     let config = gpu.surface_config(&surface, format, size, true, 2);
-    surface.configure(&gpu.device, &config);
+    gpu.configure(&surface, &config);
     let on = window.current_monitor().and_then(|m| m.name()).unwrap_or_default();
     let name = &display.name;
     tracing::info!(output = %name, kiosk, ?size, screen = %on, "program window open");
@@ -304,7 +304,7 @@ impl OutputEngine {
             if s.window_id == window && [s.config.width, s.config.height] != size {
                 s.config.width = size[0];
                 s.config.height = size[1];
-                s.surface.configure(&self.gpu.device, &s.config);
+                self.gpu.configure(&s.surface, &s.config);
             }
         }
     }
@@ -380,13 +380,13 @@ impl OutputEngine {
                         slot.renderer.render_warp(&mut enc, &view);
                         frame = Some((f, true));
                     }
-                    wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => s.surface.configure(&gpu.device, &s.config),
+                    wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => gpu.configure(&s.surface, &s.config),
                     wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {}
                     other => tracing::warn!("program surface: {other:?}"),
                 }
             }
             cmds.push(enc.finish());
-            gpu.queue.submit(cmds);
+            gpu.submit(cmds);
             if let (Some((f, suboptimal)), Some(s)) = (frame, &mut slot.surface) {
                 gpu.queue.present(f);
                 presented_any = true;
@@ -396,7 +396,7 @@ impl OutputEngine {
                 }
                 s.presented += 1;
                 if suboptimal {
-                    s.surface.configure(&gpu.device, &s.config);
+                    gpu.configure(&s.surface, &s.config);
                 }
             }
             slot.renderer.after_submit();

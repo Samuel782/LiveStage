@@ -310,7 +310,7 @@ pub fn run(a: SnapshotArgs) -> anyhow::Result<()> {
         wgpu::Extent3d { width: px[0], height: px[1], depth_or_array_layers: 1 },
     );
     cmds.push(enc.finish());
-    gpu.queue.submit(cmds);
+    gpu.submit(cmds);
     buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
     let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
     let mapped = buf.slice(..).get_mapped_range().map_err(|e| anyhow::anyhow!("snapshot readback: {e}"))?;

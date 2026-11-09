@@ -14,7 +14,35 @@ pub struct GpuContext {
     pub zero_copy: crate::native::ZeroCopy,
 }
 
+/// Serialises surface (re)configuration against queue submissions.
+///
+/// `Surface::configure` waits for the GPU to go idle and then fails with
+/// "Failed to wait for GPU to come idle" if any other thread submitted in
+/// the meantime, leaving the swapchain at its old size. LiveStage submits
+/// from several threads (control window, output thread, video decode),
+/// so every submission takes this gate shared and every configuration
+/// takes it exclusively. One device per process, hence a static.
+static SUBMIT_GATE: parking_lot::RwLock<()> = parking_lot::RwLock::new(());
+
+/// Submits on `queue` through the gate (see [`SUBMIT_GATE`]). Use this
+/// instead of `Queue::submit` everywhere.
+pub fn submit<I: IntoIterator<Item = wgpu::CommandBuffer>>(queue: &wgpu::Queue, cmds: I) -> wgpu::SubmissionIndex {
+    let _shared = SUBMIT_GATE.read();
+    queue.submit(cmds)
+}
+
 impl GpuContext {
+    /// [`submit`] on this context's queue.
+    pub fn submit<I: IntoIterator<Item = wgpu::CommandBuffer>>(&self, cmds: I) -> wgpu::SubmissionIndex {
+        submit(&self.queue, cmds)
+    }
+
+    /// Configures `surface` with no other thread submitting meanwhile.
+    pub fn configure(&self, surface: &wgpu::Surface<'_>, config: &wgpu::SurfaceConfiguration) {
+        let _exclusive = SUBMIT_GATE.write();
+        surface.configure(&self.device, config);
+    }
+
     /// Creates the context. Pass a surface so the chosen adapter can present to it.
     pub async fn new(instance: wgpu::Instance, compatible_surface: Option<&wgpu::Surface<'_>>) -> VideoResult<Arc<Self>> {
         let adapter = instance
@@ -105,8 +133,8 @@ impl GpuContext {
         } else {
             wgpu::PresentMode::AutoNoVsync
         };
-        surface.configure(
-            &self.device,
+        self.configure(
+            surface,
             &wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 format,

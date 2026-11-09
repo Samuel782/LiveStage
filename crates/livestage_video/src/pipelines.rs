@@ -500,7 +500,7 @@ impl GpuLayer {
                         wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
                     );
                 }
-                queue.submit([encoder.finish()]);
+                crate::gpu::submit(queue, [encoder.finish()]);
                 // The decoder may reuse the surface once this copy has run.
                 let hold = native.clone();
                 queue.on_submitted_work_done(move || drop(hold));

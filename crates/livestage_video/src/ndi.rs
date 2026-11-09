@@ -396,10 +396,15 @@ impl VideoSource for NdiVideoSource {
 
 impl Drop for NdiVideoSource {
     fn drop(&mut self) {
+        // Never wait for the receiver here: sources are dropped on the
+        // output thread, and the receiver can take hundreds of ms to notice
+        // (its 100 ms capture timeout) and tear down (`recv_destroy`, longer
+        // still while it is searching for a source that is not there). That
+        // stalled program output for ~0.5 s on Stop all. The thread owns
+        // everything it touches (the library, the frame slot, the flag), so
+        // it finishes and destroys its receiver on its own.
         self.running.store(false, Ordering::Relaxed);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
+        drop(self.thread.take());
     }
 }
 
@@ -464,10 +469,11 @@ impl NdiOutput {
 
 impl Drop for NdiOutput {
     fn drop(&mut self) {
+        // Closing the channel ends the sender thread, which destroys its
+        // sender itself; not waiting keeps the output thread from stalling
+        // on a frame still being sent or on the SDK's teardown.
         drop(self.tx.take());
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
+        drop(self.thread.take());
     }
 }
 
@@ -603,5 +609,24 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "receiver connection not reported");
             std::thread::sleep(Duration::from_millis(30));
         }
+    }
+
+    /// Needs the NDI runtime: `cargo test -p livestage_video ndi_drop -- --ignored`.
+    #[test]
+    #[ignore]
+    fn ndi_drop_never_blocks_the_caller() {
+        if runtime().is_none() {
+            return;
+        }
+        let src = NdiVideoSource::connect("LIVESTAGE-NO-SUCH-SOURCE (none)").expect("receiver");
+        std::thread::sleep(Duration::from_millis(300));
+        let t = std::time::Instant::now();
+        drop(src);
+        let took = t.elapsed();
+        assert!(took < Duration::from_millis(20), "drop blocked for {took:?}");
+        let out = NdiOutput::new("LiveStage drop test", (60, 1)).expect("sender");
+        let t = std::time::Instant::now();
+        drop(out);
+        assert!(t.elapsed() < Duration::from_millis(20), "sender drop blocked for {:?}", t.elapsed());
     }
 }

@@ -556,7 +556,7 @@ pub(crate) mod gpu_tests {
             },
             wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
         );
-        gpu.queue.submit([enc.finish()]);
+        gpu.submit([enc.finish()]);
         r.after_submit();
         buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
@@ -633,7 +633,7 @@ pub(crate) mod gpu_tests {
             },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
-        gpu.queue.submit([enc.finish()]);
+        gpu.submit([enc.finish()]);
         buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
         let m = buf.slice(..).get_mapped_range().unwrap();
@@ -709,7 +709,7 @@ pub(crate) mod gpu_tests {
             },
             wgpu::Extent3d { width: 32, height: 32, depth_or_array_layers: 1 },
         );
-        gpu.queue.submit([enc.finish()]);
+        gpu.submit([enc.finish()]);
         buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
         let m = buf.slice(..).get_mapped_range().unwrap();
@@ -745,7 +745,7 @@ pub(crate) mod gpu_tests {
             let mut enc = gpu.device.create_command_encoder(&Default::default());
             r.render_layers(&gpu, &pipes, &mut enc, comp.layers_mut(out), ShowTime::ZERO);
             r.encode_stream_readback(&gpu, &pipes, &mut enc, (32, 32));
-            gpu.queue.submit([enc.finish()]);
+            gpu.submit([enc.finish()]);
             r.after_submit();
         }
         let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
@@ -757,7 +757,7 @@ pub(crate) mod gpu_tests {
         // All buffers were released: encoding works again immediately.
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         r.encode_stream_readback(&gpu, &pipes, &mut enc, (32, 32));
-        gpu.queue.submit([enc.finish()]);
+        gpu.submit([enc.finish()]);
         r.after_submit();
         let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
         assert!(r.poll_stream_readback(&gpu).is_some());

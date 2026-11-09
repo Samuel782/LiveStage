@@ -125,7 +125,7 @@ impl ControlWindow {
         let ctx = self.ctx.clone();
         let mut cmds = paint_egui(gpu, &mut self.renderer, &ctx, &mut enc, &view, self.size, output, Some(clear));
         cmds.push(enc.finish());
-        gpu.queue.submit(cmds);
+        gpu.submit(cmds);
         self.window.pre_present_notify();
         gpu.queue.present(frame);
     }
