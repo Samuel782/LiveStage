@@ -253,7 +253,9 @@ mod tests {
         let frame = |t: f64, target: f32| {
             let mut out = 0.0;
             let input = egui::RawInput { time: Some(t), ..Default::default() };
-            let _ = ctx.run_ui(input, |ui| out = value(ui.ctx(), id, target, Spring::SNAPPY));
+            let mut output = ctx.run_ui(input, |ui| out = value(ui.ctx(), id, target, Spring::SNAPPY));
+            // No renderer here: drop the font atlas uploads deliberately.
+            output.textures_delta.clear();
             out
         };
         assert_eq!(frame(0.0, 10.0), 10.0, "first sight lands in place");
